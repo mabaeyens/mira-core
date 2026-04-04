@@ -18,13 +18,13 @@ logging.basicConfig(
 )
 
 
-def _render_stream(orchestrator: ChatOrchestrator, user_input: str) -> None:
+def _render_stream(orchestrator: ChatOrchestrator, user_input: str, attachments=None) -> None:
     """Consume stream_chat events and render them in the terminal."""
     spinner = None
     answer_buffer = []
 
     try:
-        for event in orchestrator.stream_chat(user_input):
+        for event in orchestrator.stream_chat(user_input, attachments=attachments):
             etype = event["type"]
 
             if etype == "thinking":
@@ -63,6 +63,9 @@ def _render_stream(orchestrator: ChatOrchestrator, user_input: str) -> None:
                 answer_buffer.clear()
                 print_rule()
 
+            elif etype == "warning":
+                console.print(f"  [yellow]⚠️  {event['message']}[/yellow]")
+
             elif etype == "error":
                 print_error(event["message"])
 
@@ -77,16 +80,21 @@ def main():
     print("Type your message. Use /help for commands, /quit to exit.\n")
 
     orchestrator = ChatOrchestrator(verbose=VERBOSE_DEFAULT)
+    staged_files = []
 
     while True:
         try:
-            user_input = input("You: ").strip()
+            prompt = "You: " if not staged_files else f"You [📎 {', '.join(f['name'] for f in staged_files)}]: "
+            user_input = input(prompt).strip()
 
             if not user_input:
                 continue
 
             if user_input.startswith("/"):
-                cmd = user_input.lower()
+                # Use the raw input for path extraction; lowercase only the command word
+                parts = user_input.split(None, 1)
+                cmd = parts[0].lower()
+                arg = parts[1].strip() if len(parts) > 1 else ""
 
                 if cmd in ("/quit", "/exit"):
                     print("Goodbye!")
@@ -95,12 +103,15 @@ def main():
                 elif cmd == "/help":
                     print("""
 Available commands:
-  /help      - Show this help message
-  /quit      - Exit the program
-  /toggle    - Toggle verbose mode (show/hide search details)
-  /verbose   - Enable verbose mode
-  /quiet     - Disable verbose mode
-  /reset     - Reset conversation history
+  /help             - Show this help message
+  /quit             - Exit the program
+  /toggle           - Toggle verbose mode (show/hide search details)
+  /verbose          - Enable verbose mode
+  /quiet            - Disable verbose mode
+  /reset            - Reset conversation history
+  /attach <path>    - Attach a file to the next message (PDF, HTML, image, text)
+  /files            - List currently staged attachments
+  /detach           - Clear all staged attachments
                     """)
 
                 elif cmd == "/toggle":
@@ -117,12 +128,39 @@ Available commands:
                 elif cmd == "/reset":
                     orchestrator.reset_conversation()
 
+                elif cmd == "/attach":
+                    if not arg:
+                        print_error("Usage: /attach <path>")
+                    else:
+                        try:
+                            from file_handler import load_file
+                            att = load_file(arg)
+                            staged_files.append(att)
+                            if att["warning"]:
+                                console.print(f"  [yellow]⚠️  {att['warning']}[/yellow]")
+                            else:
+                                console.print(f"  [green]Attached:[/green] {att['name']} ({att['type']})")
+                        except Exception as e:
+                            print_error(str(e))
+
+                elif cmd == "/files":
+                    if staged_files:
+                        for f in staged_files:
+                            console.print(f"  📎 {f['name']} ({f['type']})")
+                    else:
+                        console.print("  No files staged.")
+
+                elif cmd == "/detach":
+                    staged_files.clear()
+                    console.print("  Attachments cleared.")
+
                 else:
                     print(f"Unknown command: {cmd}. Type /help for options.")
 
                 continue
 
-            _render_stream(orchestrator, user_input)
+            _render_stream(orchestrator, user_input, attachments=staged_files or None)
+            staged_files = []
 
         except KeyboardInterrupt:
             print("\nGoodbye!")

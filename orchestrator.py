@@ -31,7 +31,7 @@ class ChatOrchestrator:
             })
             self.system_prompt_added = True
 
-    def stream_chat(self, user_message: str) -> Iterator[Dict]:
+    def stream_chat(self, user_message: str, attachments=None) -> Iterator[Dict]:
         """
         Process a user message and yield events for consumers (CLI, web).
 
@@ -41,9 +41,40 @@ class ChatOrchestrator:
           {"type": "search_start", "query": "..."}
           {"type": "search_done", "query": "...", "count": N, "results": [...]}
           {"type": "done", "content": "..."}
+          {"type": "warning", "message": "..."}
           {"type": "error", "message": "..."}
+
+        attachments: list of dicts from file_handler.load_file() / load_file_bytes()
+          {"type": "text"|"image", "name": str, "content": str, "warning": str|None}
         """
-        self.conversation_history.append({"role": "user", "content": user_message})
+        # Emit any per-file warnings (e.g. scanned PDF, truncation)
+        if attachments:
+            for att in attachments:
+                if att.get("warning"):
+                    yield {"type": "warning", "message": att["warning"]}
+
+        # Build the user message: prepend text attachments, collect images
+        full_message = user_message
+        images = []
+        if attachments:
+            text_parts = [
+                f"[File: {att['name']}]\n{att['content']}\n---"
+                for att in attachments
+                if att["type"] == "text" and att["content"]
+            ]
+            images = [
+                att["content"]
+                for att in attachments
+                if att["type"] == "image"
+            ]
+            if text_parts:
+                full_message = '\n\n'.join(text_parts) + '\n\n' + user_message
+
+        user_msg: Dict = {"role": "user", "content": full_message}
+        if images:
+            user_msg["images"] = images
+
+        self.conversation_history.append(user_msg)
 
         for step in range(MAX_TOOL_STEPS):
             yield {"type": "thinking"}

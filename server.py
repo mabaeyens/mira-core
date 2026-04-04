@@ -6,13 +6,16 @@ import logging
 import threading
 from contextlib import asynccontextmanager
 
+from typing import List
+
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Form, UploadFile, File
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+import file_handler
 from config import VERBOSE_DEFAULT
 from orchestrator import ChatOrchestrator
 
@@ -37,10 +40,6 @@ app = FastAPI(title="ollama Search Tool", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
-class ChatRequest(BaseModel):
-    message: str
-
-
 class VerboseRequest(BaseModel):
     enabled: bool
 
@@ -51,15 +50,32 @@ async def index():
 
 
 @app.post("/chat")
-async def chat(request: ChatRequest):
+async def chat(
+    message: str = Form(...),
+    files: List[UploadFile] = File(default=[]),
+):
     """SSE endpoint — streams typed events from stream_chat() to the browser."""
+    # Read uploaded files before entering the background thread
+    attachments = []
+    for upload in files:
+        data = await upload.read()
+        try:
+            att = file_handler.load_file_bytes(upload.filename, data)
+            attachments.append(att)
+        except Exception as e:
+            logger.warning(f"Could not process uploaded file '{upload.filename}': {e}")
+            attachments.append({
+                "type": "text", "name": upload.filename, "content": "",
+                "warning": f"Could not process '{upload.filename}': {e}"
+            })
+
     async def event_stream():
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
 
         def produce():
             try:
-                for event in orchestrator.stream_chat(request.message):
+                for event in orchestrator.stream_chat(message, attachments=attachments or None):
                     loop.call_soon_threadsafe(queue.put_nowait, event)
             except Exception as e:
                 loop.call_soon_threadsafe(

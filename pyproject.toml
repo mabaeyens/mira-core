@@ -11,6 +11,9 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "sse-starlette>=2.0.0",
+    "pymupdf>=1.27.2.2",
+    "beautifulsoup4>=4.14.3",
+    "python-multipart>=0.0.22",
 ]
 
 [dependency-groups]

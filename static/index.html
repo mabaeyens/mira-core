@@ -274,6 +274,20 @@
       align-self: flex-start;
     }
 
+    /* ── Warning chip ── */
+    .warning-msg {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      color: #92400e;
+      font-size: 12px;
+      padding: 5px 10px;
+      border-radius: 99px;
+      align-self: flex-start;
+    }
+
     /* ── Input area ── */
     footer {
       background: var(--surface);
@@ -282,13 +296,66 @@
       flex-shrink: 0;
     }
 
-    .input-row {
+    .input-wrapper {
       max-width: 760px;
       margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    /* File chips row */
+    #fileChips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .file-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 99px;
+      padding: 3px 10px 3px 8px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .file-chip button {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--text-muted);
+      font-size: 13px;
+      padding: 0;
+      line-height: 1;
+    }
+
+    .file-chip button:hover { color: var(--text); }
+
+    .input-row {
       display: flex;
       gap: 10px;
       align-items: flex-end;
     }
+
+    #attachBtn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 9px 11px;
+      font-size: 16px;
+      cursor: pointer;
+      flex-shrink: 0;
+      color: var(--text-muted);
+      transition: border-color 0.15s, color 0.15s;
+      line-height: 1;
+    }
+
+    #attachBtn:hover { border-color: var(--accent); color: var(--accent); }
+    #attachBtn:disabled { opacity: 0.4; cursor: default; }
 
     #input {
       flex: 1;
@@ -366,9 +433,15 @@
 </div>
 
 <footer>
-  <div class="input-row">
-    <textarea id="input" placeholder="Ask anything… (Enter to send, Shift+Enter for newline)" rows="1"></textarea>
-    <button id="sendBtn">Send</button>
+  <div class="input-wrapper">
+    <div id="fileChips" style="display:none"></div>
+    <div class="input-row">
+      <button id="attachBtn" title="Attach file">📎</button>
+      <input type="file" id="fileInput" hidden multiple
+        accept=".pdf,.html,.htm,.txt,.md,.py,.js,.ts,.json,.csv,.png,.jpg,.jpeg,.gif,.webp">
+      <textarea id="input" placeholder="Ask anything… (Enter to send, Shift+Enter for newline)" rows="1"></textarea>
+      <button id="sendBtn">Send</button>
+    </div>
   </div>
 </footer>
 
@@ -383,8 +456,12 @@
   const verboseChk  = document.getElementById('verboseToggle');
   const welcomeEl   = document.getElementById('welcome');
   const modelBadge  = document.getElementById('modelBadge');
+  const attachBtn   = document.getElementById('attachBtn');
+  const fileInput   = document.getElementById('fileInput');
+  const fileChipsEl = document.getElementById('fileChips');
 
   let isStreaming = false;
+  let stagedFiles = []; // File objects staged for the next send
 
   // ── Fetch initial status ─────────────────────────────────────────────────
   fetch('/status').then(r => r.json()).then(s => {
@@ -426,6 +503,38 @@
     });
   });
 
+  // ── File attach ───────────────────────────────────────────────────────────
+  attachBtn.addEventListener('click', () => fileInput.click());
+
+  fileInput.addEventListener('change', () => {
+    for (const file of fileInput.files) {
+      if (!stagedFiles.find(f => f.name === file.name)) {
+        stagedFiles.push(file);
+      }
+    }
+    fileInput.value = ''; // reset so same file can be re-added after removal
+    renderFileChips();
+  });
+
+  function renderFileChips() {
+    fileChipsEl.innerHTML = '';
+    if (stagedFiles.length === 0) {
+      fileChipsEl.style.display = 'none';
+      return;
+    }
+    fileChipsEl.style.display = 'flex';
+    stagedFiles.forEach((file, idx) => {
+      const chip = document.createElement('div');
+      chip.className = 'file-chip';
+      chip.innerHTML = `📎 ${escapeHtml(file.name)} <button aria-label="Remove">✕</button>`;
+      chip.querySelector('button').addEventListener('click', () => {
+        stagedFiles.splice(idx, 1);
+        renderFileChips();
+      });
+      fileChipsEl.appendChild(chip);
+    });
+  }
+
   // ── DOM helpers ───────────────────────────────────────────────────────────
   function addMessage(role, html) {
     welcomeEl.style.display = 'none';
@@ -461,14 +570,26 @@
   // ── Send & stream ─────────────────────────────────────────────────────────
   async function sendMessage() {
     const text = inputEl.value.trim();
-    if (!text) return;
+    if (!text && stagedFiles.length === 0) return;
 
     inputEl.value = '';
     inputEl.style.height = 'auto';
-    setStreaming(true);
 
-    // User bubble
-    addMessage('user', escapeHtml(text));
+    // Build user bubble: optional file chips + text
+    const filesToSend = [...stagedFiles];
+    stagedFiles = [];
+    renderFileChips();
+
+    let userHtml = '';
+    if (filesToSend.length > 0) {
+      userHtml += filesToSend.map(f =>
+        `<div class="file-chip" style="margin-bottom:6px">📎 ${escapeHtml(f.name)}</div>`
+      ).join('');
+    }
+    if (text) userHtml += escapeHtml(text);
+    addMessage('user', userHtml);
+
+    setStreaming(true);
 
     // Thinking indicator
     let thinkingEl = addStatusChip('thinking', '<span></span><span></span><span></span>');
@@ -478,11 +599,12 @@
     let currentSearchChip = null;
 
     try {
-      const response = await fetch('/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text })
-      });
+      // Use FormData so files can be included
+      const form = new FormData();
+      form.append('message', text || ' ');
+      for (const file of filesToSend) form.append('files', file);
+
+      const response = await fetch('/chat', { method: 'POST', body: form });
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -494,7 +616,7 @@
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
-        buffer = lines.pop(); // keep incomplete line
+        buffer = lines.pop();
 
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
@@ -514,7 +636,6 @@
       switch (event.type) {
 
         case 'thinking':
-          // Re-show thinking if it was removed (multi-step)
           if (!thinkingEl) {
             thinkingEl = addStatusChip('thinking', '<span></span><span></span><span></span>');
           }
@@ -534,7 +655,6 @@
 
         case 'search_start':
           removeThinking();
-          // Finalise any partial answer before showing search
           if (assistantBubble) {
             assistantBubble.innerHTML = marked.parse(rawContent);
             assistantBubble = null;
@@ -556,8 +676,11 @@
               `${icon} ${label} for <strong>${escapeHtml(event.query)}</strong>`;
             currentSearchChip = null;
           }
-          // New thinking indicator for the synthesis step
           thinkingEl = addStatusChip('thinking', '<span></span><span></span><span></span>');
+          break;
+
+        case 'warning':
+          addStatusChip('warning-msg', `⚠️ ${escapeHtml(event.message)}`);
           break;
 
         case 'done':
@@ -592,6 +715,7 @@
     isStreaming = val;
     sendBtn.disabled = val;
     inputEl.disabled = val;
+    attachBtn.disabled = val;
   }
 
   function escapeHtml(str) {
