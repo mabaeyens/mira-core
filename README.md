@@ -50,6 +50,27 @@ uv run pytest                                              # all tests
 uv run pytest tests/test_queries.py::test_toggle_verbose  # single test
 ```
 
+## Roadmap
+
+### Web Interface (planned)
+Replace the CLI with a local browser UI that provides streaming responses with proper markdown rendering, matching the feel of claude.ai.
+
+**Approach:** FastAPI backend exposing a Server-Sent Events (SSE) endpoint that pipes Ollama token stream to the browser. Vanilla HTML/JS frontend with `marked.js` for incremental markdown rendering. No build step, no npm.
+
+Key pieces:
+- `server.py` — FastAPI app with `/chat` SSE endpoint and `/static` file serving
+- `static/index.html` — chat UI consuming the SSE stream
+- Reuses existing `ChatOrchestrator` with minimal changes
+
+### File Attachments (planned, after web interface)
+Allow attaching files to queries so the model can reason over local documents.
+
+- **Images**: Gemma 4 is natively multimodal — pass image bytes directly to Ollama
+- **Text / code files**: Extract content and inject into the conversation context
+- **Large documents (PDFs)**: Requires RAG — chunk, embed with `sentence-transformers`, store in ChromaDB, retrieve relevant sections per query
+
+---
+
 ## Configuration
 
 All settings are in `config.py`:

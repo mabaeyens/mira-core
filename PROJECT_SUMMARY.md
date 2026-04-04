@@ -123,13 +123,31 @@ ollama_web_search/
 
 ## 7. Next Steps for Development
 
-1. **Initialize Environment**: Run `uv venv --python 3.12 && source .venv/bin/activate && uv sync`.
-2. **Verify Ollama**: Ensure `ollama serve` is running and `gemma4:26b` is available.
-3. **Run First Test**: Execute `uv run python main.py`.
-4. **Iterate**:
-   - If search fails, check `search_engine.py` logs.
-   - If model refuses to search, refine `prompts.py`.
-   - If UI needs adjustment, tweak `formatter.py`.
+### Phase 1 — Web Interface
+Replace the CLI with a local browser UI delivering streaming responses with proper markdown rendering.
+
+**Architecture:**
+- `server.py` — FastAPI app with a `/chat` SSE endpoint that pipes the Ollama token stream to the browser, and `/static` serving for the frontend
+- `static/index.html` — Single-page chat UI in vanilla HTML/JS consuming the SSE stream; `marked.js` for incremental markdown rendering
+- `ChatOrchestrator` reused almost unchanged; streaming already implemented
+
+**Why FastAPI + SSE over alternatives:**
+- Gradio/Streamlit: faster to build but generic UI, harder to customise for file uploads later
+- React frontend: better long-term but adds a build step and npm dependency
+- FastAPI + plain HTML: no build step, full control, straightforward to extend
+
+**Effort estimate:** ~1 day
+
+### Phase 2 — File Attachments (requires web interface)
+Allow attaching files to queries so the model can reason over local content.
+
+| File type | Approach |
+|-----------|----------|
+| Images | Gemma 4 is natively multimodal — pass image bytes directly to Ollama |
+| Text / code | Extract content, inject into conversation context |
+| Large PDFs | RAG: chunk → embed (`sentence-transformers`) → store (ChromaDB) → retrieve relevant sections per query |
+
+**Effort estimate:** images ~half day; text files ~half day; PDF RAG ~2 days
 
 ## 8. Notes for Claude Code Context
 
