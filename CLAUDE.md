@@ -107,3 +107,17 @@ Tests cover: search trigger behaviour, search_done event payload, verbose toggle
 - `ChatOrchestrator` must remain display-agnostic — no print/console calls in `orchestrator.py`.
 - Tests mock `_call_ollama`, not higher-level methods. Mock chunks need `.message.content`, `.message.tool_calls`, `.done`.
 - ChromaDB `EphemeralClient` in `rag_engine.py` uses UUID collection names — required because ChromaDB 1.x shares a Rust backend per process; fixed collection names cause collisions in tests.
+
+## Working style
+
+**Proceed without confirmation** for file edits and git operations (add, commit, push) on this repo. It is a private local project with no destructive risk.
+
+**After any non-trivial fix, write a test before closing the session.** The web search tool-call bug (accumulated_tool_calls) had no offline reproduction path — a mock-based test would have validated it in the same session.
+
+**Distinguish bug classes early:**
+- Empty/wrong response → likely a code bug (streaming, tool call handling, SSE)
+- Model gives a poor answer despite having data → prompt engineering, not code
+
+**Gemma4 quirks to keep in mind:**
+- Emits `tool_calls` in an intermediate streaming chunk (`done=False`), not in the final `done=True` chunk — the `accumulated_tool_calls` pattern in `orchestrator.py` handles this.
+- Occasionally emits LaTeX math notation (e.g. `$\rightarrow$`) — `preprocessLatex()` in `index.html` converts common commands to Unicode before rendering.
