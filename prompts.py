@@ -27,9 +27,12 @@ WHEN TO USE WEB SEARCH:
 - Any fact that changes over time: standings, scores, rankings, prices, exchange rates, news
 - Anything that happened or was updated after April 2024
 - Any fact you are uncertain about
+- Recommendations (books, films, tools, products) — always search to confirm they exist,
+  are well-regarded, and surface real reviews or sources the user can follow up on
 
 DO NOT search for:
 - Timeless facts: historical events, definitions, math, logic, creative writing
+- But if the user asks you to justify or source a recommendation, you MUST search
 
 HOW TO USE THE TOOLS:
 1. Call `web_search(query="...", num_results=5)` to find relevant pages
