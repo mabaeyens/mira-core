@@ -790,18 +790,20 @@
         case 'search_done': {
           setStatus('Thinking…');
           if (currentSearchChip) {
+            const chip = currentSearchChip;
+            currentSearchChip = null;
+
             const icon = event.count > 0 ? '✅' : '⚠️';
             const label = event.count > 0
               ? `Found ${event.count} result${event.count !== 1 ? 's' : ''}`
               : 'No results';
-            currentSearchChip.innerHTML =
+            chip.innerHTML =
               `${icon} ${label} for <strong>${escapeHtml(event.query)}</strong> ▾`;
 
             if (event.results && event.results.length > 0) {
-              currentSearchChip.classList.add('clickable');
+              chip.classList.add('clickable');
 
-              // Build collapsible sources list as sibling inside the same .message wrapper
-              const wrapper = currentSearchChip.closest('.message');
+              const wrapper = chip.closest('.message');
               const sourcesList = document.createElement('div');
               sourcesList.className = 'sources-list';
               event.results.forEach(r => {
@@ -815,15 +817,13 @@
               });
               wrapper.appendChild(sourcesList);
 
-              currentSearchChip.addEventListener('click', () => {
+              chip.addEventListener('click', () => {
                 sourcesList.classList.toggle('open');
                 const open = sourcesList.classList.contains('open');
-                currentSearchChip.innerHTML =
+                chip.innerHTML =
                   `${icon} ${label} for <strong>${escapeHtml(event.query)}</strong> ${open ? '▴' : '▾'}`;
               });
             }
-
-            currentSearchChip = null;
           }
           thinkingEl = addStatusChip('thinking', '<div class="t-spinner"></div> Thinking…');
           break;
