@@ -149,7 +149,11 @@ Allow attaching files to queries so the model can reason over local content.
 
 **Effort estimate:** images ~half day; text files ~half day; PDF RAG ~2 days
 
-## 8. Notes for Claude Code Context
+## 8. Backlog / Open Decisions
+
+- **CLI: streaming vs markdown rendering** — Current CLI streams raw tokens (typewriter effect, no markdown). Once the web interface is live, revisit: either revert CLI to blocking + markdown, or implement a buffered approach that streams silently then renders with Rich Markdown. Deferred until web UI is done.
+
+## 9. Notes for Claude Code Context
 
 - Do not suggest `pip` or `venv`; always use `uv`.
 - Do not suggest cloud APIs; keep search local/free.
