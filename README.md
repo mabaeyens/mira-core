@@ -26,8 +26,14 @@ uv sync
 
 ## Running
 
+**CLI:**
 ```bash
-uv run python main.py
+python main.py
+```
+
+**Web interface** (open `http://localhost:8000` in your browser):
+```bash
+python server.py
 ```
 
 ## CLI Commands
