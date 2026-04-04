@@ -112,17 +112,53 @@ ollama-web-search/
 ## 7. Roadmap
 
 ### Phase 2 — File Attachments
-Allow attaching files to queries so the model can reason over local content.
 
-| File type | Approach | Effort |
-|-----------|----------|--------|
-| Images | Gemma 4 is natively multimodal — pass image bytes to Ollama | ~half day |
-| Text / code | Extract content, inject into conversation context | ~half day |
-| Large PDFs | RAG: chunk → embed (`sentence-transformers`) → store (ChromaDB) → retrieve relevant sections | ~2 days |
+Allow attaching files (PDF, HTML, images) to queries so the model can reason over local content.
+
+#### Supported file types
+
+| File type | Extraction | Ollama API |
+|-----------|-----------|------------|
+| Images (PNG, JPG, …) | Raw bytes → base64 | `images` field on the message dict |
+| HTML | BeautifulSoup → readable text | Prepended to user message content |
+| Text / code | Read as-is | Prepended to user message content |
+| PDF (text-based) | `pdfplumber` → text | Prepended to user message content |
+| PDF (scanned) | No text layer — warn user; optionally send pages as images | Image path or skip |
+
+#### Non-obvious constraints to keep in mind
+
+1. **Ollama multimodal format** — images can't be appended as text. The message must carry `"images": ["<base64>"]`. `stream_chat()` signature must change to accept attachments.
+2. **HTML must be parsed** — injecting raw HTML is wasteful and confusing for the model. Strip tags with BeautifulSoup.
+3. **Scanned PDFs have no extractable text** — detect the empty-text case and warn or fall back to the image path.
+4. **Context window guard** — large documents can overflow the 128k context. Truncate with a warning above a threshold (~80k chars). RAG is the right path for very large documents (Phase 3).
+5. **File persistence across turns** — decide: inject once and leave in `conversation_history` (stays for whole session), or inject per message (single-turn). Default: single-turn (appended to the user message, not stored separately).
+6. **Web UI upload mechanism** — `/chat` currently accepts `{"message": str}`. Files require multipart form data or a separate `/upload` endpoint. Multipart is simpler.
+7. **CLI attach UX** — use `/attach <path>` to stage a file for the next message; cleared after each turn. Show staged file in the prompt.
+
+#### Implementation steps
+
+| Step | What | Files touched |
+|------|------|---------------|
+| 1 | `file_handler.py` — extract text from PDF/HTML/text; return base64 for images; detect scanned PDFs | new file |
+| 2 | `orchestrator.py` — `stream_chat(user_message, attachments=None)`; prepend text content; add `images` key for image attachments | `orchestrator.py` |
+| 3 | CLI `/attach <path>` command; staged file cleared after each turn; show in prompt | `main.py` |
+| 4 | Web UI file input button + chip display; change `/chat` to accept multipart form data | `server.py`, `static/index.html` |
+| 5 | Context size guard — truncate + warn if extracted content exceeds threshold | `file_handler.py` or `orchestrator.py` |
+
+#### New dependencies
+
+```
+pdfplumber      # PDF text extraction
+beautifulsoup4  # HTML stripping
+```
+
+### Phase 3 — RAG for large PDFs (future)
+
+For documents too large to inject in full: chunk → embed (`sentence-transformers`) → store (ChromaDB) → retrieve relevant sections per query. Separate effort, not part of Phase 2.
 
 ## 8. Backlog / Open Decisions
 
-- **CLI: streaming vs markdown rendering** — Current CLI streams raw tokens (typewriter effect, no markdown). Now that the web interface is live with proper markdown, revisit: either revert CLI to blocking + markdown, or implement a buffered approach that streams silently then renders with Rich Markdown.
+- **CLI markdown rendering** — Resolved: CLI now buffers tokens and renders the full answer with Rich Markdown (`03c7bf1`).
 
 ## 9. Notes for Claude Code Context
 
