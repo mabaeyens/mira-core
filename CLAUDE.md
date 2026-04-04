@@ -77,6 +77,12 @@ static/index.html — single-page web UI (vanilla HTML/CSS/JS + marked.js)
 
 **RAG flow:** PDFs always go through RAG. HTML/text > 80k chars also go through RAG. On every turn, if the RAG index is non-empty, `rag_engine.query()` retrieves and reranks chunks; those scoring > 0.0 are prepended to the user message as `[Relevant document sections]`.
 
+**RAG score threshold bypass (anti-hallucination):** `rag_engine.query()` normally drops chunks scoring ≤ `RAG_SCORE_THRESHOLD` (default 0.0) after CrossEncoder reranking. This prevents injecting irrelevant context — but it creates a silent failure when the user's message is a meta-instruction like "summarize this" or "translate this to English". Those phrases embed nothing like document content, so all chunks score negative and get dropped. The model receives zero context and hallucinates that no file was attached.
+
+Fix in `orchestrator.py`: when any RAG file was indexed in the current turn (`rag_indexed_this_turn = True`), `query()` is called with `score_threshold=float('-inf')`, retrieving top-K chunks unconditionally. On subsequent turns the normal threshold applies. The intent: the user explicitly attached a file this turn, so we must always give the model *something* from it, even if the query is oblique.
+
+Do not remove this bypass. The hallucination it prevents ("No has adjuntado ningún artículo") is worse than occasionally injecting a lower-quality chunk.
+
 **Search:** Ollama native search disabled (`USE_NATIVE_SEARCH = False`) — requires paid subscription. DuckDuckGo (`ddgs`) is active.
 
 ## Configuration
