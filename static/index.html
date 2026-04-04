@@ -771,6 +771,28 @@
           thinkingEl = addStatusChip('thinking', '<div class="t-spinner"></div> Thinking…');
           break;
 
+        case 'fetch_start': {
+          removeThinking();
+          const shortUrl = (() => { try { return new URL(event.url).hostname; } catch { return event.url; } })();
+          setStatus(`Reading: ${shortUrl}`);
+          currentSearchChip = addStatusChip(
+            'search-status',
+            `<span class="spinner"></span> Reading: <strong>${escapeHtml(shortUrl)}</strong>`
+          );
+          break;
+        }
+
+        case 'fetch_done':
+          setStatus('Thinking…');
+          if (currentSearchChip) {
+            const shortUrl = (() => { try { return new URL(event.url).hostname; } catch { return event.url; } })();
+            currentSearchChip.innerHTML =
+              `✅ Read ${(event.chars / 1000).toFixed(1)}k chars — <strong>${escapeHtml(shortUrl)}</strong>`;
+            currentSearchChip = null;
+          }
+          thinkingEl = addStatusChip('thinking', '<div class="t-spinner"></div> Thinking…');
+          break;
+
         case 'rag_indexing':
           removeThinking();
           setStatus(`Indexing: ${event.name}`);

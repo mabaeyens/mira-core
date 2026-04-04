@@ -9,6 +9,7 @@ from tools import TOOLS
 from prompts import build_system_prompt, SEARCH_RESULT_TEMPLATE
 from search_engine import SearchEngine
 from rag_engine import RagEngine
+import url_fetcher
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,8 @@ class ChatOrchestrator:
           {"type": "token", "content": "..."}
           {"type": "search_start", "query": "..."}
           {"type": "search_done", "query": "...", "count": N, "results": [...]}
+          {"type": "fetch_start", "url": "..."}
+          {"type": "fetch_done", "url": "...", "chars": N}
           {"type": "done", "content": "..."}
           {"type": "warning", "message": "..."}
           {"type": "error", "message": "..."}
@@ -188,6 +191,20 @@ class ChatOrchestrator:
                         query=query,
                         results_text=self.search_engine.get_search_summary(results)
                     )
+                })
+            elif tool_call.function.name == "fetch_url":
+                url = tool_call.function.arguments.get("url", "")
+
+                yield {"type": "fetch_start", "url": url}
+
+                content = url_fetcher.fetch_url(url)
+
+                yield {"type": "fetch_done", "url": url, "chars": len(content)}
+
+                self.conversation_history.append({
+                    "role": "tool",
+                    "name": tool_call.function.name,
+                    "content": content
                 })
             else:
                 logger.warning(f"Unknown tool: {tool_call.function.name}")

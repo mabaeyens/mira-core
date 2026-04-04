@@ -23,4 +23,26 @@ SEARCH_TOOL = {
     }
 }
 
-TOOLS = [SEARCH_TOOL]
+FETCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "fetch_url",
+        "description": (
+            "Fetch the full text content of a web page. "
+            "Use this when a web_search result looks relevant but the snippet "
+            "is too short to answer the question — fetch the page to read the details."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The full URL to fetch"
+                }
+            },
+            "required": ["url"]
+        }
+    }
+}
+
+TOOLS = [SEARCH_TOOL, FETCH_TOOL]
