@@ -865,8 +865,28 @@
     statusText.textContent = label;
   }
 
+  // Replace common LaTeX inline math with Unicode before markdown parsing.
+  // marked.js has no LaTeX support, so $\rightarrow$ etc. render as literal text.
+  const LATEX_MAP = {
+    'rightarrow': '→', 'Rightarrow': '⇒',
+    'leftarrow': '←', 'Leftarrow': '⇐',
+    'leftrightarrow': '↔', 'Leftrightarrow': '⇔',
+    'uparrow': '↑', 'downarrow': '↓',
+    'to': '→', 'gets': '←',
+    'times': '×', 'div': '÷', 'pm': '±',
+    'leq': '≤', 'geq': '≥', 'neq': '≠', 'approx': '≈',
+    'infty': '∞', 'cdot': '·', 'ldots': '…',
+    'alpha': 'α', 'beta': 'β', 'gamma': 'γ', 'delta': 'δ',
+    'theta': 'θ', 'lambda': 'λ', 'mu': 'μ', 'pi': 'π',
+    'sigma': 'σ', 'phi': 'φ', 'omega': 'ω',
+  };
+  function preprocessLatex(text) {
+    // $\command$ → unicode
+    return text.replace(/\$\\(\w+)\$/g, (_, cmd) => LATEX_MAP[cmd] || `$\\${cmd}$`);
+  }
+
   function renderMarkdown(text) {
-    try { return marked.parse(text); } catch { return `<pre>${escapeHtml(text)}</pre>`; }
+    try { return marked.parse(preprocessLatex(text)); } catch { return `<pre>${escapeHtml(text)}</pre>`; }
   }
 
   function escapeHtml(str) {
