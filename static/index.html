@@ -1273,12 +1273,18 @@
   }
 
   // Auto-scroll unless the user has scrolled up to read earlier content.
-  // "pinned" = user is within 80px of the bottom → keep following the stream.
+  // scrollPinned = true  → follow the stream (user is near the bottom)
+  // scrollPinned = false → user scrolled up; leave them alone
+  //
+  // isAutoScrolling guards against our own programmatic scrollTop changes
+  // firing the scroll listener and incorrectly flipping scrollPinned.
   let scrollPinned = true;
+  let isAutoScrolling = false;
 
   (function initScrollTracking() {
     const chat = document.getElementById('chat');
     chat.addEventListener('scroll', () => {
+      if (isAutoScrolling) return;
       const distFromBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
       scrollPinned = distFromBottom < 80;
     }, { passive: true });
@@ -1287,7 +1293,10 @@
   function scrollToBottom() {
     if (!scrollPinned) return;
     const chat = document.getElementById('chat');
+    isAutoScrolling = true;
     chat.scrollTop = chat.scrollHeight;
+    // Turn off the guard after any queued scroll events have fired.
+    requestAnimationFrame(() => requestAnimationFrame(() => { isAutoScrolling = false; }));
   }
 
   // ── Send & stream ─────────────────────────────────────────────────────────
@@ -1542,8 +1551,6 @@
             pendingRagContext = null;
           }
           rawContent = '';
-          scrollPinned = true;   // re-pin after stream ends
-          scrollToBottom();
           break;
         }
 
