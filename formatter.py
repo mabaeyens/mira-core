@@ -20,6 +20,26 @@ def print_rule():
     console.print(Rule(style="dim"))
     console.print()
 
+
+def print_stats_rule(in_tokens: int, out_tokens: int, ctx_pct: int):
+    """Print a horizontal rule with token stats embedded — mirrors Claude Code status line."""
+    def _k(n: int) -> str:
+        return f"{(n + 500) // 1000}k"
+
+    in_k = _k(in_tokens)
+    out_k = _k(out_tokens)
+
+    if ctx_pct > 70:
+        ctx_markup = f"[bold white on grey7]ctx:{ctx_pct}%[/bold white on grey7]"
+    elif ctx_pct > 55:
+        ctx_markup = f"[bold white on red]ctx:{ctx_pct}%[/bold white on red]"
+    else:
+        ctx_markup = f"[orange3]ctx:{ctx_pct}%[/orange3]"
+
+    console.print()
+    console.print(Rule(f"[dim]↑{in_k} ↓{out_k}[/dim]  {ctx_markup}", style="dim"))
+    console.print()
+
 def print_search_status(query: str, status: str = "Searching..."):
     """Print search status with emoji."""
     icon = "✅" if "found" in status.lower() else "❌"

@@ -4,7 +4,7 @@ import logging
 from typing import List, Dict, Optional, Iterator
 
 import ollama
-from config import MODEL_NAME, MAX_RETRIES, MAX_TOOL_STEPS, VERBOSE_DEFAULT, RAG_MAX_CHUNKS
+from config import MODEL_NAME, MAX_RETRIES, MAX_TOOL_STEPS, VERBOSE_DEFAULT, RAG_MAX_CHUNKS, CONTEXT_WINDOW
 from tools import TOOLS
 from prompts import build_system_prompt, SEARCH_RESULT_TEMPLATE
 from search_engine import SearchEngine
@@ -24,6 +24,9 @@ class ChatOrchestrator:
         self.rag_engine = RagEngine()
         self.conversation_history: List[Dict] = []
         self.system_prompt_added = False
+        self.total_input_tokens: int = 0   # cumulative prompt tokens this session
+        self.total_output_tokens: int = 0  # cumulative generated tokens this session
+        self.last_prompt_tokens: int = 0   # most recent prompt size (for context %)
         self._add_system_prompt()
 
     def _add_system_prompt(self):
@@ -150,6 +153,14 @@ class ChatOrchestrator:
                                 final_message = final_message.model_copy(
                                     update={"tool_calls": accumulated_tool_calls}
                                 )
+                            # Capture token counts — only present in the done=True chunk
+                            p = getattr(chunk, 'prompt_eval_count', None)
+                            e = getattr(chunk, 'eval_count', None)
+                            if isinstance(p, int):
+                                self.last_prompt_tokens = p
+                                self.total_input_tokens += p
+                            if isinstance(e, int):
+                                self.total_output_tokens += e
                     break
                 except Exception as e:
                     if full_content:
@@ -187,6 +198,12 @@ class ChatOrchestrator:
                             for c in rag_chunks
                         ],
                     }
+                yield {
+                    "type": "stats",
+                    "input_tokens": self.total_input_tokens,
+                    "output_tokens": self.total_output_tokens,
+                    "context_pct": self.context_pct,
+                }
                 yield {"type": "done", "content": full_content}
                 return
 
@@ -256,9 +273,19 @@ class ChatOrchestrator:
         print(f"Verbose mode {status}.")
         return self.verbose
 
+    @property
+    def context_pct(self) -> int:
+        """Current context window usage as a percentage (0–100)."""
+        if not CONTEXT_WINDOW or self.last_prompt_tokens == 0:
+            return 0
+        return min(100, round(self.last_prompt_tokens / CONTEXT_WINDOW * 100))
+
     def reset_conversation(self):
         self.conversation_history = []
         self.system_prompt_added = False
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.last_prompt_tokens = 0
         self._add_system_prompt()
         self.rag_engine.clear()
         print("Conversation reset.")

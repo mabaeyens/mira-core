@@ -77,6 +77,7 @@ static/index.html — single-page web UI (vanilla HTML/CSS/JS + marked.js)
 | `rag_indexing` | `name` | Document being indexed into RAG |
 | `rag_done` | `name, chunks` | Indexing complete |
 | `rag_context` | `chunks` | RAG chunks injected this turn; `chunks` is a list of `{source, score, preview}` — emitted right before `done` so the UI can render a "document sections used" panel |
+| `stats` | `input_tokens, output_tokens, context_pct` | Cumulative session token counts and context window % — emitted just before `done`; drives status line in CLI and web UI |
 | `warning` | `message` | Non-fatal issue (scanned PDF, chunk limit) |
 | `done` | `content` | Turn complete, full answer |
 | `error` | `message` | Fatal error |

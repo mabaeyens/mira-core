@@ -173,6 +173,9 @@ async def status():
         "model": orchestrator.model,
         "verbose": orchestrator.verbose,
         "history_length": len(orchestrator.conversation_history),
+        "input_tokens": orchestrator.total_input_tokens,
+        "output_tokens": orchestrator.total_output_tokens,
+        "context_pct": orchestrator.context_pct,
     }
 
 

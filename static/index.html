@@ -72,6 +72,21 @@
       font-family: "SF Mono", "Fira Code", monospace;
     }
 
+    /* ── Status line badges (token counts + context %) ── */
+    .stat-badge {
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 11px;
+      font-weight: 500;
+      padding: 2px 8px;
+      border-radius: 99px;
+      background: var(--code-bg);
+      color: var(--text-muted);
+      transition: background 0.3s, color 0.3s;
+      white-space: nowrap;
+    }
+    .stat-badge.ctx-warn   { background: #dc2626; color: #fff; }
+    .stat-badge.ctx-danger { background: #1f2937; color: #fff; }
+
     .header-right {
       display: flex;
       align-items: center;
@@ -667,6 +682,8 @@
     <span class="model-badge" id="modelBadge">gemma4:26b</span>
   </div>
   <div class="header-right">
+    <span class="stat-badge" id="tokenBadge" title="Total session tokens: input / output">↑0k ↓0k</span>
+    <span class="stat-badge" id="ctxBadge" title="Context window usage (64k)">ctx:0%</span>
     <label class="verbose-label">
       <input type="checkbox" id="verboseToggle"> Verbose
     </label>
@@ -723,6 +740,8 @@
   const verboseChk  = document.getElementById('verboseToggle');
   const welcomeEl   = document.getElementById('welcome');
   const modelBadge  = document.getElementById('modelBadge');
+  const tokenBadge  = document.getElementById('tokenBadge');
+  const ctxBadge    = document.getElementById('ctxBadge');
   const attachBtn      = document.getElementById('attachBtn');
   const pathBtn        = document.getElementById('pathBtn');
   const pathInputRow   = document.getElementById('pathInputRow');
@@ -743,10 +762,22 @@
   // Buffered per-turn — set on rag_context event, consumed and appended in done handler
   let pendingRagContext = null;
 
+  // ── Status line helpers ───────────────────────────────────────────────────
+  function fmtK(n) { return Math.round(n / 1000) + 'k'; }
+
+  function updateStats(inputTokens, outputTokens, ctxPct) {
+    tokenBadge.textContent = `↑${fmtK(inputTokens)} ↓${fmtK(outputTokens)}`;
+    ctxBadge.textContent = `ctx:${ctxPct}%`;
+    ctxBadge.className = 'stat-badge';
+    if (ctxPct > 70)      ctxBadge.classList.add('ctx-danger');
+    else if (ctxPct > 55) ctxBadge.classList.add('ctx-warn');
+  }
+
   // ── Fetch initial status ─────────────────────────────────────────────────
   fetch('/status').then(r => r.json()).then(s => {
     modelBadge.textContent  = s.model;
     verboseChk.checked      = s.verbose;
+    updateStats(s.input_tokens || 0, s.output_tokens || 0, s.context_pct || 0);
   }).catch(() => {});
 
   // ── Auto-resize textarea ─────────────────────────────────────────────────
@@ -774,6 +805,7 @@
     welcomeEl.style.display = '';
     ragDocuments.clear();
     renderRagDocs();
+    updateStats(0, 0, 0);
   });
 
   // ── Stop ─────────────────────────────────────────────────────────────────
@@ -1190,6 +1222,10 @@
         case 'rag_context':
           // Buffer chunks; the panel is appended below the answer bubble in 'done'
           pendingRagContext = event.chunks;
+          break;
+
+        case 'stats':
+          updateStats(event.input_tokens, event.output_tokens, event.context_pct);
           break;
 
         case 'heartbeat':

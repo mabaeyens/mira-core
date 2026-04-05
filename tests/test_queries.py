@@ -317,3 +317,59 @@ def test_rag_score_threshold_bypassed_for_same_turn_attachment(orchestrator):
         _, kwargs = mock_query.call_args
         assert kwargs.get("score_threshold") == float('-inf'), \
             "score_threshold must be -inf when RAG files indexed this turn"
+
+
+# ── Stats event tests ────────────────────────────────────────────────────────
+
+def test_stats_event_emitted_before_done(orchestrator):
+    """stats event must be emitted before done on every successful turn."""
+    with patch.object(orchestrator, '_call_ollama', return_value=_final_stream("Answer.")):
+        events, _ = _consume(orchestrator.stream_chat("Hello"))
+
+    stats_events = [e for e in events if e["type"] == "stats"]
+    assert len(stats_events) == 1, "exactly one stats event per turn"
+
+    stats = stats_events[0]
+    assert "input_tokens" in stats
+    assert "output_tokens" in stats
+    assert "context_pct" in stats
+    assert isinstance(stats["input_tokens"], int)
+    assert isinstance(stats["output_tokens"], int)
+    assert isinstance(stats["context_pct"], int)
+
+    types = [e["type"] for e in events]
+    assert types.index("stats") < types.index("done"), "stats must precede done"
+
+
+def test_stats_context_pct_bounded(orchestrator):
+    """context_pct must stay in [0, 100] regardless of token counts."""
+    # Simulate a very large prompt (bypasses isinstance check on mock)
+    orchestrator.last_prompt_tokens = 200_000  # way over 64k
+    assert orchestrator.context_pct == 100
+
+
+def test_stats_reset_clears_token_counts(orchestrator):
+    """reset_conversation must zero out all token counters."""
+    orchestrator.total_input_tokens = 5000
+    orchestrator.total_output_tokens = 1000
+    orchestrator.last_prompt_tokens = 4500
+    orchestrator.reset_conversation()
+    assert orchestrator.total_input_tokens == 0
+    assert orchestrator.total_output_tokens == 0
+    assert orchestrator.last_prompt_tokens == 0
+    assert orchestrator.context_pct == 0
+
+
+def test_stats_token_capture_with_real_counts(orchestrator):
+    """When a done chunk provides int token counts they must be tracked."""
+    chunk = _make_chunk(content="Hi", tool_calls=None, done=True)
+    chunk.prompt_eval_count = 1024
+    chunk.eval_count = 32
+
+    with patch.object(orchestrator, '_call_ollama', return_value=iter([chunk])):
+        _consume(orchestrator.stream_chat("Hello"))
+
+    assert orchestrator.last_prompt_tokens == 1024
+    assert orchestrator.total_input_tokens == 1024
+    assert orchestrator.total_output_tokens == 32
+    assert orchestrator.context_pct == round(1024 / 65536 * 100)

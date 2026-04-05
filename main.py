@@ -8,7 +8,7 @@ from config import VERBOSE_DEFAULT
 from orchestrator import ChatOrchestrator
 from formatter import (
     console, print_header, print_search_status, print_search_results,
-    print_error, print_rule
+    print_error, print_rule, print_stats_rule
 )
 
 # Configure logging
@@ -22,6 +22,7 @@ def _render_stream(orchestrator: ChatOrchestrator, user_input: str, attachments=
     """Consume stream_chat events and render them in the terminal."""
     spinner = None
     answer_buffer = []
+    last_stats = None
 
     try:
         for event in orchestrator.stream_chat(user_input, attachments=attachments):
@@ -55,13 +56,23 @@ def _render_stream(orchestrator: ChatOrchestrator, user_input: str, attachments=
                 else:
                     print_search_status(query, "No results found")
 
+            elif etype == "stats":
+                last_stats = event
+
             elif etype == "done":
                 if spinner:
                     spinner.stop()
                     spinner = None
                 print_answer("".join(answer_buffer))
                 answer_buffer.clear()
-                print_rule()
+                if last_stats:
+                    print_stats_rule(
+                        last_stats["input_tokens"],
+                        last_stats["output_tokens"],
+                        last_stats["context_pct"],
+                    )
+                else:
+                    print_rule()
 
             elif etype == "rag_indexing":
                 if spinner:

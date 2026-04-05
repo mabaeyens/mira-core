@@ -308,3 +308,44 @@ Test cases are grouped by feature area. Each case lists the action, expected res
 | 15.5 | Send a message; click Stop while a search chip is spinning | Search halts; chip may remain; Send re-enabled |
 | 15.6 | After stopping, send a new message | Conversation continues normally; model has no memory of the cancelled turn |
 | 15.7 | After stopping, send a follow-up that references the cancelled turn | Model has no context from the aborted turn (history was rolled back) |
+
+---
+
+## 16. Status line — token counts and context usage
+
+Mirrors the Claude Code status line (excluding cost). Shows cumulative session tokens and current context window fill.
+
+### 16a. Web UI — header badges
+
+| # | Action | Expected |
+|---|--------|----------|
+| 16.1 | Open `http://localhost:8000` fresh | Header shows `↑0k ↓0k` (token badge) and `ctx:0%` (context badge) next to model badge |
+| 16.2 | Inspect badge styling at 0% | Both badges use the neutral grey chip style (same as model badge) |
+| 16.3 | Send one message; wait for response | Token badge updates: `↑Xk ↓Xk` with non-zero values; context badge shows `ctx:N%` |
+| 16.4 | Send several more messages | Token counts increase monotonically; `ctx:%` reflects growing context window fill |
+| 16.5 | Context badge at 0–55% | Grey chip, muted text — no background highlight |
+| 16.6 | Context badge at 56–70% | Red background (`#dc2626`), white text |
+| 16.7 | Context badge above 70% | Dark background (`#1f2937`), white text |
+| 16.8 | Hover over `↑Xk ↓Xk` badge | Tooltip: "Total session tokens: input / output" |
+| 16.9 | Hover over `ctx:N%` badge | Tooltip: "Context window usage (64k)" |
+| 16.10 | Click Reset | Both badges reset to `↑0k ↓0k` and `ctx:0%`; grey style restored |
+
+### 16b. CLI — stats rule
+
+| # | Action | Expected |
+|---|--------|----------|
+| 16.11 | Send any message from CLI | Horizontal rule below response contains `↑Xk ↓Xk  ctx:N%` |
+| 16.12 | No prior context | `ctx:0%` displayed in orange text with no background |
+| 16.13 | Context 0–55% | `ctx:N%` rendered in orange, no background highlight |
+| 16.14 | Context 56–70% | `ctx:N%` rendered bold white on red background |
+| 16.15 | Context above 70% | `ctx:N%` rendered bold white on dark background |
+| 16.16 | `/reset` then next message | Rule shows `↑0k ↓0k  ctx:0%` — counters zeroed |
+
+### 16c. Automated tests
+
+| # | Test | Verifies |
+|---|------|---------|
+| 16.17 | `test_stats_event_emitted_before_done` | `stats` event present; has `input_tokens`, `output_tokens`, `context_pct` int fields; precedes `done` |
+| 16.18 | `test_stats_context_pct_bounded` | `context_pct` capped at 100 even when `last_prompt_tokens` exceeds CONTEXT_WINDOW |
+| 16.19 | `test_stats_reset_clears_token_counts` | `reset_conversation()` zeros all three token counters |
+| 16.20 | `test_stats_token_capture_with_real_counts` | When done chunk has `prompt_eval_count=1024` and `eval_count=32`, counters updated correctly and `context_pct` computed from CONTEXT_WINDOW |

@@ -30,3 +30,6 @@ RAG_RETRIEVE_K = 10         # candidates retrieved before reranking
 RAG_RERANK_TOP_K = 4        # chunks injected into context after reranking
 RAG_SCORE_THRESHOLD = 0.0   # CrossEncoder scores below this are dropped (negatives = irrelevant)
 RAG_MAX_CHUNKS = 10_000     # warn user to unload documents above this total
+
+# Context window
+CONTEXT_WINDOW = 65536  # 64k tokens — configured context for gemma4:26b
