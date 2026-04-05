@@ -43,6 +43,9 @@ Thumbs.db
 # Logs
 *.log
 
+# Conversation database (local data, not committed)
+conversations.db
+
 # Claude Code local settings
 .claude/
 

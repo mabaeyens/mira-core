@@ -37,7 +37,88 @@
       color: var(--text);
       height: 100dvh;
       display: flex;
+      flex-direction: row;   /* sidebar + main side-by-side */
+      overflow: hidden;
+    }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 220px;
+      flex-shrink: 0;
+      background: #111827;
+      color: #e5e7eb;
+      display: flex;
       flex-direction: column;
+      border-right: 1px solid #1f2937;
+    }
+
+    #newConvBtn {
+      margin: 10px;
+      padding: 8px 12px;
+      background: #1f2937;
+      color: #e5e7eb;
+      border: 1px solid #374151;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      cursor: pointer;
+      text-align: left;
+      transition: background 0.15s;
+      flex-shrink: 0;
+    }
+    #newConvBtn:hover { background: #374151; }
+
+    #convList {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 0 8px;
+    }
+
+    .conv-item {
+      padding: 9px 12px;
+      cursor: pointer;
+      border-left: 3px solid transparent;
+      transition: background 0.1s;
+    }
+    .conv-item:hover   { background: #1f2937; }
+    .conv-item.active  { background: #1e3a5f; border-left-color: #3b82f6; }
+
+    .conv-title {
+      font-size: 13px;
+      color: #e5e7eb;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .conv-item.active .conv-title { color: #93c5fd; }
+
+    .conv-time {
+      font-size: 11px;
+      color: #6b7280;
+      margin-top: 2px;
+    }
+
+    .conv-delete {
+      display: none;
+      float: right;
+      background: none;
+      border: none;
+      color: #6b7280;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 2px;
+    }
+    .conv-item:hover .conv-delete { display: inline; }
+    .conv-delete:hover { color: #ef4444; }
+
+    /* ── Main area (header + chat + footer) ── */
+    .main-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      height: 100dvh;
+      overflow: hidden;
     }
 
     /* ── Header ── */
@@ -771,6 +852,13 @@
 </head>
 <body>
 
+<nav id="sidebar">
+  <button id="newConvBtn">＋ New conversation</button>
+  <div id="convList"></div>
+</nav>
+
+<div class="main-area">
+
 <header>
   <div class="header-left">
     <span class="logo">🤖</span>
@@ -817,6 +905,8 @@
     </div>
   </div>
 </footer>
+
+</div><!-- /.main-area -->
 
 <!-- ── Folder browser modal ─────────────────────────────────────────────── -->
 <div id="folderOverlay" class="folder-overlay" style="display:none">
@@ -879,6 +969,7 @@
   let stagedFiles = [];    // File objects staged for the next send
   let stagedPaths = [];    // Server-side paths staged for the next send
   let ragDocuments = new Map(); // name → chunk count, persists across turns
+  let currentConvId = null;    // active conversation ID
 
   // ── Folder browser state ─────────────────────────────────────────────────
   let folderCurPath = '/';    // current directory shown in modal
@@ -899,12 +990,134 @@
     else if (ctxPct > 55) ctxBadge.classList.add('ctx-warn');
   }
 
+  // ── Sidebar ──────────────────────────────────────────────────────────────
+
+  const convListEl  = document.getElementById('convList');
+  const newConvBtn  = document.getElementById('newConvBtn');
+
+  function fmtRelTime(ts) {
+    const diff = Math.floor(Date.now() / 1000) - ts;
+    if (diff < 60)     return 'just now';
+    if (diff < 3600)   return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400)  return `${Math.floor(diff / 3600)}h ago`;
+    if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+    return new Date(ts * 1000).toLocaleDateString();
+  }
+
+  function renderConvList(conversations) {
+    convListEl.innerHTML = '';
+    for (const conv of conversations) {
+      const item = document.createElement('div');
+      item.className = 'conv-item' + (conv.id === currentConvId ? ' active' : '');
+      item.dataset.id = conv.id;
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'conv-delete';
+      delBtn.title = 'Delete';
+      delBtn.textContent = '✕';
+      delBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (isStreaming) return;
+        await fetch(`/conversations/${conv.id}`, { method: 'DELETE' });
+        const resp = await fetch('/conversations');
+        const data = await resp.json();
+        // If the active conv was deleted the server picks the next one
+        if (conv.id === currentConvId) {
+          const remaining = data.conversations;
+          if (remaining.length) {
+            await switchConversation(remaining[0].id, false);
+          } else {
+            await newConversation();
+            return;
+          }
+        }
+        renderConvList(data.conversations);
+      });
+
+      const titleEl = document.createElement('div');
+      titleEl.className = 'conv-title';
+      titleEl.textContent = conv.title || 'New conversation';
+
+      const timeEl = document.createElement('div');
+      timeEl.className = 'conv-time';
+      timeEl.textContent = fmtRelTime(conv.updated_at);
+
+      item.appendChild(delBtn);
+      item.appendChild(titleEl);
+      item.appendChild(timeEl);
+
+      item.addEventListener('click', () => {
+        if (isStreaming || conv.id === currentConvId) return;
+        switchConversation(conv.id);
+      });
+
+      convListEl.appendChild(item);
+    }
+  }
+
+  async function loadConvList() {
+    const resp = await fetch('/conversations');
+    const data = await resp.json();
+    renderConvList(data.conversations);
+  }
+
+  async function switchConversation(convId, updateList = true) {
+    currentConvId = convId;
+    // Load message history from DB and render
+    const resp = await fetch(`/conversations/${convId}/messages`);
+    const data = await resp.json();
+    messagesEl.innerHTML = '';
+    messagesEl.appendChild(welcomeEl);
+    ragDocuments.clear();
+    renderRagDocs();
+    updateStats(0, 0, 0);
+    if (data.messages && data.messages.length > 0) {
+      welcomeEl.style.display = 'none';
+      for (const msg of data.messages) {
+        const html = msg.role === 'assistant'
+          ? renderMarkdown(msg.content)
+          : escapeHtml(msg.content).replace(/\n/g, '<br>');
+        addMessage(msg.role, html);
+      }
+    } else {
+      welcomeEl.style.display = '';
+    }
+    scrollPinned = true;
+    const chat = document.getElementById('chat');
+    chat.style.scrollBehavior = 'auto';
+    chat.scrollTop = chat.scrollHeight;
+    chat.style.scrollBehavior = '';
+    if (updateList) await loadConvList();
+  }
+
+  async function newConversation() {
+    const resp = await fetch('/conversations', { method: 'POST' });
+    const data = await resp.json();
+    currentConvId = data.id;
+    messagesEl.innerHTML = '';
+    messagesEl.appendChild(welcomeEl);
+    welcomeEl.style.display = '';
+    ragDocuments.clear();
+    renderRagDocs();
+    updateStats(0, 0, 0);
+    await loadConvList();
+  }
+
+  newConvBtn.addEventListener('click', () => {
+    if (isStreaming) return;
+    newConversation();
+  });
+
   // ── Fetch initial status ─────────────────────────────────────────────────
   fetch('/status').then(r => r.json()).then(s => {
     modelBadge.textContent  = s.model;
     verboseChk.checked      = s.verbose;
     updateStats(s.input_tokens || 0, s.output_tokens || 0, s.context_pct || 0);
     if (s.home_dir) folderCurPath = s.home_dir;
+    if (s.conv_id) {
+      currentConvId = s.conv_id;
+      loadConvList();
+    }
   }).catch(() => {});
 
   // ── Auto-resize textarea ─────────────────────────────────────────────────
@@ -923,16 +1136,19 @@
 
   sendBtn.addEventListener('click', () => { if (!isStreaming) sendMessage(); });
 
-  // ── Reset ─────────────────────────────────────────────────────────────────
+  // ── Reset (= new conversation, old one stays in sidebar) ─────────────────
   resetBtn.addEventListener('click', async () => {
     if (isStreaming) return;
-    await fetch('/reset', { method: 'POST' });
+    const resp = await fetch('/reset', { method: 'POST' });
+    const data = await resp.json();
+    currentConvId = data.conv_id;
     messagesEl.innerHTML = '';
     messagesEl.appendChild(welcomeEl);
     welcomeEl.style.display = '';
     ragDocuments.clear();
     renderRagDocs();
     updateStats(0, 0, 0);
+    await loadConvList();
   });
 
   // ── Stop ─────────────────────────────────────────────────────────────────
@@ -1358,6 +1574,7 @@
       // Use FormData so files can be included
       const form = new FormData();
       form.append('message', text || ' ');
+      if (currentConvId) form.append('conversation_id', currentConvId);
       for (const file of filesToSend) form.append('files', file);
       for (const path of pathsToSend) form.append('paths', path);
 
@@ -1542,6 +1759,19 @@
 
         case 'stats':
           updateStats(event.input_tokens, event.output_tokens, event.context_pct);
+          break;
+
+        case 'title':
+          // Update the sidebar item title without re-fetching the full list
+          document.querySelectorAll('.conv-item').forEach(el => {
+            if (el.dataset.id === event.conv_id) {
+              el.querySelector('.conv-title').textContent = event.title;
+            }
+          });
+          break;
+
+        case 'compress':
+          addStatusChip('warning-msg', `🗜️ ${escapeHtml(event.message)}`);
           break;
 
         case 'heartbeat':

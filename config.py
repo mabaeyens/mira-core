@@ -1,6 +1,7 @@
 """Configuration settings for the ollama Search Tool."""
 
 import os
+from pathlib import Path
 
 # Model settings
 MODEL_NAME = "gemma4:26b"
@@ -33,3 +34,9 @@ RAG_MAX_CHUNKS = 10_000     # warn user to unload documents above this total
 
 # Context window
 CONTEXT_WINDOW = 65536  # 64k tokens — configured context for gemma4:26b
+
+# Conversation persistence
+DB_PATH = Path(__file__).parent / "conversations.db"
+MAX_CONVERSATIONS = 100    # oldest evicted when exceeded
+COMPRESS_THRESHOLD = 70    # context_pct % at which summarize-and-compress fires
+COMPRESS_KEEP_RECENT = 6   # number of recent messages kept verbatim (not summarized)

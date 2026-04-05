@@ -22,8 +22,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+import db
 import file_handler
-from config import VERBOSE_DEFAULT
+from config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD
 from orchestrator import ChatOrchestrator
 
 logging.basicConfig(
@@ -39,8 +40,16 @@ cancel_event = threading.Event()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global orchestrator
+    db.init_db()
     orchestrator = ChatOrchestrator(verbose=VERBOSE_DEFAULT)
-    logger.info(f"Initialized orchestrator with model: {orchestrator.model}")
+    # Resume the most recent conversation, or create a fresh one
+    convs = db.list_conversations()
+    if convs:
+        orchestrator.load_conversation(convs[0]["id"])
+    else:
+        conv_id = db.create_conversation(orchestrator.model)
+        orchestrator.new_conversation(conv_id)
+    logger.info(f"Initialized orchestrator with model: {orchestrator.model}, conv: {orchestrator.conv_id}")
     yield
 
 
@@ -66,12 +75,23 @@ async def cancel():
 @app.post("/chat")
 async def chat(
     message: str = Form(...),
+    conversation_id: str = Form(default=""),
     files: List[UploadFile] = File(default=[]),
     paths: List[str] = Form(default=[]),
 ):
     """SSE endpoint — streams typed events from stream_chat() to the browser."""
     cancel_event.clear()
-    history_snapshot_len = len(orchestrator.conversation_history)
+
+    # Switch conversation if the client is on a different one
+    if conversation_id and conversation_id != orchestrator.conv_id:
+        conv = db.get_conversation(conversation_id)
+        if conv:
+            orchestrator.load_conversation(conversation_id)
+        else:
+            orchestrator.new_conversation(conversation_id)
+    elif not orchestrator.conv_id:
+        conv_id = db.create_conversation(orchestrator.model)
+        orchestrator.new_conversation(conv_id)
 
     # Read uploaded files before entering the background thread
     attachments = []
@@ -87,7 +107,6 @@ async def chat(
                 "warning": f"Could not process '{upload.filename}': {e}"
             })
 
-    # Load server-side file paths (typed directly in the web UI)
     for path in paths:
         try:
             att = file_handler.load_file(path)
@@ -102,13 +121,56 @@ async def chat(
     async def event_stream():
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
+        # Shared mutable so produce() can write the snapshot after load_conversation
+        snapshot = {"len": len(orchestrator.conversation_history)}
 
         def produce():
+            # Capture snapshot AFTER any conversation switch (already done above)
+            snapshot["len"] = len(orchestrator.conversation_history)
+            was_new_conv = orchestrator._is_new_conv
+            done_content = None
+
             try:
                 for event in orchestrator.stream_chat(message, attachments=attachments or None):
                     if cancel_event.is_set():
                         break
+                    if event.get("type") == "done":
+                        done_content = event.get("content", "")
                     loop.call_soon_threadsafe(queue.put_nowait, event)
+
+                # ── Post-turn: save, title, compress ─────────────────────────
+                if not cancel_event.is_set() and orchestrator.conv_id and done_content is not None:
+                    # Save the clean user + assistant turn to DB
+                    db.save_messages(orchestrator.conv_id, [
+                        {"role": "user",      "content": message},
+                        {"role": "assistant", "content": done_content},
+                    ])
+
+                    # Title generation on the very first turn of a new conversation
+                    if was_new_conv:
+                        orchestrator._is_new_conv = False
+                        title = orchestrator.generate_title(message)
+                        db.update_title(orchestrator.conv_id, title)
+                        loop.call_soon_threadsafe(queue.put_nowait, {
+                            "type": "title",
+                            "conv_id": orchestrator.conv_id,
+                            "title": title,
+                        })
+
+                    # Summarize-and-compress when context is filling up
+                    if orchestrator.context_pct >= COMPRESS_THRESHOLD:
+                        summary = orchestrator.compress_history()
+                        if summary:
+                            compressed = [
+                                m for m in orchestrator.conversation_history
+                                if m["role"] != "system"
+                            ]
+                            db.replace_messages(orchestrator.conv_id, compressed)
+                            loop.call_soon_threadsafe(queue.put_nowait, {
+                                "type": "compress",
+                                "message": "Earlier conversation summarised to free up context.",
+                            })
+
             except Exception as e:
                 if not cancel_event.is_set():
                     loop.call_soon_threadsafe(
@@ -123,17 +185,13 @@ async def chat(
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=5.0)
             except asyncio.TimeoutError:
-                # Send a real data event so the browser's ReadableStream reader
-                # wakes up — SSE comment pings (ping=N) are invisible to fetch()
-                # streams in some browsers and the connection silently drops.
                 yield {"data": json.dumps({"type": "heartbeat"})}
                 continue
             if event is None:
-                # Produce thread finished — rollback history if cancelled
                 if cancel_event.is_set():
-                    orchestrator.conversation_history = orchestrator.conversation_history[:history_snapshot_len]
+                    orchestrator.conversation_history = \
+                        orchestrator.conversation_history[:snapshot["len"]]
                 break
-            # Strip snippets — browser only needs title + url for the sources list
             if event.get("type") == "search_done":
                 event = {**event, "results": [
                     {"title": r["title"], "url": r["url"]}
@@ -147,9 +205,47 @@ async def chat(
 
 @app.post("/reset")
 async def reset():
+    """Start a fresh conversation (old one stays in DB)."""
     orchestrator.reset_conversation()
-    return {"status": "ok"}
+    conv_id = db.create_conversation(orchestrator.model)
+    orchestrator.new_conversation(conv_id)
+    return {"status": "ok", "conv_id": conv_id, "title": "New conversation"}
 
+
+# ── Conversation endpoints ────────────────────────────────────────────────────
+
+@app.get("/conversations")
+async def list_conversations():
+    return {"conversations": db.list_conversations()}
+
+
+@app.post("/conversations")
+async def create_conversation():
+    conv_id = db.create_conversation(orchestrator.model)
+    orchestrator.new_conversation(conv_id)
+    return {"id": conv_id, "title": "New conversation"}
+
+
+@app.delete("/conversations/{conv_id}")
+async def delete_conversation(conv_id: str):
+    db.delete_conversation(conv_id)
+    # If we just deleted the active conversation, start a new one
+    if orchestrator.conv_id == conv_id:
+        convs = db.list_conversations()
+        if convs:
+            orchestrator.load_conversation(convs[0]["id"])
+        else:
+            new_id = db.create_conversation(orchestrator.model)
+            orchestrator.new_conversation(new_id)
+    return {"status": "ok", "active_conv_id": orchestrator.conv_id}
+
+
+@app.get("/conversations/{conv_id}/messages")
+async def get_messages(conv_id: str):
+    return {"messages": db.load_messages(conv_id)}
+
+
+# ── Existing endpoints ────────────────────────────────────────────────────────
 
 @app.get("/rag/documents")
 async def rag_list():
@@ -178,6 +274,7 @@ async def status():
         "output_tokens": orchestrator.total_output_tokens,
         "context_pct": orchestrator.context_pct,
         "home_dir": str(Path.home()),
+        "conv_id": orchestrator.conv_id,
     }
 
 
@@ -189,12 +286,15 @@ async def browse(path: str = "/"):
         if not os.path.isdir(resolved):
             raise HTTPException(status_code=400, detail=f"Not a directory: {path}")
 
-        entries = []
         try:
-            names = sorted(os.listdir(resolved), key=lambda n: (not os.path.isdir(os.path.join(resolved, n)), n.lower()))
+            names = sorted(
+                os.listdir(resolved),
+                key=lambda n: (not os.path.isdir(os.path.join(resolved, n)), n.lower())
+            )
         except PermissionError:
             raise HTTPException(status_code=403, detail=f"Permission denied: {path}")
 
+        entries = []
         for name in names:
             full = os.path.join(resolved, name)
             is_dir = os.path.isdir(full)
@@ -202,7 +302,7 @@ async def browse(path: str = "/"):
             entries.append({
                 "name": name,
                 "is_dir": is_dir,
-                "ext": ext.lower(),   # e.g. ".pdf", "" for no extension
+                "ext": ext.lower(),
                 "path": full,
             })
 

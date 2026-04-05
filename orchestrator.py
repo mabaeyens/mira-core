@@ -4,7 +4,11 @@ import logging
 from typing import List, Dict, Optional, Iterator
 
 import ollama
-from config import MODEL_NAME, MAX_RETRIES, MAX_TOOL_STEPS, VERBOSE_DEFAULT, RAG_MAX_CHUNKS, CONTEXT_WINDOW
+from config import (
+    MODEL_NAME, MAX_RETRIES, MAX_TOOL_STEPS, VERBOSE_DEFAULT,
+    RAG_MAX_CHUNKS, CONTEXT_WINDOW, OLLAMA_HOST,
+    COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT,
+)
 from tools import TOOLS
 from prompts import build_system_prompt, SEARCH_RESULT_TEMPLATE
 from search_engine import SearchEngine
@@ -20,13 +24,17 @@ class ChatOrchestrator:
     def __init__(self, model: str = MODEL_NAME, verbose: bool = VERBOSE_DEFAULT):
         self.model = model
         self.verbose = verbose
+        self._ollama = ollama.Client(host=OLLAMA_HOST)
         self.search_engine = SearchEngine()
         self.rag_engine = RagEngine()
         self.conversation_history: List[Dict] = []
         self.system_prompt_added = False
-        self.total_input_tokens: int = 0   # cumulative prompt tokens this session
-        self.total_output_tokens: int = 0  # cumulative generated tokens this session
-        self.last_prompt_tokens: int = 0   # most recent prompt size (for context %)
+        self.total_input_tokens: int = 0
+        self.total_output_tokens: int = 0
+        self.last_prompt_tokens: int = 0
+        # Persistence
+        self.conv_id: Optional[str] = None
+        self._is_new_conv: bool = False
         self._add_system_prompt()
 
     def _add_system_prompt(self):
@@ -36,6 +44,108 @@ class ChatOrchestrator:
                 "content": build_system_prompt()
             })
             self.system_prompt_added = True
+
+    # ── Conversation lifecycle ────────────────────────────────────────────────
+
+    def new_conversation(self, conv_id: str) -> None:
+        """Switch to a brand-new (empty) conversation."""
+        self.conv_id = conv_id
+        self._is_new_conv = True
+        self.conversation_history = []
+        self.system_prompt_added = False
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.last_prompt_tokens = 0
+        self._add_system_prompt()
+        self.rag_engine.clear()
+
+    def load_conversation(self, conv_id: str) -> None:
+        """Load an existing conversation from DB into memory."""
+        import db
+        messages = db.load_messages(conv_id)
+        self.conv_id = conv_id
+        self._is_new_conv = False
+        self.conversation_history = []
+        self.system_prompt_added = False
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.last_prompt_tokens = 0
+        self._add_system_prompt()
+        self.conversation_history.extend(messages)
+        self.rag_engine.clear()
+        logger.info(f"Loaded conversation {conv_id}: {len(messages)} messages")
+
+    # ── Post-turn helpers (called from server.py produce() thread) ────────────
+
+    def generate_title(self, first_user_message: str) -> str:
+        """One-shot LLM call to produce a short title for a new conversation."""
+        try:
+            resp = self._ollama.chat(
+                model=self.model,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Reply with a short title for a conversation that starts "
+                        "with this message. 4-6 words, no quotes, no trailing period:\n\n"
+                        + first_user_message[:300]
+                    ),
+                }],
+                stream=False,
+            )
+            return (resp.message.content or "").strip().strip("\"'").strip()[:80]
+        except Exception:
+            return first_user_message[:60].strip()
+
+    def compress_history(self) -> Optional[str]:
+        """
+        Summarize old messages and replace them with a compact summary block.
+
+        Returns the summary string on success, None if compression was skipped
+        (too few messages) or failed.  Updates self.conversation_history in
+        place.  The caller is responsible for updating the DB.
+        """
+        non_system = [m for m in self.conversation_history if m["role"] != "system"]
+        if len(non_system) <= COMPRESS_KEEP_RECENT:
+            return None
+
+        to_compress = non_system[:-COMPRESS_KEEP_RECENT]
+        to_keep = non_system[-COMPRESS_KEEP_RECENT:]
+
+        excerpt = "\n".join(
+            f"{m['role'].upper()}: {str(m.get('content', ''))[:400]}"
+            for m in to_compress
+        )
+        try:
+            resp = self._ollama.chat(
+                model=self.model,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Summarize this conversation excerpt in a concise paragraph. "
+                        "Preserve key facts, decisions, URLs found, and files discussed. "
+                        "Be specific:\n\n" + excerpt
+                    ),
+                }],
+                stream=False,
+            )
+        except Exception as e:
+            logger.warning(f"Compression LLM call failed: {e}")
+            return None
+
+        summary = (resp.message.content or "").strip()
+        if not summary:
+            return None
+
+        system_msgs = [m for m in self.conversation_history if m["role"] == "system"]
+        self.conversation_history = system_msgs + [
+            {"role": "user",      "content": f"[Earlier conversation summary]\n{summary}"},
+            {"role": "assistant", "content": "Understood, I have the context."},
+        ] + to_keep
+
+        logger.info(f"Compressed {len(to_compress)} messages into summary")
+        return summary
+
+    # ── Main stream ───────────────────────────────────────────────────────────
 
     def stream_chat(self, user_message: str, attachments=None) -> Iterator[Dict]:
         """
@@ -48,14 +158,17 @@ class ChatOrchestrator:
           {"type": "search_done", "query": "...", "count": N, "results": [...]}
           {"type": "fetch_start", "url": "..."}
           {"type": "fetch_done", "url": "...", "chars": N}
+          {"type": "fetch_context", "fetches": [...]}
+          {"type": "rag_context", "chunks": [...]}
+          {"type": "stats", "input_tokens": N, "output_tokens": N, "context_pct": N}
           {"type": "done", "content": "..."}
           {"type": "warning", "message": "..."}
           {"type": "error", "message": "..."}
 
         attachments: list of dicts from file_handler.load_file() / load_file_bytes()
-          {"type": "text"|"image", "name": str, "content": str, "warning": str|None}
+          {"type": "text"|"image"|"rag", "name": str, "content": str, "warning": str|None}
         """
-        # Emit per-file warnings (scanned PDFs, etc.)
+        # Emit per-file warnings (scanned PDFs, binary files, etc.)
         if attachments:
             for att in attachments:
                 if att.get("warning"):
@@ -71,7 +184,6 @@ class ChatOrchestrator:
                         n_chunks = self.rag_engine.index(att["name"], att["content"])
                         yield {"type": "rag_done", "name": att["name"], "chunks": n_chunks}
                         rag_indexed_this_turn = True
-                        # Warn if approaching memory limits
                         if self.rag_engine.chunk_count > RAG_MAX_CHUNKS:
                             yield {
                                 "type": "warning",
@@ -85,9 +197,7 @@ class ChatOrchestrator:
                         return
 
         # Auto-retrieve RAG context if index is non-empty.
-        # When files were just indexed this turn, bypass the score threshold — the user's
-        # message is likely a meta-instruction ("summarize", "translate") that won't embed
-        # close to document content, so threshold filtering would drop all chunks.
+        # Bypass score threshold when files were just indexed (meta-query guard).
         rag_chunks = []
         if self.rag_engine.chunk_count > 0:
             try:
@@ -124,7 +234,7 @@ class ChatOrchestrator:
 
         self.conversation_history.append(user_msg)
 
-        fetch_results = []  # accumulate per-turn: {url, chars, preview}
+        fetch_results = []
 
         for step in range(MAX_TOOL_STEPS):
             yield {"type": "thinking"}
@@ -132,13 +242,10 @@ class ChatOrchestrator:
             full_content = ""
             final_message = None
 
-            # Retry loop — only retries if no tokens have been yielded yet
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
                     accumulated_tool_calls = None
                     for chunk in self._call_ollama(self.conversation_history, tools=TOOLS):
-                        # Accumulate tool calls from any chunk — Gemma4 may emit them
-                        # before the final done=True chunk, not in it.
                         if chunk.message.tool_calls:
                             accumulated_tool_calls = chunk.message.tool_calls
                             logger.info("chunk HAS tool_calls: done=%s tool_calls=%s", chunk.done, chunk.message.tool_calls)
@@ -148,12 +255,10 @@ class ChatOrchestrator:
                             full_content += token
                         if chunk.done:
                             final_message = chunk.message
-                            # Preserve tool calls if the done chunk doesn't have them
                             if not final_message.tool_calls and accumulated_tool_calls:
                                 final_message = final_message.model_copy(
                                     update={"tool_calls": accumulated_tool_calls}
                                 )
-                            # Capture token counts — only present in the done=True chunk
                             p = getattr(chunk, 'prompt_eval_count', None)
                             e = getattr(chunk, 'eval_count', None)
                             if isinstance(p, int):
@@ -164,7 +269,6 @@ class ChatOrchestrator:
                     break
                 except Exception as e:
                     if full_content:
-                        # Mid-stream failure — can't retry cleanly
                         yield {"type": "error", "message": str(e)}
                         return
                     if attempt == MAX_RETRIES:
@@ -265,7 +369,7 @@ class ChatOrchestrator:
 
     def _call_ollama(self, messages: List[Dict], tools: Optional[List] = None):
         """Call Ollama with streaming. Isolated here to make it mockable in tests."""
-        return ollama.chat(model=self.model, messages=messages, tools=tools, stream=True)
+        return self._ollama.chat(model=self.model, messages=messages, tools=tools, stream=True)
 
     def toggle_verbose(self):
         self.verbose = not self.verbose
@@ -281,11 +385,14 @@ class ChatOrchestrator:
         return min(100, round(self.last_prompt_tokens / CONTEXT_WINDOW * 100))
 
     def reset_conversation(self):
+        """Clear in-memory state. Caller is responsible for creating a new DB record."""
         self.conversation_history = []
         self.system_prompt_added = False
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.last_prompt_tokens = 0
+        self.conv_id = None
+        self._is_new_conv = False
         self._add_system_prompt()
         self.rag_engine.clear()
         print("Conversation reset.")
