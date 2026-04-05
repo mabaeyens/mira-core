@@ -72,8 +72,10 @@ def list_conversations() -> List[Dict]:
     """Return all conversations ordered by most recently updated first."""
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT id, title, created_at, updated_at, model_name"
-            " FROM conversations ORDER BY updated_at DESC"
+            "SELECT c.id, c.title, c.created_at, c.updated_at, c.model_name,"
+            " (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id)"
+            " AS message_count"
+            " FROM conversations c ORDER BY c.updated_at DESC"
         ).fetchall()
     return [dict(r) for r in rows]
 
