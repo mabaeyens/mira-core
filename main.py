@@ -75,6 +75,32 @@ def _render_stream(orchestrator: ChatOrchestrator, user_input: str, attachments=
                     spinner = None
                 console.print(f"  [green]Indexed:[/green] {event['name']} ({event['chunks']} chunks)")
 
+            elif etype == "fetch_start":
+                if spinner:
+                    spinner.stop()
+                from urllib.parse import urlparse
+                host = urlparse(event['url']).hostname or event['url']
+                spinner = console.status(f"[dim]Reading: {host}[/dim]", spinner="dots")
+                spinner.start()
+
+            elif etype == "fetch_done":
+                if spinner:
+                    spinner.stop()
+                    spinner = None
+                from urllib.parse import urlparse
+                host = urlparse(event['url']).hostname or event['url']
+                console.print(f"  [blue]Fetched:[/blue] {host} ({event['chars']:,} chars)")
+
+            elif etype == "fetch_context":
+                if orchestrator.verbose:
+                    for f in event["fetches"]:
+                        console.print(f"  [dim]  Page read: {f['url']} — {f['preview'][:80]}…[/dim]")
+
+            elif etype == "rag_context":
+                if orchestrator.verbose:
+                    for c in event["chunks"]:
+                        console.print(f"  [dim]  RAG chunk: [{c['source']} | score {c['score']:.2f}] {c['preview'][:80]}…[/dim]")
+
             elif etype == "warning":
                 console.print(f"  [yellow]⚠️  {event['message']}[/yellow]")
 

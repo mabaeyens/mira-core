@@ -66,6 +66,7 @@ async def cancel():
 async def chat(
     message: str = Form(...),
     files: List[UploadFile] = File(default=[]),
+    paths: List[str] = Form(default=[]),
 ):
     """SSE endpoint — streams typed events from stream_chat() to the browser."""
     cancel_event.clear()
@@ -83,6 +84,18 @@ async def chat(
             attachments.append({
                 "type": "text", "name": upload.filename, "content": "",
                 "warning": f"Could not process '{upload.filename}': {e}"
+            })
+
+    # Load server-side file paths (typed directly in the web UI)
+    for path in paths:
+        try:
+            att = file_handler.load_file(path)
+            attachments.append(att)
+        except Exception as e:
+            logger.warning(f"Could not load file at path '{path}': {e}")
+            attachments.append({
+                "type": "text", "name": path, "content": "",
+                "warning": f"Could not load '{path}': {e}"
             })
 
     async def event_stream():

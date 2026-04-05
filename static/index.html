@@ -484,6 +484,78 @@
 
     .file-chip button:hover { color: var(--text); }
 
+    .path-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 99px;
+      padding: 3px 10px 3px 8px;
+      font-size: 12px;
+      color: #1d4ed8;
+    }
+
+    .path-chip button {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #93c5fd;
+      font-size: 13px;
+      padding: 0;
+      line-height: 1;
+    }
+
+    .path-chip button:hover { color: #1d4ed8; }
+
+    /* Path input row (hidden by default, shown when 📂 clicked) */
+    #pathInputRow {
+      display: none;
+      align-items: center;
+      gap: 6px;
+    }
+
+    #pathInputRow.visible { display: flex; }
+
+    #pathInput {
+      flex: 1;
+      border: 1px solid var(--search-border);
+      border-radius: var(--radius);
+      padding: 6px 10px;
+      font-size: 13px;
+      font-family: "SF Mono", "Fira Code", monospace;
+      color: var(--text);
+      background: var(--bg);
+      outline: none;
+    }
+
+    #pathInput:focus { border-color: var(--accent); }
+    #pathInput::placeholder { color: var(--text-muted); font-family: inherit; }
+
+    .btn-path-add {
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: var(--radius-sm);
+      padding: 6px 12px;
+      font-size: 13px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .btn-path-add:hover { opacity: 0.85; }
+
+    .btn-path-cancel {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 6px 10px;
+      font-size: 13px;
+      color: var(--text-muted);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .btn-path-cancel:hover { border-color: var(--accent); color: var(--accent); }
+
     .input-row {
       display: flex;
       gap: 10px;
@@ -505,6 +577,22 @@
 
     #attachBtn:hover { border-color: var(--accent); color: var(--accent); }
     #attachBtn:disabled { opacity: 0.4; cursor: default; }
+
+    #pathBtn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 9px 11px;
+      font-size: 16px;
+      cursor: pointer;
+      flex-shrink: 0;
+      color: var(--text-muted);
+      transition: border-color 0.15s, color 0.15s;
+      line-height: 1;
+    }
+
+    #pathBtn:hover { border-color: var(--accent); color: var(--accent); }
+    #pathBtn:disabled { opacity: 0.4; cursor: default; }
 
     #input {
       flex: 1;
@@ -605,8 +693,14 @@
   <div class="input-wrapper">
     <div id="ragDocs" style="display:none"></div>
     <div id="fileChips" style="display:none"></div>
+    <div id="pathInputRow">
+      <input id="pathInput" type="text" placeholder="/absolute/path/to/file.pdf">
+      <button class="btn-path-add" id="pathAddBtn">Add</button>
+      <button class="btn-path-cancel" id="pathCancelBtn">Cancel</button>
+    </div>
     <div class="input-row">
-      <button id="attachBtn" title="Attach file">📎</button>
+      <button id="attachBtn" title="Upload file">📎</button>
+      <button id="pathBtn" title="Load file by path">📂</button>
       <input type="file" id="fileInput" hidden multiple
         accept=".pdf,.html,.htm,.txt,.md,.py,.js,.ts,.json,.csv,.png,.jpg,.jpeg,.gif,.webp">
       <textarea id="input" placeholder="Ask anything… (Enter to send, Shift+Enter for newline)" rows="1"></textarea>
@@ -629,16 +723,22 @@
   const verboseChk  = document.getElementById('verboseToggle');
   const welcomeEl   = document.getElementById('welcome');
   const modelBadge  = document.getElementById('modelBadge');
-  const attachBtn   = document.getElementById('attachBtn');
-  const fileInput   = document.getElementById('fileInput');
-  const fileChipsEl = document.getElementById('fileChips');
-  const ragDocsEl   = document.getElementById('ragDocs');
-  const stopBtn     = document.getElementById('stopBtn');
+  const attachBtn      = document.getElementById('attachBtn');
+  const pathBtn        = document.getElementById('pathBtn');
+  const pathInputRow   = document.getElementById('pathInputRow');
+  const pathInputEl    = document.getElementById('pathInput');
+  const pathAddBtn     = document.getElementById('pathAddBtn');
+  const pathCancelBtn  = document.getElementById('pathCancelBtn');
+  const fileInput      = document.getElementById('fileInput');
+  const fileChipsEl    = document.getElementById('fileChips');
+  const ragDocsEl      = document.getElementById('ragDocs');
+  const stopBtn        = document.getElementById('stopBtn');
 
   let isStreaming = false;
   let activeReader = null;
   let wasCancelled = false;
   let stagedFiles = [];    // File objects staged for the next send
+  let stagedPaths = [];    // Server-side paths staged for the next send
   let ragDocuments = new Map(); // name → chunk count, persists across turns
   // Buffered per-turn — set on rag_context event, consumed and appended in done handler
   let pendingRagContext = null;
@@ -703,6 +803,29 @@
     }
     fileInput.value = ''; // reset so same file can be re-added after removal
     renderFileChips();
+  });
+
+  // ── Path input ────────────────────────────────────────────────────────────
+  pathBtn.addEventListener('click', () => {
+    pathInputRow.classList.add('visible');
+    pathInputEl.value = '';
+    pathInputEl.focus();
+  });
+
+  function commitPath() {
+    const p = pathInputEl.value.trim();
+    if (!p) return;
+    if (!stagedPaths.includes(p)) stagedPaths.push(p);
+    pathInputEl.value = '';
+    pathInputRow.classList.remove('visible');
+    renderFileChips();
+  }
+
+  pathAddBtn.addEventListener('click', commitPath);
+  pathInputEl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); commitPath(); } });
+  pathCancelBtn.addEventListener('click', () => {
+    pathInputRow.classList.remove('visible');
+    pathInputEl.value = '';
   });
 
   // ── RAG document panel ────────────────────────────────────────────────────
@@ -791,7 +914,7 @@
 
   function renderFileChips() {
     fileChipsEl.innerHTML = '';
-    if (stagedFiles.length === 0) {
+    if (stagedFiles.length === 0 && stagedPaths.length === 0) {
       fileChipsEl.style.display = 'none';
       return;
     }
@@ -802,6 +925,16 @@
       chip.innerHTML = `📎 ${escapeHtml(file.name)} <button aria-label="Remove">✕</button>`;
       chip.querySelector('button').addEventListener('click', () => {
         stagedFiles.splice(idx, 1);
+        renderFileChips();
+      });
+      fileChipsEl.appendChild(chip);
+    });
+    stagedPaths.forEach((path, idx) => {
+      const chip = document.createElement('div');
+      chip.className = 'path-chip';
+      chip.innerHTML = `📂 ${escapeHtml(path)} <button aria-label="Remove">✕</button>`;
+      chip.querySelector('button').addEventListener('click', () => {
+        stagedPaths.splice(idx, 1);
         renderFileChips();
       });
       fileChipsEl.appendChild(chip);
@@ -848,18 +981,26 @@
     inputEl.value = '';
     inputEl.style.height = 'auto';
 
-    // Build user bubble: optional file chips + text
+    // Build user bubble: optional file/path chips + text
     const filesToSend = [...stagedFiles];
+    const pathsToSend = [...stagedPaths];
     stagedFiles = [];
+    stagedPaths = [];
     renderFileChips();
 
     let userHtml = '';
+    const hasAttachments = filesToSend.length > 0 || pathsToSend.length > 0;
     if (filesToSend.length > 0) {
       userHtml += filesToSend.map(f =>
         `<div class="file-chip" style="margin-bottom:6px">📎 ${escapeHtml(f.name)}</div>`
       ).join('');
     }
-    if (text) userHtml += (filesToSend.length > 0 ? '<br>' : '') + escapeHtml(text);
+    if (pathsToSend.length > 0) {
+      userHtml += pathsToSend.map(p =>
+        `<div class="path-chip" style="margin-bottom:6px">📂 ${escapeHtml(p)}</div>`
+      ).join('');
+    }
+    if (text) userHtml += (hasAttachments ? '<br>' : '') + escapeHtml(text);
     addMessage('user', userHtml);
 
     setStreaming(true, 'Thinking…');
@@ -878,6 +1019,7 @@
       const form = new FormData();
       form.append('message', text || ' ');
       for (const file of filesToSend) form.append('files', file);
+      for (const path of pathsToSend) form.append('paths', path);
 
       const response = await fetch('/chat', { method: 'POST', body: form });
 
@@ -1107,6 +1249,8 @@
     stopBtn.style.display = val ? 'inline-block' : 'none';
     inputEl.disabled = val;
     attachBtn.disabled = val;
+    pathBtn.disabled = val;
+    if (val) pathInputRow.classList.remove('visible'); // close path row if streaming starts
     statusBar.style.display = val ? 'flex' : 'none';
     if (val && label) statusText.textContent = label;
   }

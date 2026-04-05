@@ -255,14 +255,56 @@ Test cases are grouped by feature area. Each case lists the action, expected res
 
 ---
 
-## 14. Stop button
+## 14. Loading files from disk by path
+
+> Tests the 📂 button (web) and `/attach` command (CLI). Both use `file_handler.load_file()` and produce the same attachment pipeline as uploaded files. The server must be able to read the given path — paths are resolved on the server's filesystem.
+
+### 14a. Web — path input UI
 
 | # | Action | Expected |
 |---|--------|----------|
-| 14.1 | Send any message; observe footer while streaming | Send button hidden; red Stop button visible in its place |
-| 14.2 | After response completes | Stop button hidden; Send button returns |
-| 14.3 | Send a message; click Stop during the thinking phase | Response aborts; thinking indicator removed; Stop disappears and Send returns |
-| 14.4 | Send a message; click Stop while tokens are streaming | Streaming halts mid-sentence; partial text remains visible; Send re-enabled |
-| 14.5 | Send a message; click Stop while a search chip is spinning | Search halts; chip may remain; Send re-enabled |
-| 14.6 | After stopping, send a new message | Conversation continues normally; model has no memory of the cancelled turn |
-| 14.7 | After stopping, send a follow-up that references the cancelled turn | Model has no context from the aborted turn (history was rolled back) |
+| 14.1 | Click the 📂 button | A path input row appears above the input area with a text field, "Add" button, and "Cancel" button |
+| 14.2 | Press Cancel | Path input row hides; nothing staged |
+| 14.3 | Type a valid absolute path and press Enter | Path input row hides; a blue 📂 path chip appears in the chips row |
+| 14.4 | Type a valid absolute path and click Add | Same as 14.3 |
+| 14.5 | Add two different paths | Both path chips shown |
+| 14.6 | Click ✕ on a path chip | That chip removed; other chips unaffected |
+| 14.7 | Path chip is visible in the user bubble after sending | Blue 📂 chip showing the full path appears at the top of the user message, same as file chips |
+| 14.8 | Click 📂 while streaming | Button is disabled; path input row does not open |
+
+### 14b. Web — file loading behaviour
+
+| # | Action | Expected |
+|---|--------|----------|
+| 14.9 | Add a path to a text-based PDF; ask about its content | Indexing chip appears; RAG panel shown below answer with chunks from that file |
+| 14.10 | Add a path to a `.txt` file; ask a question about it | File content injected inline; model answers correctly |
+| 14.11 | Add a path to a `.py` or `.json` file | Content injected; model can reason about the code or data |
+| 14.12 | Add a path to an image file | Model describes the image (multimodal path) |
+| 14.13 | Add a path that does not exist | Amber ⚠️ warning chip: "Could not load '/path/…': File not found" |
+| 14.14 | Mix a valid upload (📎) with a valid path (📂) in the same message | Both files processed; both chips shown in user bubble; model has access to both |
+| 14.15 | Add a path to a large text file (> 80k chars) | Upgraded to RAG automatically; indexing chip shown |
+
+### 14c. CLI — `/attach` command (existing, confirmed working)
+
+| # | Action | Expected |
+|---|--------|----------|
+| 14.16 | `/attach /absolute/path/to/file.pdf` | `Attached: file.pdf (rag)` shown; file staged for next message |
+| 14.17 | `/attach ~/relative/path/file.txt` | Tilde expanded; file loaded; `Attached: file.txt (text)` shown |
+| 14.18 | `/attach /nonexistent/path.pdf` | Error message: "File not found: …" |
+| 14.19 | `/files` after attaching two files | Both filenames and types listed |
+| 14.20 | `/detach` clears path-attached files | No files staged; prompt returns to `You:` |
+| 14.21 | Attach a PDF via `/attach`; ask a question | Indexing spinner shown; RAG chunks used; verbose mode shows chunk previews |
+
+---
+
+## 15. Stop button
+
+| # | Action | Expected |
+|---|--------|----------|
+| 15.1 | Send any message; observe footer while streaming | Send button hidden; red Stop button visible in its place |
+| 15.2 | After response completes | Stop button hidden; Send button returns |
+| 15.3 | Send a message; click Stop during the thinking phase | Response aborts; thinking indicator removed; Stop disappears and Send returns |
+| 15.4 | Send a message; click Stop while tokens are streaming | Streaming halts mid-sentence; partial text remains visible; Send re-enabled |
+| 15.5 | Send a message; click Stop while a search chip is spinning | Search halts; chip may remain; Send re-enabled |
+| 15.6 | After stopping, send a new message | Conversation continues normally; model has no memory of the cancelled turn |
+| 15.7 | After stopping, send a follow-up that references the cancelled turn | Model has no context from the aborted turn (history was rolled back) |

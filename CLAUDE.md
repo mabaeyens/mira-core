@@ -91,6 +91,11 @@ Fix in `orchestrator.py`: when any RAG file was indexed in the current turn (`ra
 
 Do not remove this bypass. The hallucination it prevents ("No has adjuntado ningún artículo") is worse than occasionally injecting a lower-quality chunk.
 
+**File loading:** Two paths into `stream_chat(attachments=[...])`:
+- CLI: `/attach <path>` calls `file_handler.load_file(path)` directly
+- Web upload: `load_file_bytes(name, data)` from multipart upload
+- Web path: `paths[]` form field calls `load_file(path)` server-side — same machine, absolute path
+
 **Search:** Ollama native search disabled (`USE_NATIVE_SEARCH = False`). DuckDuckGo (`ddgs`) is active.
 
 **Why DDGS over Ollama native search:** Ollama does offer a free-tier web search API (free account + API key), but signup requires a phone number and Ollama's docs contain no privacy disclosures — queries are tied to an authenticated account and can be logged. DuckDuckGo's core value proposition is no-tracking search. Given this project is local-first and privacy-conscious, DDGS is the deliberate choice. Additionally, `gemma4:26b` is not listed as a supported model for Ollama native search, so compatibility is unverified.

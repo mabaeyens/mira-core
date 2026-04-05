@@ -67,7 +67,8 @@ python server.py
 ## Web Interface
 
 - Streaming responses with live markdown rendering
-- 📎 file attachment button — PDF, HTML, images, text/code
+- 📎 upload button — attach files from your machine
+- 📂 path button — load files directly from the server's disk by absolute path (same machine)
 - Search chips expand to show clickable source links; fetch chips link directly to the fetched page
 - Green Documents panel showing RAG-indexed files with per-doc remove
 - Status bar showing current operation (Thinking / Searching / Reading / Indexing)
