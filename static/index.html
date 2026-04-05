@@ -1413,8 +1413,16 @@
             rawContent = '';
           }
           rawContent += event.content;
+          // Preserve horizontal scroll of code blocks across re-renders.
+          // innerHTML replacement resets scrollLeft to 0, which fights the
+          // user if they're scrolling a wide block while tokens are arriving.
+          const preScrolls = [...assistantBubble.querySelectorAll('pre')]
+            .map(p => p.scrollLeft);
           assistantBubble.innerHTML =
             renderMarkdown(rawContent) + '<span class="cursor"></span>';
+          assistantBubble.querySelectorAll('pre').forEach((p, i) => {
+            if (preScrolls[i]) p.scrollLeft = preScrolls[i];
+          });
           scrollToBottom();
           break;
 
