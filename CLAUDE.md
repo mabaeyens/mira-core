@@ -85,7 +85,9 @@ Fix in `orchestrator.py`: when any RAG file was indexed in the current turn (`ra
 
 Do not remove this bypass. The hallucination it prevents ("No has adjuntado ningún artículo") is worse than occasionally injecting a lower-quality chunk.
 
-**Search:** Ollama native search disabled (`USE_NATIVE_SEARCH = False`) — requires paid subscription. DuckDuckGo (`ddgs`) is active.
+**Search:** Ollama native search disabled (`USE_NATIVE_SEARCH = False`). DuckDuckGo (`ddgs`) is active.
+
+**Why DDGS over Ollama native search:** Ollama does offer a free-tier web search API (free account + API key), but signup requires a phone number and Ollama's docs contain no privacy disclosures — queries are tied to an authenticated account and can be logged. DuckDuckGo's core value proposition is no-tracking search. Given this project is local-first and privacy-conscious, DDGS is the deliberate choice. Additionally, `gemma4:26b` is not listed as a supported model for Ollama native search, so compatibility is unverified.
 
 ## Configuration
 
@@ -124,7 +126,7 @@ Tests cover: search trigger behaviour, search_done event payload, `fetch_url` di
 - Always use `uv` — never `pip` or `venv`.
 - Keep all models and search local — no cloud APIs or API keys.
 - Do not change `MODEL_NAME` from `gemma4:26b` unless explicitly requested.
-- Do not set `USE_NATIVE_SEARCH = True` — requires paid Ollama subscription.
+- Do not set `USE_NATIVE_SEARCH = True` — Ollama native search is free-tier but requires an account (phone number at signup) and has no privacy guarantees; DDGS was chosen deliberately for privacy.
 - Do not change `EMBED_MODEL` from `nomic-embed-text` unless explicitly requested.
 - `ChatOrchestrator` must remain display-agnostic — no print/console calls in `orchestrator.py`.
 - Tests mock `_call_ollama`, not higher-level methods. Mock chunks need `.message.content`, `.message.tool_calls`, `.done`.
