@@ -121,6 +121,8 @@ class ChatOrchestrator:
 
         self.conversation_history.append(user_msg)
 
+        fetch_results = []  # accumulate per-turn: {url, chars, preview}
+
         for step in range(MAX_TOOL_STEPS):
             yield {"type": "thinking"}
 
@@ -171,6 +173,8 @@ class ChatOrchestrator:
 
             if not tool_calls:
                 self.conversation_history.append({"role": "assistant", "content": full_content})
+                if fetch_results:
+                    yield {"type": "fetch_context", "fetches": fetch_results}
                 if rag_chunks:
                     yield {
                         "type": "rag_context",
@@ -220,6 +224,12 @@ class ChatOrchestrator:
                 content = url_fetcher.fetch_url(url)
 
                 yield {"type": "fetch_done", "url": url, "chars": len(content)}
+
+                fetch_results.append({
+                    "url": url,
+                    "chars": len(content),
+                    "preview": content[:300].rstrip() + ("…" if len(content) > 300 else ""),
+                })
 
                 self.conversation_history.append({
                     "role": "tool",

@@ -92,7 +92,7 @@ RAG documents persist in the session index across turns — no need to re-attach
 All model, search, and fetch calls are mocked — no Ollama instance needed to run tests.
 
 ```bash
-uv run pytest                                              # all tests (16 tests)
+uv run pytest                                              # all tests (19 tests)
 uv run pytest tests/test_queries.py::test_toggle_verbose  # single test
 uv run pytest tests/test_cancel.py                        # cancel/stop tests only
 ```

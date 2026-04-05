@@ -187,6 +187,70 @@ def test_accumulated_tool_calls_intermediate_chunk(orchestrator):
         assert content == "Found it."
 
 
+def test_fetch_context_event_emitted_after_fetch_url(orchestrator):
+    """fetch_context event must be emitted before done when fetch_url was called.
+
+    Payload must include url, chars, and a 300-char preview for each fetch so
+    the UI can render a collapsible 'pages read' panel below the answer.
+    """
+    fake_page = "A" * 500  # longer than 300 to verify truncation
+
+    with patch.object(orchestrator, '_call_ollama', side_effect=[
+        _fetch_url_stream("https://example.com/article"),
+        _final_stream("The article says something."),
+    ]), patch('url_fetcher.fetch_url', return_value=fake_page):
+        events, _ = _consume(orchestrator.stream_chat("What does example.com say?"))
+
+    ctx = next((e for e in events if e["type"] == "fetch_context"), None)
+    assert ctx is not None, "fetch_context event not emitted"
+
+    assert len(ctx["fetches"]) == 1
+    fetch = ctx["fetches"][0]
+    assert fetch["url"] == "https://example.com/article"
+    assert fetch["chars"] == 500
+    assert fetch["preview"].endswith("…")
+    assert len(fetch["preview"]) <= 304  # 300 chars + "…"
+
+    # fetch_context must come before done
+    types = [e["type"] for e in events]
+    assert types.index("fetch_context") < types.index("done")
+
+
+def test_fetch_context_not_emitted_without_fetch(orchestrator):
+    """fetch_context must not be emitted when no fetch_url tool call was made."""
+    with patch.object(orchestrator, '_call_ollama', return_value=_final_stream("Plain answer.")):
+        events, _ = _consume(orchestrator.stream_chat("What is 2+2?"))
+
+    assert not any(e["type"] == "fetch_context" for e in events)
+
+
+def test_fetch_context_multiple_fetches(orchestrator):
+    """fetch_context must accumulate all fetch_url calls made in a single turn."""
+    fake_page = "Page content here."
+
+    # Two sequential fetch_url calls before the final answer
+    fetch1 = MagicMock()
+    fetch1.function.name = "fetch_url"
+    fetch1.function.arguments = {"url": "https://alpha.com"}
+    fetch2 = MagicMock()
+    fetch2.function.name = "fetch_url"
+    fetch2.function.arguments = {"url": "https://beta.com"}
+
+    with patch.object(orchestrator, '_call_ollama', side_effect=[
+        iter([_make_chunk(content="", tool_calls=[fetch1], done=True)]),
+        iter([_make_chunk(content="", tool_calls=[fetch2], done=True)]),
+        _final_stream("Done."),
+    ]), patch('url_fetcher.fetch_url', return_value=fake_page):
+        events, _ = _consume(orchestrator.stream_chat("Compare alpha and beta"))
+
+    ctx = next((e for e in events if e["type"] == "fetch_context"), None)
+    assert ctx is not None
+    assert len(ctx["fetches"]) == 2
+    urls = [f["url"] for f in ctx["fetches"]]
+    assert "https://alpha.com" in urls
+    assert "https://beta.com" in urls
+
+
 def test_rag_context_event_emitted_when_chunks_retrieved(orchestrator):
     """rag_context event must be yielded before done when RAG chunks are used.
 

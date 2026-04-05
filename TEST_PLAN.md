@@ -218,6 +218,8 @@ Test cases are grouped by feature area. Each case lists the action, expected res
 
 ## 13. Clickable sources and fetch chips
 
+### 13a. Search sources
+
 | # | Action | Expected |
 |---|--------|----------|
 | 13.1 | Ask a current-events question that triggers a search | After search completes, a sources list appears below the search chip with bulleted links |
@@ -225,9 +227,31 @@ Test cases are grouped by feature area. Each case lists the action, expected res
 | 13.3 | Click the search chip | Sources list collapses; indicator changes to ▾ |
 | 13.4 | Click the chip again | Sources list re-expands; indicator returns to ▴ |
 | 13.5 | Click a link in the sources list | Opens the source URL in a new browser tab |
+
+### 13b. Fetch chips (inline, during streaming)
+
+| # | Action | Expected |
+|---|--------|----------|
 | 13.6 | Ask a question where the model fetches a page (`fetch_url`) | A "Reading: hostname" chip with spinner appears, then updates to "✅ Read N.Nk chars — hostname" with a clickable link |
 | 13.7 | Click the hostname link in the fetch chip | Opens the fetched URL in a new tab |
 | 13.8 | Ask a question requiring multiple searches or fetches | Each search and fetch produces its own chip; all remain visible after the response |
+
+### 13c. Fetch context panel (after answer)
+
+> The "pages read" panel appears **below the answer bubble** after the turn completes, distinct from the inline fetch chip shown during streaming.
+
+| # | Action | Expected |
+|---|--------|----------|
+| 13.9 | Ask a question that causes the model to fetch a page | Below the answer bubble, a blue "🌐 1 page read ▴" chip appears |
+| 13.10 | Observe panel default state | Expanded by default; entry shows hostname link, char count, and italic preview text |
+| 13.11 | Observe the hostname in the entry | Clickable link; opens the fetched URL in a new tab |
+| 13.12 | Observe the preview text | First ~300 chars of the fetched page content, ending in "…" if truncated |
+| 13.13 | Click the blue chip | Panel collapses; arrow changes to ▾ |
+| 13.14 | Click the chip again | Panel re-expands; arrow returns to ▴ |
+| 13.15 | Ask a question answered from general knowledge (no fetch) | No "pages read" panel appears |
+| 13.16 | Ask a question that triggers two separate `fetch_url` calls | Panel reads "🌐 2 pages read ▴"; both entries visible with their respective hostnames and previews |
+| 13.17 | Compare the inline fetch chip (during streaming) with the context panel | Chip shows hostname and char count live; panel shows those plus the preview text, after the answer is complete |
+| 13.18 | Collapse the panel from turn 1; send a new message that also fetches | Turn 1 panel stays collapsed; turn 2 panel starts expanded independently |
 
 ---
 

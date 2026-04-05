@@ -324,6 +324,40 @@
       align-self: flex-start;
     }
 
+    /* ── Fetch context chip (pages read) ── */
+    .fetch-context-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--search-bg);
+      border: 1px solid var(--search-border);
+      color: var(--search-text);
+      font-size: 12px;
+      padding: 5px 10px;
+      border-radius: 99px;
+      align-self: flex-start;
+      cursor: pointer;
+      user-select: none;
+    }
+    .fetch-context-chip:hover { filter: brightness(0.95); }
+
+    .fetch-items-list {
+      display: none;
+      margin: 4px 0 0 0;
+      padding: 8px 12px;
+      background: var(--search-bg);
+      border: 1px solid var(--search-border);
+      border-radius: var(--radius-sm);
+      align-self: flex-start;
+      max-width: 560px;
+    }
+    .fetch-items-list.open { display: flex; flex-direction: column; gap: 8px; }
+    .fetch-item { font-size: 12px; color: var(--search-text); }
+    .fetch-item-url { font-weight: 600; margin-bottom: 2px; word-break: break-all; }
+    .fetch-item-url a { color: inherit; text-decoration: none; }
+    .fetch-item-url a:hover { text-decoration: underline; }
+    .fetch-item-preview { font-style: italic; opacity: 0.75; word-break: break-word; }
+
     /* ── RAG context chip (sources used) ── */
     .rag-context-chip {
       display: inline-flex;
@@ -692,6 +726,38 @@
     });
   }
 
+  // ── Fetch context panel ───────────────────────────────────────────────────
+  function appendFetchContext(fetches, messageWrapper) {
+    const n = fetches.length;
+    const label = `${n} page${n !== 1 ? 's' : ''} read`;
+    const arrow = `<span style="font-size:16px;line-height:1;margin-left:2px">▴</span>`;
+
+    const chip = document.createElement('div');
+    chip.className = 'fetch-context-chip';
+    chip.innerHTML = `🌐 ${label} ${arrow}`;
+
+    const list = document.createElement('div');
+    list.className = 'fetch-items-list open';
+    fetches.forEach(f => {
+      const hostname = (() => { try { return new URL(f.url).hostname; } catch { return f.url; } })();
+      const item = document.createElement('div');
+      item.className = 'fetch-item';
+      item.innerHTML =
+        `<div class="fetch-item-url"><a href="${escapeHtml(f.url)}" target="_blank" rel="noopener noreferrer">🔗 ${escapeHtml(hostname)}</a> <span style="font-weight:400;opacity:.7">· ${(f.chars / 1000).toFixed(1)}k chars</span></div>` +
+        `<div class="fetch-item-preview">${escapeHtml(f.preview)}</div>`;
+      list.appendChild(item);
+    });
+
+    chip.addEventListener('click', () => {
+      list.classList.toggle('open');
+      const open = list.classList.contains('open');
+      chip.innerHTML = `🌐 ${label} <span style="font-size:16px;line-height:1;margin-left:2px">${open ? '▴' : '▾'}</span>`;
+    });
+
+    messageWrapper.appendChild(chip);
+    messageWrapper.appendChild(list);
+  }
+
   // ── RAG context panel ─────────────────────────────────────────────────────
   function appendRagContext(chunks, messageWrapper) {
     const n = chunks.length;
@@ -804,7 +870,8 @@
     let assistantBubble = null;
     let rawContent = '';
     let currentSearchChip = null;
-    let pendingRagContext = null; // set by rag_context event, consumed in done handler
+    let pendingFetchContext = null; // set by fetch_context event, consumed in done handler
+    let pendingRagContext = null;   // set by rag_context event, consumed in done handler
 
     try {
       // Use FormData so files can be included
@@ -973,6 +1040,11 @@
           thinkingEl = addStatusChip('thinking', '<div class="t-spinner"></div> Thinking…');
           break;
 
+        case 'fetch_context':
+          // Buffer fetches; the panel is appended below the answer bubble in 'done'
+          pendingFetchContext = event.fetches;
+          break;
+
         case 'rag_context':
           // Buffer chunks; the panel is appended below the answer bubble in 'done'
           pendingRagContext = event.chunks;
@@ -996,6 +1068,10 @@
             // tokens weren't streamed — render from done payload instead
             const b = addMessage('assistant', renderMarkdown(event.content));
             doneWrapper = b.closest('.message');
+          }
+          if (pendingFetchContext && doneWrapper) {
+            appendFetchContext(pendingFetchContext, doneWrapper);
+            pendingFetchContext = null;
           }
           if (pendingRagContext && doneWrapper) {
             appendRagContext(pendingRagContext, doneWrapper);

@@ -73,6 +73,7 @@ static/index.html — single-page web UI (vanilla HTML/CSS/JS + marked.js)
 | `search_done` | `query, count, results` | Search complete; `results` carries `{title, url}` per result (snippet stripped before SSE) |
 | `fetch_start` | `url` | Page fetch beginning |
 | `fetch_done` | `url, chars` | Fetch complete; `chars` is length of text returned |
+| `fetch_context` | `fetches` | All pages fetched this turn; list of `{url, chars, preview}` — emitted right before `done` so the UI can render a "pages read" panel |
 | `rag_indexing` | `name` | Document being indexed into RAG |
 | `rag_done` | `name, chunks` | Indexing complete |
 | `rag_context` | `chunks` | RAG chunks injected this turn; `chunks` is a list of `{source, score, preview}` — emitted right before `done` so the UI can render a "document sections used" panel |
