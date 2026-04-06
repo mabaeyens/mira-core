@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ollama Search Tool</title>
+  <title>Mira</title>
   <script src="/static/marked.min.js"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
@@ -12,21 +12,21 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg: #f5f5f5;
+      --bg: #FAF9F7;
       --surface: #ffffff;
-      --border: #e5e7eb;
-      --text: #111827;
-      --text-muted: #6b7280;
-      --user-bg: #2563eb;
-      --user-text: #ffffff;
-      --accent: #2563eb;
-      --search-bg: #eff6ff;
-      --search-border: #bfdbfe;
-      --search-text: #1d4ed8;
+      --border: #D5D0CA;
+      --text: #1C1917;
+      --text-muted: #78716C;
+      --user-bg: #E8E3DC;
+      --user-text: #1C1917;
+      --accent: #C07A4F;
+      --search-bg: #FDF4ED;
+      --search-border: #DDBF9E;
+      --search-text: #7C4A1E;
       --error-bg: #fef2f2;
       --error-border: #fecaca;
       --error-text: #dc2626;
-      --code-bg: #f3f4f6;
+      --code-bg: #EEEBE6;
       --radius: 12px;
       --radius-sm: 6px;
     }
@@ -216,18 +216,18 @@
       align-items: center;
       gap: 8px;
       padding: 6px 16px;
-      background: #eff6ff;
-      border-bottom: 1px solid #bfdbfe;
+      background: var(--search-bg);
+      border-bottom: 1px solid var(--search-border);
       font-size: 12px;
-      color: #1d4ed8;
+      color: var(--search-text);
       flex-shrink: 0;
     }
 
     #statusBar .bar-spinner {
       width: 13px;
       height: 13px;
-      border: 2px solid #bfdbfe;
-      border-top-color: #2563eb;
+      border: 2px solid var(--search-border);
+      border-top-color: var(--accent);
       border-radius: 50%;
       animation: spin 0.7s linear infinite;
       will-change: transform;
@@ -271,6 +271,7 @@
     .message.user .bubble {
       background: var(--user-bg);
       color: var(--user-text);
+      border: 1px solid var(--border);
       border-bottom-right-radius: 4px;
     }
 
@@ -587,25 +588,25 @@
       display: inline-flex;
       align-items: center;
       gap: 5px;
-      background: #eff6ff;
-      border: 1px solid #bfdbfe;
+      background: var(--search-bg);
+      border: 1px solid var(--search-border);
       border-radius: 99px;
       padding: 3px 10px 3px 8px;
       font-size: 12px;
-      color: #1d4ed8;
+      color: var(--search-text);
     }
 
     .path-chip button {
       background: none;
       border: none;
       cursor: pointer;
-      color: #93c5fd;
+      color: var(--search-border);
       font-size: 13px;
       padding: 0;
       line-height: 1;
     }
 
-    .path-chip button:hover { color: #1d4ed8; }
+    .path-chip button:hover { color: var(--search-text); }
 
     /* ── Folder browser modal ── */
     .folder-overlay {
@@ -712,7 +713,7 @@
       user-select: none;
     }
     .fe-row:hover { background: var(--bg); }
-    .fe-row.fe-selected { background: #eff6ff; }
+    .fe-row.fe-selected { background: var(--search-bg); }
     .fe-row.fe-disabled { opacity: 0.35; cursor: not-allowed; }
     .fe-row.fe-disabled:hover { background: none; }
     .fe-row input[type="checkbox"] { cursor: pointer; accent-color: var(--accent); flex-shrink: 0; }
@@ -861,8 +862,8 @@
 
 <header>
   <div class="header-left">
-    <span class="logo">🤖</span>
-    <span class="title">ollama Search Tool</span>
+    <span class="logo">✨</span>
+    <span class="title">Mira</span>
     <span class="model-badge" id="modelBadge">gemma4:26b</span>
   </div>
   <div class="header-right">
