@@ -470,6 +470,35 @@ async def browse(path: str = "/"):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class AskRequest(BaseModel):
+    prompt: str
+    system: str = ""
+
+
+@app.post("/ask")
+async def ask(body: AskRequest):
+    """One-shot ephemeral query — no conversation saved, no tools, no DB writes.
+    Returns {"response": "..."}. Intended for orchestrator delegation from Claude Code."""
+    if not body.prompt.strip():
+        raise HTTPException(status_code=400, detail="prompt required")
+    messages = []
+    if body.system.strip():
+        messages.append({"role": "system", "content": body.system.strip()})
+    messages.append({"role": "user", "content": body.prompt.strip()})
+    try:
+        resp = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: orchestrator._ollama.chat(
+                model=orchestrator.model,
+                messages=messages,
+                stream=False,
+            ),
+        )
+        return {"response": (resp.message.content or "").strip()}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 if __name__ == "__main__":
     import asyncio
     import signal
