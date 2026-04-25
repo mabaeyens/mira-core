@@ -13,26 +13,26 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/miguel/Documents/Projects/ollama-web-search/.venv/bin/python</string>
+        <string>/Users/miguel/Documents/Projects/mira-core/.venv/bin/python</string>
         <string>server.py</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/miguel/Documents/Projects/ollama-web-search</string>
+    <string>/Users/miguel/Documents/Projects/mira-core</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
         <string>/Users/miguel</string>
         <key>PATH</key>
-        <string>/Users/miguel/Documents/Projects/ollama-web-search/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>/Users/miguel/Documents/Projects/mira-core/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>VIRTUAL_ENV</key>
-        <string>/Users/miguel/Documents/Projects/ollama-web-search/.venv</string>
+        <string>/Users/miguel/Documents/Projects/mira-core/.venv</string>
         <key>OLLAMA_HOST</key>
         <string>http://127.0.0.1:11434</string>
         <key>SSL_CERTFILE</key>
-        <string>/Users/miguel/Documents/Projects/OllamaSearch/certs/miguels-macbook-pro.tail51ad7d.ts.net.crt</string>
+        <string>/Users/miguel/Documents/Projects/mira-apps/certs/miguels-macbook-pro.tail51ad7d.ts.net.crt</string>
         <key>SSL_KEYFILE</key>
-        <string>/Users/miguel/Documents/Projects/OllamaSearch/certs/miguels-macbook-pro.tail51ad7d.ts.net.key</string>
+        <string>/Users/miguel/Documents/Projects/mira-apps/certs/miguels-macbook-pro.tail51ad7d.ts.net.key</string>
     </dict>
 
     <key>RunAtLoad</key>
