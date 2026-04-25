@@ -42,27 +42,27 @@ class SearchEngine:
         Returns:
             List of dicts with 'title', 'url', 'snippet' keys
         """
-        logger.info(f"Searching for: {query}")
-        
+        logger.info("Searching for: %s", query)
+
         # Try native Ollama search first if enabled
         if self.use_native:
             try:
                 results = ollama_web_search(query=query, max_results=max_results)
                 if results:
-                    logger.info(f"Found {len(results)} results via Ollama native")
+                    logger.info("Found %d results via Ollama native", len(results))
                     return self._format_ollama_results(results)
             except Exception as e:
-                logger.warning(f"Ollama native search failed: {e}. Falling back to DuckDuckGo.")
-        
+                logger.warning("Ollama native search failed: %s. Falling back to DuckDuckGo.", e)
+
         # Fallback to DuckDuckGo
         if self.ddgs:
             try:
                 results = list(self.ddgs.text(query, max_results=max_results, timeout=SEARCH_TIMEOUT))
                 if results:
-                    logger.info(f"Found {len(results)} results via DuckDuckGo")
+                    logger.info("Found %d results via DuckDuckGo", len(results))
                     return self._format_ddgs_results(results)
             except Exception as e:
-                logger.error(f"DuckDuckGo search failed: {e}")
+                logger.error("DuckDuckGo search failed: %s", e)
                 return []
         
         logger.warning("No search results found.")

@@ -139,7 +139,7 @@ class ChatOrchestrator:
         self._add_system_prompt()
         self.conversation_history.extend(messages)
         self.rag_engine.clear()
-        logger.info(f"Loaded conversation {conv_id}: {len(messages)} messages")
+        logger.info("Loaded conversation %s: %d messages", conv_id, len(messages))
 
     # ── Post-turn helpers (called from server.py produce() thread) ────────────
 
@@ -178,7 +178,7 @@ class ChatOrchestrator:
         to_keep = non_system[-COMPRESS_KEEP_RECENT:]
 
         excerpt = "\n".join(
-            f"{m['role'].upper()}: {str(m.get('content', ''))[:400]}"
+            f"{m['role'].upper()}: {str(m.get('content', ''))[:2000]}"
             for m in to_compress
         )
         try:
@@ -195,7 +195,7 @@ class ChatOrchestrator:
                 stream=False,
             )
         except Exception as e:
-            logger.warning(f"Compression LLM call failed: {e}")
+            logger.warning("Compression LLM call failed: %s", e)
             return None
 
         summary = (resp.message.content or "").strip()
@@ -208,7 +208,7 @@ class ChatOrchestrator:
             {"role": "assistant", "content": "Understood, I have the context."},
         ] + to_keep
 
-        logger.info(f"Compressed {len(to_compress)} messages into summary")
+        logger.info("Compressed %d messages into summary", len(to_compress))
         return summary
 
     # ── Main stream ───────────────────────────────────────────────────────────
@@ -272,7 +272,7 @@ class ChatOrchestrator:
                 else:
                     rag_chunks = self.rag_engine.query(user_message)
             except Exception as e:
-                logger.warning(f"RAG query failed: {e}")
+                logger.warning("RAG query failed: %s", e)
 
         # Build the user message: RAG context + text attachments + user text + images
         full_message = user_message
@@ -340,7 +340,7 @@ class ChatOrchestrator:
                     if attempt == MAX_RETRIES:
                         yield {"type": "error", "message": str(e)}
                         return
-                    logger.warning(f"Ollama API error (attempt {attempt}/{MAX_RETRIES}): {e}")
+                    logger.warning("Ollama API error (attempt %d/%d): %s", attempt, MAX_RETRIES, e)
 
             if final_message is None:
                 yield {"type": "error", "message": "Ollama stream closed without a completion signal."}
@@ -393,7 +393,7 @@ class ChatOrchestrator:
                 try:
                     results = self.search_engine.search(query, max_results=num_results)
                 except Exception as e:
-                    logger.error(f"Search failed: {e}")
+                    logger.error("Search failed: %s", e)
                     results = []
 
                 yield {"type": "search_done", "query": query, "count": len(results), "results": results}
@@ -478,12 +478,12 @@ class ChatOrchestrator:
         }
         fn = dispatch.get(name)
         if fn is None:
-            logger.warning(f"Unknown tool: {name}")
+            logger.warning("Unknown tool: %s", name)
             return {"error": f"Unknown tool: {name}"}
         try:
             return fn(args)
         except Exception as e:
-            logger.error(f"Tool {name} raised: {e}")
+            logger.error("Tool %s raised: %s", name, e)
             return {"error": str(e)}
 
     def _clone_and_register(self, args: dict) -> dict:

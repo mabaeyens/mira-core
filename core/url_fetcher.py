@@ -21,9 +21,7 @@ def fetch_url(url: str) -> str:
     """
     try:
         headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (compatible; ollama-search-tool/1.0)"
-            )
+            "User-Agent": "ollama-search-tool/1.0"
         }
         response = httpx.get(url, timeout=FETCH_TIMEOUT, headers=headers, follow_redirects=True)
         response.raise_for_status()

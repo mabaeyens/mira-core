@@ -1,6 +1,7 @@
 # Backlog
 
 ## Done
+- [2026-04-25] Code audit LOW fixes — list_files 2000-entry cap with truncated flag (C17), compress_history 400→2000 char limit (C18), %-style lazy logger formatting in search_engine+orchestrator (C19), pyproject.toml upper-bound version pins (C20), github_list_repos single resp.json() call (C21), _validate_repo() applied to all 13 GitHub tool functions (C22), honest bot UA in url_fetcher (C23)
 - [2026-04-25] Code audit MEDIUM fixes — DB moved to ~/.local/share/mira/ with auto-migration (C16), thread-local SQLite connections (C14), eviction merged into insert transaction (C15), shell denylist hardened with command normalization + extra bypass patterns (C6/C7), GitHub token cached per session (C8), _initialized guard wrapped in asyncio.Lock (C10), final_message None yields error event (C12), print() → logger (C13)
 - [2026-04-25] Security hardening — resolved all HIGH issues identified in code audit
 - [2026-04-25] github_clone_repo tool — clones a GitHub repo via `gh repo clone`, auto-creates a Mira project in the DB (local_path + github_repo set), returns project_id; `_clone_and_register` helper in orchestrator handles the DB write post-clone

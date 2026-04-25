@@ -1,9 +1,12 @@
 """Filesystem tool implementations — all paths sandboxed to the active workspace root."""
 
+import itertools
 import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+_MAX_LIST_ENTRIES = 2_000
 
 from .workspace import safe_path, rel
 
@@ -45,9 +48,12 @@ def list_files(path: str = ".", recursive: bool = False, root: Optional[str] = N
         return {"error": f"Path not found: {path}"}
     if not p.is_dir():
         return {"error": f"Not a directory: {path}"}
-    iterator = sorted(p.rglob("*")) if recursive else sorted(p.iterdir())
+    raw = p.rglob("*") if recursive else p.iterdir()
+    # Cap before sorting to avoid materialising huge trees (node_modules, build artefacts).
+    capped = list(itertools.islice(raw, _MAX_LIST_ENTRIES + 1))
+    truncated = len(capped) > _MAX_LIST_ENTRIES
     entries = []
-    for item in iterator:
+    for item in sorted(capped[:_MAX_LIST_ENTRIES]):
         if any(part.startswith(".") for part in item.parts[-3:]):
             continue
         entries.append({
@@ -55,7 +61,7 @@ def list_files(path: str = ".", recursive: bool = False, root: Optional[str] = N
             "type": "dir" if item.is_dir() else "file",
             "size": item.stat().st_size if item.is_file() else None,
         })
-    return {"path": rel(p, root), "entries": entries, "count": len(entries)}
+    return {"path": rel(p, root), "entries": entries, "count": len(entries), "truncated": truncated}
 
 
 def search_files(pattern: str, path: str = ".", case_sensitive: bool = False, root: Optional[str] = None) -> Dict[str, Any]:

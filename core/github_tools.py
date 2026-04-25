@@ -1,6 +1,7 @@
 """GitHub REST API tools — token sourced from gh CLI keyring (cached per session)."""
 
 import base64
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -8,6 +9,14 @@ from typing import Any, Dict, Optional
 import httpx
 
 _cached_token: Optional[str] = None
+_REPO_RE = re.compile(r'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')
+
+
+def _validate_repo(repo: str) -> Optional[Dict[str, Any]]:
+    """Return an error dict if repo is not in owner/repo format, else None."""
+    if not _REPO_RE.match(repo):
+        return {"error": f"Invalid repo format '{repo}' — expected 'owner/repo'"}
+    return None
 
 
 def _token() -> str:
@@ -36,6 +45,8 @@ def _gh(method: str, path: str, **kwargs) -> httpx.Response:
 
 def github_clone_repo(repo: str, dest: str = "") -> Dict[str, Any]:
     """Clone a GitHub repo with gh CLI (SSH). Returns the local path on success."""
+    if err := _validate_repo(repo):
+        return err
     from .config import WORKSPACE_ROOT
     repo_name = repo.split("/")[-1]
     clone_path = Path(dest).expanduser() if dest else Path(WORKSPACE_ROOT).expanduser() / repo_name
@@ -57,6 +68,7 @@ def github_list_repos(repo_type: str = "owner") -> Dict[str, Any]:
     resp = _gh("GET", "/user/repos", params={"type": repo_type, "per_page": 50, "sort": "updated"})
     if resp.status_code != 200:
         return {"error": resp.text}
+    data = resp.json()
     return {
         "repos": [
             {
@@ -66,13 +78,15 @@ def github_list_repos(repo_type: str = "owner") -> Dict[str, Any]:
                 "updated_at": r["updated_at"],
                 "default_branch": r["default_branch"],
             }
-            for r in resp.json()
+            for r in data
         ],
-        "count": len(resp.json()),
+        "count": len(data),
     }
 
 
 def github_read_file(repo: str, path: str, ref: str = "") -> Dict[str, Any]:
+    if err := _validate_repo(repo):
+        return err
     params = {"ref": ref} if ref else {}
     resp = _gh("GET", f"/repos/{repo}/contents/{path}", params=params)
     if resp.status_code == 404:
@@ -88,6 +102,8 @@ def github_read_file(repo: str, path: str, ref: str = "") -> Dict[str, Any]:
 
 
 def github_list_files(repo: str, path: str = "", ref: str = "") -> Dict[str, Any]:
+    if err := _validate_repo(repo):
+        return err
     params = {"ref": ref} if ref else {}
     url_path = f"/repos/{repo}/contents/{path}" if path else f"/repos/{repo}/contents"
     resp = _gh("GET", url_path, params=params)
@@ -103,6 +119,8 @@ def github_list_files(repo: str, path: str = "", ref: str = "") -> Dict[str, Any
 
 
 def github_list_issues(repo: str, state: str = "open") -> Dict[str, Any]:
+    if err := _validate_repo(repo):
+        return err
     resp = _gh("GET", f"/repos/{repo}/issues", params={"state": state, "per_page": 30})
     if resp.status_code != 200:
         return {"error": resp.text}
@@ -117,6 +135,8 @@ def github_list_issues(repo: str, state: str = "open") -> Dict[str, Any]:
 
 
 def github_list_prs(repo: str, state: str = "open") -> Dict[str, Any]:
+    if err := _validate_repo(repo):
+        return err
     resp = _gh("GET", f"/repos/{repo}/pulls", params={"state": state, "per_page": 30})
     if resp.status_code != 200:
         return {"error": resp.text}
@@ -138,6 +158,8 @@ def github_list_prs(repo: str, state: str = "open") -> Dict[str, Any]:
 
 
 def github_search_code(query: str, repo: str = "") -> Dict[str, Any]:
+    if repo and (err := _validate_repo(repo)):
+        return err
     q = f"{query} repo:{repo}" if repo else query
     resp = _gh("GET", "/search/code", params={"q": q, "per_page": 20})
     if resp.status_code != 200:
@@ -163,6 +185,8 @@ def github_write_file(
     sha: str = "",
 ) -> Dict[str, Any]:
     """Create or update a file. sha is auto-fetched if the file already exists."""
+    if err := _validate_repo(repo):
+        return err
     body: Dict[str, Any] = {
         "message": message,
         "content": base64.b64encode(content.encode()).decode(),
@@ -218,6 +242,8 @@ def github_create_repo(
 
 
 def github_create_issue(repo: str, title: str, body: str = "") -> Dict[str, Any]:
+    if err := _validate_repo(repo):
+        return err
     resp = _gh("POST", f"/repos/{repo}/issues", json={"title": title, "body": body})
     if resp.status_code != 201:
         return {"error": resp.text}
@@ -226,6 +252,8 @@ def github_create_issue(repo: str, title: str, body: str = "") -> Dict[str, Any]
 
 
 def github_create_branch(repo: str, branch: str, from_ref: str = "") -> Dict[str, Any]:
+    if err := _validate_repo(repo):
+        return err
     if not from_ref:
         r = _gh("GET", f"/repos/{repo}")
         if r.status_code != 200:
@@ -253,6 +281,8 @@ def github_create_pr(
     base: str = "",
 ) -> Dict[str, Any]:
     """Open a pull request. head is the branch with changes; base is the target (default branch if omitted)."""
+    if err := _validate_repo(repo):
+        return err
     if not base:
         r = _gh("GET", f"/repos/{repo}")
         if r.status_code != 200:
@@ -288,6 +318,8 @@ def github_merge_pr(
     confirm: bool = False,
 ) -> Dict[str, Any]:
     """Merge a pull request. merge_method: merge | squash | rebase."""
+    if err := _validate_repo(repo):
+        return err
     if not confirm:
         return {
             "requires_confirmation": True,
@@ -323,6 +355,8 @@ def github_delete_file(
     branch: str = "",
     confirm: bool = False,
 ) -> Dict[str, Any]:
+    if err := _validate_repo(repo):
+        return err
     if not confirm:
         return {
             "requires_confirmation": True,
@@ -347,6 +381,8 @@ def github_delete_file(
 
 
 def github_delete_branch(repo: str, branch: str, confirm: bool = False) -> Dict[str, Any]:
+    if err := _validate_repo(repo):
+        return err
     if not confirm:
         return {
             "requires_confirmation": True,
