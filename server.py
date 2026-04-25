@@ -31,7 +31,7 @@ from sse_starlette.sse import EventSourceResponse
 
 import db
 import file_handler
-from config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD
+from config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD, MODEL_NAME
 from orchestrator import ChatOrchestrator
 
 logging.basicConfig(
@@ -74,6 +74,18 @@ async def lifespan(app: FastAPI):
             conv_id = db.create_conversation(orchestrator.model)
             orchestrator.new_conversation(conv_id)
         logger.info(f"Initialized orchestrator with model: {orchestrator.model}, conv: {orchestrator.conv_id}")
+        # Pre-warm the model: if gemma4:26b is already loaded in Ollama keep it,
+        # otherwise trigger a load now so the first chat request is not slow.
+        try:
+            running = {m.model for m in orchestrator._ollama.ps().models}
+            if MODEL_NAME in running:
+                logger.info(f"Model {MODEL_NAME} already loaded in Ollama — reusing")
+            else:
+                logger.info(f"Model {MODEL_NAME} not loaded — warming up (this may take a moment)...")
+                orchestrator._ollama.generate(model=MODEL_NAME, prompt="", keep_alive="24h")
+                logger.info(f"Model {MODEL_NAME} ready")
+        except Exception as e:
+            logger.warning(f"Could not pre-warm model {MODEL_NAME}: {e}")
         # Note: Bonjour is registered by the macOS Swift app via NetService,
         # which advertises on all interfaces. No Python-side registration needed.
 
