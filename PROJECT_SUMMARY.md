@@ -120,7 +120,7 @@ Model decides dynamically based on system prompt rules (date-aware). No hardcode
 ## 6. File Structure
 
 ```
-ollama-web-search/
+mira-core/
 ├── main.py              # CLI entry point + _render_stream()
 ├── server.py            # FastAPI web server + SSE /chat endpoint
 ├── orchestrator.py      # ChatOrchestrator: stream_chat() generator

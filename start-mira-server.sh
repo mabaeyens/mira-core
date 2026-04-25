@@ -3,7 +3,7 @@
 # so that launchd restarts after a crash never hit "port already in use".
 set -e
 
-SERVER_DIR="/Users/miguel/Documents/Projects/ollama-web-search"
+SERVER_DIR="/Users/miguel/Documents/Projects/mira-core"
 PYTHON="$SERVER_DIR/.venv/bin/python"
 
 pkill -f "python.*server\.py" 2>/dev/null || true
