@@ -185,6 +185,26 @@ RUN_SHELL_TOOL = {
 
 # ── GitHub tools ──────────────────────────────────────────────────────────────
 
+GITHUB_CLONE_REPO_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "github_clone_repo",
+        "description": (
+            "Clone a GitHub repository to a local path and register it as a Mira project. "
+            "Use this when the user wants to work with a GitHub repo locally."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "owner/repo"},
+                "dest": {"type": "string", "description": "Local destination path (default: ~/workspace/<repo-name>)", "default": ""},
+                "project_name": {"type": "string", "description": "Name for the Mira project (default: repo name)", "default": ""},
+            },
+            "required": ["repo"],
+        },
+    },
+}
+
 GITHUB_LIST_REPOS_TOOL = {
     "type": "function",
     "function": {
@@ -433,6 +453,7 @@ TOOLS = [
     # Shell
     RUN_SHELL_TOOL,
     # GitHub
+    GITHUB_CLONE_REPO_TOOL,
     GITHUB_LIST_REPOS_TOOL, GITHUB_READ_FILE_TOOL, GITHUB_LIST_FILES_TOOL,
     GITHUB_WRITE_FILE_TOOL, GITHUB_CREATE_REPO_TOOL, GITHUB_CREATE_BRANCH_TOOL,
     GITHUB_LIST_ISSUES_TOOL, GITHUB_CREATE_ISSUE_TOOL, GITHUB_LIST_PRS_TOOL,

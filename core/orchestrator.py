@@ -48,6 +48,9 @@ def _tool_ui_labels(name: str, args: dict):
     if name == "run_shell":
         cmd = args.get("command", "")[:60]
         return f"$ {cmd}", lambda r: _ok(r, f"exit {r.get('exit_code', '?')} — {cmd}")
+    if name == "github_clone_repo":
+        repo = args.get("repo", "")
+        return f"Cloning {repo}", lambda r: _ok(r, f"Cloned to {r.get('cloned_to', '?')} — registered as project '{r.get('project_name', '')}'")
     if name.startswith("github_"):
         label = name.replace("github_", "GitHub: ").replace("_", " ")
         repo = args.get("repo", "")
@@ -450,6 +453,8 @@ class ChatOrchestrator:
             "delete_file":  lambda a: fs_tools.delete_file(a.get("path", ""), a.get("confirm", False), root=self.workspace_root),
             # Shell
             "run_shell":    lambda a: shell_tools.run_shell(a.get("command", ""), a.get("cwd", "."), a.get("force", False), root=self.workspace_root),
+            # GitHub — clone + register
+            "github_clone_repo":   lambda a: self._clone_and_register(a),
             # GitHub — read
             "github_list_repos":   lambda a: github_tools.github_list_repos(a.get("repo_type", "owner")),
             "github_read_file":    lambda a: github_tools.github_read_file(a["repo"], a["path"], a.get("ref", "")),
@@ -477,6 +482,19 @@ class ChatOrchestrator:
         except Exception as e:
             logger.error(f"Tool {name} raised: {e}")
             return {"error": str(e)}
+
+    def _clone_and_register(self, args: dict) -> dict:
+        """Clone a GitHub repo and register it as a Mira project in the DB."""
+        from . import db
+        result = github_tools.github_clone_repo(args["repo"], args.get("dest", ""))
+        if "error" in result:
+            return result
+        repo_name = args["repo"].split("/")[-1]
+        project_name = args.get("project_name", "").strip() or repo_name
+        project_id = db.create_project(project_name, local_path=result["cloned_to"], github_repo=args["repo"])
+        result["project_id"] = project_id
+        result["project_name"] = project_name
+        return result
 
     def _call_ollama(self, messages: List[Dict], tools: Optional[List] = None):
         """Call Ollama with streaming. Isolated here to make it mockable in tests."""

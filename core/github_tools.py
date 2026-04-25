@@ -2,6 +2,7 @@
 
 import base64
 import subprocess
+from pathlib import Path
 from typing import Any, Dict
 
 import httpx
@@ -24,6 +25,25 @@ def _gh(method: str, path: str, **kwargs) -> httpx.Response:
     }
     with httpx.Client(timeout=30) as client:
         return client.request(method, url, headers=headers, **kwargs)
+
+
+# ── Clone ────────────────────────────────────────────────────────────────────
+
+def github_clone_repo(repo: str, dest: str = "") -> Dict[str, Any]:
+    """Clone a GitHub repo with gh CLI (SSH). Returns the local path on success."""
+    from .config import WORKSPACE_ROOT
+    repo_name = repo.split("/")[-1]
+    clone_path = Path(dest).expanduser() if dest else Path(WORKSPACE_ROOT).expanduser() / repo_name
+    clone_path.parent.mkdir(parents=True, exist_ok=True)
+    if clone_path.exists():
+        return {"error": f"Destination already exists: {clone_path}"}
+    result = subprocess.run(
+        ["gh", "repo", "clone", repo, str(clone_path)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return {"error": result.stderr.strip() or "Clone failed"}
+    return {"cloned_to": str(clone_path), "repo": repo}
 
 
 # ── Read operations ──────────────────────────────────────────────────────────
