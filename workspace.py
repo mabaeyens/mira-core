@@ -17,6 +17,6 @@ def rel(path: Path) -> str:
     """Return a path relative to WORKSPACE_ROOT as a string."""
     root = Path(WORKSPACE_ROOT).expanduser().resolve()
     try:
-        return str(path.relative_to(root))
+        return str(path.resolve().relative_to(root))
     except ValueError:
         return str(path)
