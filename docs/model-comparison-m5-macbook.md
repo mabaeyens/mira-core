@@ -365,3 +365,40 @@ Headroom:         ~ 6.5 GB ⚠️ (Risky)
 
 **Bottom Line**: The **11-23x speed advantage** of gemma4:26b on your hardware **far outweighs** the **17-23% SWE benchmark advantage** of Qwen3.6 variants for your interactive workflow.
 
+---
+
+## Optimized Modelfile for gemma4:26b
+
+The global `OLLAMA_KV_CACHE_TYPE=q8_0` env var applies to all models. A Modelfile lets you pin parameters per-model, so changes are isolated and reproducible.
+
+**`models/gemma4-optimized.modelfile`** sets three parameters:
+
+| Parameter | Value | Effect |
+|-----------|-------|--------|
+| `llama.cpp.kv_cache_type` | `q4_k` | Halves KV cache memory vs `q8_0`. At 64K context, keeps the full cache in the 18.2 GB Metal budget (no spill to system RAM). Slight precision reduction, imperceptible in practice. |
+| `llama.cpp.flash_attn` | `true` | Redundant with the env var but pins it at the model level — portable if env var is removed. |
+| `num_ctx` | `65536` | Explicit 64K context. Overrides global env var if they diverge. |
+
+### Setup
+
+```bash
+# Create the optimised model (one-time, takes ~1 min to copy layers)
+ollama create gemma4-ultra -f ~/Documents/Projects/mira-core/models/gemma4-optimized.modelfile
+
+# Verify it loads and responds
+ollama run gemma4-ultra "hello" --verbose
+```
+
+### Switch Mira to the new model
+
+In `~/Documents/Projects/mira-core/mira.yaml`, change:
+```yaml
+model: gemma4:26b
+```
+to:
+```yaml
+model: gemma4-ultra
+```
+
+Then reload the server (`/mira-server reload`). The model name `gemma4-ultra` is just a local alias — Ollama stores it alongside `gemma4:26b` without downloading any new weights.
+
