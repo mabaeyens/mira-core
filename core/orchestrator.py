@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import types
 from pathlib import Path
 from typing import List, Dict, Optional, Iterator
@@ -15,6 +16,7 @@ from .config import (
     MAX_RETRIES, MAX_TOOL_STEPS, VERBOSE_DEFAULT,
     RAG_MAX_CHUNKS, CONTEXT_WINDOW,
     COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT,
+    THINKING_MODE,
 )
 from .tools import TOOLS, _LOCAL_TOOLS
 from .prompts import build_system_prompt, SEARCH_RESULT_TEMPLATE
@@ -81,6 +83,25 @@ def _make_oai_client(host: str) -> _openai.OpenAI:
     return _openai.OpenAI(base_url=base, api_key=_read_omlx_api_key())
 
 
+_THINK_VERBS = re.compile(
+    r"\b(why|how|fix|debug|implement|refactor|explain|design|"
+    r"analyze|review|optimize|architect|plan|compare|difference|tradeoff)\b",
+    re.IGNORECASE,
+)
+_CODE_SIGNAL = re.compile(r"```|def |class |import |error:|traceback", re.IGNORECASE)
+
+
+def _should_think(message: str) -> bool:
+    """Return True if the message warrants extended reasoning."""
+    if len(message) > 300:
+        return True
+    if _CODE_SIGNAL.search(message):
+        return True
+    if _THINK_VERBS.search(message):
+        return True
+    return False
+
+
 class ChatOrchestrator:
     """Manages the conversation loop with tool calling."""
 
@@ -89,6 +110,7 @@ class ChatOrchestrator:
         self.verbose = verbose
         self.backend = BACKEND
         self.context_window = CONTEXT_WINDOW
+        self.thinking_mode = THINKING_MODE
 
         if self.backend == "ollama":
             self._ollama = ollama.Client(host=OLLAMA_HOST)
@@ -260,6 +282,14 @@ class ChatOrchestrator:
             for att in attachments:
                 if att.get("warning"):
                     yield {"type": "warning", "message": att["warning"]}
+
+        # Adaptive thinking: override client flag with heuristic
+        if self.thinking_mode == "adaptive":
+            thinking_enabled = _should_think(user_message)
+        elif self.thinking_mode == "always":
+            thinking_enabled = True
+        elif self.thinking_mode == "never":
+            thinking_enabled = False
 
         rag_indexed_this_turn = False
         if attachments:
@@ -707,7 +737,6 @@ def _inject_no_think(messages: List[Dict]) -> List[Dict]:
 
 def _strip_think(text: str) -> str:
     """Remove <think>...</think> blocks from a string."""
-    import re
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 

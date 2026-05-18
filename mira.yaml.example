@@ -22,6 +22,10 @@ embed_host: http://localhost:11434
 # Qwen3.6-35B-A3B: 262144 tokens (256K) - requires >32GB RAM for best performance
 context_window: 65536
 
+# Thinking mode: adaptive (heuristic per request) | always | never
+# adaptive: enables thinking for complex/reasoning requests, skips for simple ones
+thinking_mode: adaptive
+
 # ── Performance Tips ─────────────────────────────────────────────────────────
 # For best performance with Ollama on MacBook Pro M5, add to ~/.zprofile:
 #   export OLLAMA_CONTEXT_LENGTH=65536

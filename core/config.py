@@ -34,6 +34,9 @@ EMBED_HOST: str = _get("embed_host", OLLAMA_HOST)
 # ── Context window ────────────────────────────────────────────────────────────
 CONTEXT_WINDOW: int = _get("context_window", 65536)
 
+# ── Thinking mode ─────────────────────────────────────────────────────────────
+THINKING_MODE: str = _get("thinking_mode", "adaptive")  # adaptive | always | never
+
 # ── Search ────────────────────────────────────────────────────────────────────
 MAX_SEARCH_RESULTS = 5
 MAX_TOOL_STEPS = 10  # max tool calls per user turn before giving up
