@@ -1,33 +1,31 @@
-# CLAUDE.md
+# Mira Core — Claude Code Reference
 
-## Project
+FastAPI backend for Mira. See `collaboration-notes.md` for session guidance and `../MIRA_WORKFLOW.md` for complete development workflow.
 
-**Mira** — local AI assistant with web search, file attachments (PDF/HTML/images), and RAG. CLI + web interface.
-- Ollama (default): qwen3.6 (Qwen3.6-35B-A3B), 64k ctx — inference at `http://localhost:11434`
-- oMLX (alt): Qwen3.6-35B-A3B, 262k ctx — inference at `http://localhost:8080`
-- Mira web server always on **port 8000** (HTTP) / **8443** (HTTPS), regardless of backend
+## Project Stack
 
-## Where to look
+- **Framework:** FastAPI (Python 3.11+)
+- **LLM Engine:** Ollama (local inference, default gemma4:26b, 64k context)
+- **Vector DB:** ChromaDB (ephemeral, for RAG)
+- **Server:** Port 8000 (HTTP) / 8443 (HTTPS)
 
-| Topic | File |
-|-------|------|
-| Module map, event protocol, RAG, cancel, test patterns | `docs/architecture.md` |
-| Config reference, model quirks, full decision log | `DEVELOPMENT.md` |
-| Backend/model config | `mira.yaml.example` |
-| Commands, hardware specs | `docs/dev-reference.md` |
+## Key Files
+
+- `APIClient.swift` — Connection resilience: probes, startup status, retry logic
+- `OllamaSearchApp.swift` — Entry point, reconnect banner, auto-connect logic
+- See `collaboration-notes.md` for full file reference and patterns
 
 ## Constraints
 
-- Always use `uv` — never `pip` or `venv`.
-- Keep all models and search local — no cloud APIs or API keys.
-- Do not change `backend` or `MODEL_NAME` in code — use `mira.yaml` instead.
-- Do not set `USE_NATIVE_SEARCH = True` — DDGS is a deliberate privacy choice.
-- `ChatOrchestrator` must remain display-agnostic — no print/console calls in `orchestrator.py`.
-- Tests mock `_call_llm`. Mock chunks need `.message.content`, `.message.tool_calls`, `.done`.
-- ChromaDB `EphemeralClient` uses UUID collection names — required.
+- Always validate user input (command injection, path traversal)
+- Connection resilience is critical — check mira-apps for UI patterns
+- Shell operations must use `subprocess` with explicit args list, never shell=True
 
-## Working style
+## Workflow Reference
 
-- Proceed without confirmation for file edits and git operations on this repo.
-- After any non-trivial fix, write a test before closing the session.
-- Bug triage: empty/wrong response → code bug; poor answer despite data → prompt engineering.
+See `../MIRA_WORKFLOW.md` for:
+- Session checklist and 5-bullet spec format (section 2)
+- Validation before releasing (section 5)
+- Release cadence (1 per week, section 7)
+- Monthly security audit (section 6)
+- Token efficiency tips (sections 1 and 8)

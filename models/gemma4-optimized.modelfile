@@ -14,3 +14,7 @@ PARAMETER llama.cpp.flash_attn true
 # The global OLLAMA_CONTEXT_LENGTH env var sets the same value, but a Modelfile
 # param takes precedence and avoids any env var misconfiguration.
 PARAMETER num_ctx 65536
+
+# Keep the first 768 tokens (system prompt) pinned in the KV cache across turns.
+# Without this, llama.cpp re-prefills the system prompt on every request.
+PARAMETER num_keep 768

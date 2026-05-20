@@ -89,17 +89,29 @@ _THINK_VERBS = re.compile(
     re.IGNORECASE,
 )
 _CODE_SIGNAL = re.compile(r"```|def |class |import |error:|traceback", re.IGNORECASE)
+# Short acknowledgements that are never complex regardless of other signals.
+_TRIVIAL = re.compile(
+    r"^\s*(ok|okay|thanks|thank you|got it|sounds good|perfect|great|sure|yes|no|yep|nope|cool)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
 
 
-def _should_think(message: str) -> bool:
+def _should_think(message: str, has_attachments: bool = False) -> bool:
     """Return True if the message warrants extended reasoning."""
-    if len(message) > 300:
-        return True
+    if _TRIVIAL.match(message):
+        return False
+    score = 0
+    if has_attachments:
+        score += 3
+    if len(message) > 500:
+        score += 2
+    elif len(message) > 150:
+        score += 1
     if _CODE_SIGNAL.search(message):
-        return True
+        score += 2
     if _THINK_VERBS.search(message):
-        return True
-    return False
+        score += 1
+    return score >= 3
 
 
 class ChatOrchestrator:
@@ -285,7 +297,7 @@ class ChatOrchestrator:
 
         # Adaptive thinking: override client flag with heuristic
         if self.thinking_mode == "adaptive":
-            thinking_enabled = _should_think(user_message)
+            thinking_enabled = _should_think(user_message, has_attachments=bool(attachments))
         elif self.thinking_mode == "always":
             thinking_enabled = True
         elif self.thinking_mode == "never":

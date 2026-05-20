@@ -60,3 +60,6 @@ COLLABORATION_NOTES.md
 
 # Local runtime config (copy from mira.yaml.example)
 mira.yaml
+
+# Local session specs (pre-coding 5-bullet plans, not for review)
+specs/
