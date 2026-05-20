@@ -1,20 +1,12 @@
 FROM gemma4:26b
 
-# Compress the KV cache from q8_0 (global env default) to q4_k.
-# Halves KV cache memory: at 64K context, this keeps the entire cache in the
-# M5's 18.2 GB "hot" Metal memory budget instead of spilling to system RAM.
-PARAMETER llama.cpp.kv_cache_type q4_k
-
-# Ensure flash attention is active at the model level.
-# Redundant with OLLAMA_FLASH_ATTENTION=1 in ~/.zprofile, but makes the
-# parameter explicit and portable if the env var is ever removed.
-PARAMETER llama.cpp.flash_attn true
-
-# Pin context to 64K. Sufficient for Mira's use case and safe on 32GB RAM.
-# The global OLLAMA_CONTEXT_LENGTH env var sets the same value, but a Modelfile
-# param takes precedence and avoids any env var misconfiguration.
+# Pin context to 64K. Takes precedence over OLLAMA_CONTEXT_LENGTH env var,
+# guarding against any env misconfiguration.
 PARAMETER num_ctx 65536
 
 # Keep the first 768 tokens (system prompt) pinned in the KV cache across turns.
 # Without this, llama.cpp re-prefills the system prompt on every request.
 PARAMETER num_keep 768
+
+# kv_cache_type (q4_k) and flash_attn are set via OLLAMA_KV_CACHE_TYPE and
+# OLLAMA_FLASH_ATTENTION in ~/.zprofile — no Modelfile param needed.
