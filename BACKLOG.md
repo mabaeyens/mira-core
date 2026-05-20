@@ -2,6 +2,7 @@
 
 ## Done
 
+- [2026-05-20] Released v0.1.30 (build 30) to TestFlight — `/compact` slash command ships in this build.
 - [2026-05-20] Implemented `/compact` slash command — `POST /compact` server endpoint + Swift intercept in `send()`; appends `.info` bubble with result; no-op handled gracefully for empty history.
 - [2026-05-20] Improved `_should_think()` heuristic — replaced binary check with scoring function; trivial acknowledgements short-circuit; attachments, length, code signals, and think-verbs each scored; threshold ≥ 3. Reduces unnecessary thinking on casual messages.
 - [2026-05-20] Added `num_keep 768` to `gemma4-optimized.modelfile` — pins system prompt tokens in KV cache across turns; saves ~200ms prefill per turn.
