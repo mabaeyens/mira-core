@@ -383,6 +383,22 @@ async def reset(_: None = Depends(_ready)):
     return {"status": "ok", "conv_id": conv_id, "title": "New conversation"}
 
 
+@app.post("/compact")
+async def compact(_: None = Depends(_ready)):
+    """Manually compress conversation history. Returns compress event JSON."""
+    non_system = [m for m in orchestrator.conversation_history if m["role"] != "system"]
+    if len(non_system) == 0:
+        return {"type": "compact_noop", "message": "Nothing to compact yet."}
+
+    summary = orchestrator.compress_history()
+    if summary is None:
+        return {"type": "compact_noop", "message": "Nothing to compact yet."}
+
+    compressed = [m for m in orchestrator.conversation_history if m["role"] != "system"]
+    db.replace_messages(orchestrator.conv_id, compressed)
+    return {"type": "compress", "message": "Earlier conversation summarised to free up context."}
+
+
 # ── Project endpoints ─────────────────────────────────────────────────────────
 
 class ProjectRequest(BaseModel):
