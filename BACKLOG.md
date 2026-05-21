@@ -2,6 +2,11 @@
 
 ## Done
 
+- [2026-05-21] Fixed thinking toggle ignored in adaptive mode — `stream_chat()` in adaptive mode was fully overriding the client's `thinking_enabled` flag with the heuristic result; changed to OR so client "force on" always wins (`core/orchestrator.py`).
+- [2026-05-21] SSE stability — Spec 4: backend readiness banner — `ChatViewModel` polls `/health` every 3s on startup; shows "Model loading…" spinner for first 120s, then persistent offline banner with Start button; banner clears when `backend_ready: true` (`ChatView.swift`, `ChatViewModel.swift`).
+- [2026-05-21] SSE stability — Spec 3: loading state from send, not first token — `send()` sets `streamingWaitMessage = "Sending…"` immediately before any SSE event; transitions to "Thinking…" on `.thinking` event; clears on error or completion (`ChatViewModel.swift`).
+- [2026-05-21] SSE stability — Spec 2: URLSession timeout — dedicated `sseSession` with `timeoutIntervalForRequest = 300` and `timeoutIntervalForResource = 3600`; health probes keep short 5s timeout (`SSEClient.swift`).
+- [2026-05-21] SSE stability — Spec 1: heartbeat handling — stale-connection watchdog Task resets on every heartbeat event; 15s gap triggers reconnection logic without flashing UI (`ChatViewModel.swift`).
 - [2026-05-20] Released v0.1.30 (build 30) to TestFlight — `/compact` slash command ships in this build.
 - [2026-05-20] Implemented `/compact` slash command — `POST /compact` server endpoint + Swift intercept in `send()`; appends `.info` bubble with result; no-op handled gracefully for empty history.
 - [2026-05-20] Improved `_should_think()` heuristic — replaced binary check with scoring function; trivial acknowledgements short-circuit; attachments, length, code signals, and think-verbs each scored; threshold ≥ 3. Reduces unnecessary thinking on casual messages.
