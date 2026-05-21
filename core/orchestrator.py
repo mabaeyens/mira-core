@@ -295,9 +295,9 @@ class ChatOrchestrator:
                 if att.get("warning"):
                     yield {"type": "warning", "message": att["warning"]}
 
-        # Adaptive thinking: override client flag with heuristic
+        # Adaptive thinking: heuristic decides, but client "force on" always wins
         if self.thinking_mode == "adaptive":
-            thinking_enabled = _should_think(user_message, has_attachments=bool(attachments))
+            thinking_enabled = thinking_enabled or _should_think(user_message, has_attachments=bool(attachments))
         elif self.thinking_mode == "always":
             thinking_enabled = True
         elif self.thinking_mode == "never":
