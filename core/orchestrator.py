@@ -360,6 +360,7 @@ class ChatOrchestrator:
         self.conversation_history.append(user_msg)
 
         fetch_results = []
+        _thinking_chars = 0  # accumulated across all tool steps for this turn
 
         for step in range(MAX_TOOL_STEPS):
             if thinking_enabled:
@@ -389,6 +390,7 @@ class ChatOrchestrator:
                         # collapsed, then continue to the normal content path.
                         thinking_token = getattr(chunk.message, "thinking", None) or ""
                         if thinking_token:
+                            _thinking_chars += len(thinking_token)
                             yield {"type": "thinking", "content": thinking_token}
 
                         raw_token = chunk.message.content or ""
@@ -475,6 +477,12 @@ class ChatOrchestrator:
                             for c in rag_chunks
                         ],
                     }
+                # Ollama's eval_count covers only the visible content tokens; thinking
+                # tokens arrive separately via chunk.message.thinking and are not included.
+                # Convert accumulated thinking chars to approximate tokens (~3.5 chars/tok)
+                # and fold into total_output_tokens so the display reflects actual compute.
+                if _thinking_chars:
+                    self.total_output_tokens += round(_thinking_chars / 3.5)
                 yield {
                     "type": "stats",
                     "input_tokens": self.total_input_tokens,
