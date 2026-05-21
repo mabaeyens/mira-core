@@ -248,16 +248,18 @@ async def chat(
     _active_cancels[request_id] = cancel_event
 
     async with _orch_lock:
-        if conversation_id and conversation_id != orchestrator.conv_id:
+        if not conversation_id:
+            # No ID supplied — always start a fresh conversation so callers without
+            # an explicit ID never inherit whatever session is currently loaded.
+            conv_id = db.create_conversation(orchestrator.model)
+            orchestrator.new_conversation(conv_id)
+        elif conversation_id != orchestrator.conv_id:
             conv = db.get_conversation(conversation_id)
             if conv:
                 project = db.get_project(conv["project_id"]) if conv.get("project_id") else None
                 orchestrator.load_conversation(conversation_id, project=project)
             else:
                 orchestrator.new_conversation(conversation_id)
-        elif not orchestrator.conv_id:
-            conv_id = db.create_conversation(orchestrator.model)
-            orchestrator.new_conversation(conv_id)
 
     attachments = []
     for upload in files:

@@ -2,6 +2,10 @@
 
 ## Done
 
+- [2026-05-21] Released v0.1.31 (build 31) to TestFlight — iOS text selection fix + session isolation + string verification mandate.
+- [2026-05-21] String verification mandate (RULE 6) — system prompt now requires Mira to use `run_shell` / `python3 -c` for any opaque string comparison >20 chars (API keys, tokens, hashes); visual inspection banned. Prevents anchor bias (stop after first mismatch found) from hiding subsequent errors (`core/prompts.py`).
+- [2026-05-21] Fixed session bleed — empty `conversation_id` in `/chat` used to silently inherit the currently-loaded orchestrator session; now always creates a fresh conversation, so curl tests or clients without an explicit ID never inject into the user's active chat (`server.py`).
+- [2026-05-21] Fixed iOS tap-and-hold text selection — `UIScrollView.delaysContentTouches` was true on the SwiftUI ScrollView wrapper, consuming UITextView's long-press gesture before it could fire; now disabled via post-layout superview walk (`MessageBubble.swift`).
 - [2026-05-21] Fixed thinking toggle ignored in adaptive mode — `stream_chat()` in adaptive mode was fully overriding the client's `thinking_enabled` flag with the heuristic result; changed to OR so client "force on" always wins (`core/orchestrator.py`).
 - [2026-05-21] SSE stability — Spec 4: backend readiness banner — `ChatViewModel` polls `/health` every 3s on startup; shows "Model loading…" spinner for first 120s, then persistent offline banner with Start button; banner clears when `backend_ready: true` (`ChatView.swift`, `ChatViewModel.swift`).
 - [2026-05-21] SSE stability — Spec 3: loading state from send, not first token — `send()` sets `streamingWaitMessage = "Sending…"` immediately before any SSE event; transitions to "Thinking…" on `.thinking` event; clears on error or completion (`ChatViewModel.swift`).
