@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import types
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict, Optional, Iterator
 
@@ -505,99 +506,121 @@ class ChatOrchestrator:
                 yield {"type": "done", "content": full_content}
                 return
 
-            # Model requested a tool call — normalize history append
+            # Model requested tool call(s) — normalize history append
             self.conversation_history.append(_message_to_history_dict(final_message))
-            tool_call = tool_calls[0]
-            tool_call_id = getattr(tool_call, 'id', None) or f"call_{step}"
 
-            if tool_call.function.name == "web_search":
-                query = tool_call.function.arguments.get("query", "")
-                num_results = tool_call.function.arguments.get("num_results", 5)
-
-                yield {"type": "search_start", "query": query}
-
-                try:
-                    results = self.search_engine.search(query, max_results=num_results)
-                except Exception as e:
-                    logger.error("Search failed: %s", e)
-                    results = []
-
-                yield {"type": "search_done", "query": query, "count": len(results), "results": results}
-                yield {"type": "agent_step", "step": step + 1, "tool": "web_search", "status": "success" if results else "error"}
-
-                self.conversation_history.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "name": tool_call.function.name,
-                    "content": SEARCH_RESULT_TEMPLATE.format(
-                        query=query,
-                        results_text=self.search_engine.get_search_summary(results)
-                    )
-                })
-            elif tool_call.function.name == "fetch_url":
-                url = tool_call.function.arguments.get("url", "")
-
-                yield {"type": "fetch_start", "url": url}
-                content = url_fetcher.fetch_url(url)
-                yield {"type": "fetch_done", "url": url, "chars": len(content)}
-                yield {"type": "agent_step", "step": step + 1, "tool": "fetch_url", "status": "success"}
-
-                fetch_results.append({
-                    "url": url,
-                    "chars": len(content),
-                    "preview": content[:300].rstrip() + ("…" if len(content) > 300 else ""),
-                })
-
-                self.conversation_history.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "name": tool_call.function.name,
-                    "content": content
-                })
-            else:
-                name = tool_call.function.name
-                args = tool_call.function.arguments
-
-                # Divergence guard: track repeated identical calls
+            # Prepare: resolve tc_id, divergence for each call in the batch
+            prepared = []
+            for i, tc in enumerate(tool_calls):
+                tc_id = getattr(tc, 'id', None) or f"call_{step}_{i}"
+                name = tc.function.name
+                args = tc.function.arguments
                 if name != "task_done":
                     call_hash = str(hash(name + json.dumps(args, sort_keys=True)))
                     repeat_count = self._tool_call_hashes.get(call_hash, 0) + 1
                     self._tool_call_hashes[call_hash] = repeat_count
                     diverged = repeat_count > AGENT_DIVERGENCE_LIMIT
                 else:
-                    call_hash = None
                     diverged = False
+                prepared.append((tc_id, name, args, diverged))
 
-                label_start, label_done_fn = _tool_ui_labels(name, args)
-                if name != "task_done":
+            # task_done short-circuits the whole batch immediately
+            if any(name == "task_done" for _, name, _, _ in prepared):
+                task_done_args = next(args for _, name, args, _ in prepared if name == "task_done")
+                self._mark_task_done(task_done_args.get("summary", "Task complete."))
+                if _thinking_chars:
+                    self.total_output_tokens += round(_thinking_chars / 3.5)
+                yield {
+                    "type": "stats",
+                    "input_tokens": self.total_input_tokens,
+                    "output_tokens": self.total_output_tokens,
+                    "context_pct": self.context_pct,
+                }
+                yield {"type": "done", "content": self._task_done_summary}
+                return
+
+            # Emit start events for all tools upfront before parallel execution
+            for tc_id, name, args, diverged in prepared:
+                if name == "web_search":
+                    yield {"type": "search_start", "query": args.get("query", "")}
+                elif name == "fetch_url":
+                    yield {"type": "fetch_start", "url": args.get("url", "")}
+                else:
+                    label_start, _ = _tool_ui_labels(name, args)
                     yield {"type": "tool_start", "tool": name, "label": label_start}
 
+            # Execute all tool calls in parallel
+            def _run_tool(tc_id, name, args, diverged):
                 if diverged:
-                    result = {"error": f"Same tool+args used {repeat_count} times with the same result. Try a different approach."}
+                    return {"error": "Same tool+args repeated too many times. Try a different approach."}
+                if name == "web_search":
+                    query = args.get("query", "")
+                    num_results = args.get("num_results", 5)
+                    try:
+                        results = self.search_engine.search(query, max_results=num_results)
+                    except Exception as e:
+                        logger.error("Search failed: %s", e)
+                        results = []
+                    return {"_web_search": True, "query": query, "results": results}
+                if name == "fetch_url":
+                    url = args.get("url", "")
+                    content = url_fetcher.fetch_url(url)
+                    return {"_fetch_url": True, "url": url, "content": content}
+                return self._dispatch_tool(name, args)
+
+            with ThreadPoolExecutor(max_workers=min(len(prepared), 4)) as pool:
+                futures = {
+                    pool.submit(_run_tool, tc_id, name, args, diverged): i
+                    for i, (tc_id, name, args, diverged) in enumerate(prepared)
+                }
+                results_by_idx: dict = {}
+                for fut in as_completed(futures):
+                    results_by_idx[futures[fut]] = fut.result()
+
+            # Emit results and append to history in original order
+            for i, (tc_id, name, args, diverged) in enumerate(prepared):
+                result = results_by_idx[i]
+                if name == "web_search":
+                    query = result.get("query", "")
+                    web_results = result.get("results", [])
+                    yield {"type": "search_done", "query": query, "count": len(web_results), "results": web_results}
+                    yield {"type": "agent_step", "step": step + 1, "tool": "web_search", "status": "success" if web_results else "error"}
+                    self.conversation_history.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "name": name,
+                        "content": SEARCH_RESULT_TEMPLATE.format(
+                            query=query,
+                            results_text=self.search_engine.get_search_summary(web_results)
+                        ),
+                    })
+                elif name == "fetch_url":
+                    url = result.get("url", "")
+                    content = result.get("content", "")
+                    yield {"type": "fetch_done", "url": url, "chars": len(content)}
+                    yield {"type": "agent_step", "step": step + 1, "tool": "fetch_url", "status": "success"}
+                    fetch_results.append({
+                        "url": url,
+                        "chars": len(content),
+                        "preview": content[:300].rstrip() + ("…" if len(content) > 300 else ""),
+                    })
+                    self.conversation_history.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "name": name,
+                        "content": content,
+                    })
                 else:
-                    result = self._dispatch_tool(name, args)
-
-                if self._task_done:
-                    if _thinking_chars:
-                        self.total_output_tokens += round(_thinking_chars / 3.5)
-                    yield {
-                        "type": "stats",
-                        "input_tokens": self.total_input_tokens,
-                        "output_tokens": self.total_output_tokens,
-                        "context_pct": self.context_pct,
-                    }
-                    yield {"type": "done", "content": self._task_done_summary}
-                    return
-
-                observation = self._wrap_observation(name, result)
-                yield {"type": "tool_done", "tool": name, "label": label_done_fn(result)}
-                yield {"type": "agent_step", "step": step + 1, "tool": name, "status": observation["status"]}
-                self.conversation_history.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "name": name,
-                    "content": json.dumps(observation),
-                })
+                    _, label_done_fn = _tool_ui_labels(name, args)
+                    observation = self._wrap_observation(name, result)
+                    yield {"type": "tool_done", "tool": name, "label": label_done_fn(result)}
+                    yield {"type": "agent_step", "step": step + 1, "tool": name, "status": observation["status"]}
+                    self.conversation_history.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "name": name,
+                        "content": json.dumps(observation),
+                    })
 
         yield {"type": "error", "message": f"Reached {MAX_AGENT_STEPS} tool calls without a final answer."}
 

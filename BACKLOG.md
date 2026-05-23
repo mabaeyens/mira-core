@@ -2,6 +2,7 @@
 
 ## Done
 
+- [2026-05-23] Parallel tool execution — all tool calls emitted by the model in a single step now execute concurrently via `ThreadPoolExecutor(max_workers=4)`; results yielded in original order; web_search and fetch_url handled uniformly; task_done short-circuits before the thread pool fires (`core/orchestrator.py`).
 - [2026-05-23] Native app UI for `agent_step` events — step counter row ("Step N — tool_name") in activity indicator area during multi-step tasks; `task_done` no longer emits `tool_start` (was causing stuck spinner); `streamingWaitMessage` now cleared on `done` event for task_done path where no tokens are streamed (`core/orchestrator.py`, `Shared/Models/ServerEvent.swift`, `ChatViewModel.swift`, `ChatView.swift`, `MessageListView.swift`).
 - [2026-05-23] Agentic loop — `task_done` tool signals explicit task completion; divergence guard injects redirect after 2 identical tool+args repeats; all tool results wrapped in `{status, payload, error_details}`; `agent_step` SSE event emitted after every tool call; step cap raised to 15; RULE 7 added to system prompt (`core/orchestrator.py`, `core/tools.py`, `core/prompts.py`, `core/config.py`).
 - [2026-05-23] Conciseness rule for Mira — system prompt now instructs Mira to ask one clarifying question when a request is ambiguous, produce one answer (not multiple variants), and avoid multi-paragraph explanations (`core/prompts.py`).
@@ -26,6 +27,7 @@
 ## Pending
 
 ### Agentic loop
+- [ ] End-to-end test `task_done` with a real multi-step task in a project context — verify divergence guard fires on repeated failures
 - [ ] Parallel tool execution in agentic mode — model sometimes emits multiple tool calls per step; currently only first is executed; consider executing all in parallel and merging before next LLM turn
 
 ### Harness quality
