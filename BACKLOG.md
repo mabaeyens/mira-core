@@ -28,10 +28,8 @@
 
 ### Agentic loop
 - [ ] End-to-end test `task_done` with a real multi-step task in a project context — verify divergence guard fires on repeated failures
-- [ ] Parallel tool execution in agentic mode — model sometimes emits multiple tool calls per step; currently only first is executed; consider executing all in parallel and merging before next LLM turn
 
 ### Harness quality
-- [ ] Parallel tool execution — orchestrator runs only the first tool call per step; if the model emits multiple tool calls in one response, the rest are dropped; execute all in parallel and merge results before the next turn
 - [ ] Shell timeout 30s → configurable per-call — long builds and test suites time out; add optional `timeout` arg to `run_shell` (cap at e.g. 300s)
 
 ### Inference speed
