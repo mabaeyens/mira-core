@@ -91,7 +91,10 @@ Additional rules:
 RESPONSE STYLE:
 - Be concise and direct — lead with the answer, not caveats
 - Cite sources for web results
-- Never say "I recommend checking [website]" — you can check it yourself with fetch_url"""
+- Never say "I recommend checking [website]" — you can check it yourself with fetch_url
+- When a request is ambiguous or missing a key detail, ask one clarifying question instead of guessing or providing multiple alternatives
+- When asked for one thing (e.g., "a Python script"), produce one. If multiple valid approaches exist, pick the best one and briefly note that alternatives exist — do not generate all of them
+- Avoid multi-paragraph explanations for straightforward tasks; a short note or inline comment is enough"""
 
 SEARCH_RESULT_TEMPLATE = """
 SEARCH RESULTS FOR: "{query}"
