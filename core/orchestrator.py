@@ -569,7 +569,8 @@ class ChatOrchestrator:
                     diverged = False
 
                 label_start, label_done_fn = _tool_ui_labels(name, args)
-                yield {"type": "tool_start", "tool": name, "label": label_start}
+                if name != "task_done":
+                    yield {"type": "tool_start", "tool": name, "label": label_start}
 
                 if diverged:
                     result = {"error": f"Same tool+args used {repeat_count} times with the same result. Try a different approach."}

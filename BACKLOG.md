@@ -2,6 +2,7 @@
 
 ## Done
 
+- [2026-05-23] Native app UI for `agent_step` events — step counter row ("Step N — tool_name") in activity indicator area during multi-step tasks; `task_done` no longer emits `tool_start` (was causing stuck spinner); `streamingWaitMessage` now cleared on `done` event for task_done path where no tokens are streamed (`core/orchestrator.py`, `Shared/Models/ServerEvent.swift`, `ChatViewModel.swift`, `ChatView.swift`, `MessageListView.swift`).
 - [2026-05-23] Agentic loop — `task_done` tool signals explicit task completion; divergence guard injects redirect after 2 identical tool+args repeats; all tool results wrapped in `{status, payload, error_details}`; `agent_step` SSE event emitted after every tool call; step cap raised to 15; RULE 7 added to system prompt (`core/orchestrator.py`, `core/tools.py`, `core/prompts.py`, `core/config.py`).
 - [2026-05-23] Conciseness rule for Mira — system prompt now instructs Mira to ask one clarifying question when a request is ambiguous, produce one answer (not multiple variants), and avoid multi-paragraph explanations (`core/prompts.py`).
 - [2026-05-23] Switched default model to `gemma4:26b-mlx` — MLX format cuts cold TTFT from ~31s to ~2.6s with no TPS regression; updated `core/config.py` and `docs/model-comparison-m5-macbook.md`; oMLX tombstone note added (crashed base M5 32GB, permanently abandoned).
@@ -25,8 +26,6 @@
 ## Pending
 
 ### Agentic loop
-- [ ] Native app rendering for `agent_step` events — show a step counter or progress indicator during multi-step tasks (iOS/macOS apps currently ignore this new event type)
-- [ ] Test `task_done` end-to-end with a real multi-step task (e.g. clone repo → find TODOs → file issues); verify divergence guard fires correctly in practice
 - [ ] Parallel tool execution in agentic mode — model sometimes emits multiple tool calls per step; currently only first is executed; consider executing all in parallel and merging before next LLM turn
 
 ### Harness quality
