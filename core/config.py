@@ -23,7 +23,7 @@ def _get(key: str, default):
 # ── Backend ───────────────────────────────────────────────────────────────────
 # "ollama" uses the ollama Python client; "omlx" uses the OpenAI-compatible API.
 BACKEND: str = _get("backend", "ollama")
-MODEL_NAME: str = _get("model", "gemma4:26b")
+MODEL_NAME: str = _get("model", "gemma4:26b-mlx")
 OLLAMA_HOST: str = _get("host", os.getenv("OLLAMA_HOST", "http://localhost:11434"))
 
 # ── Embedding backend (for RAG) ───────────────────────────────────────────────
