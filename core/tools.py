@@ -445,6 +445,27 @@ GITHUB_DELETE_BRANCH_TOOL = {
     },
 }
 
+TASK_DONE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "task_done",
+        "description": (
+            "Call this when the requested task is fully complete. "
+            "Provide a concise summary of what was accomplished."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "Concise summary of what was accomplished.",
+                },
+            },
+            "required": ["summary"],
+        },
+    },
+}
+
 TOOLS = [
     SEARCH_TOOL, FETCH_TOOL,
     # Filesystem
@@ -459,6 +480,8 @@ TOOLS = [
     GITHUB_LIST_ISSUES_TOOL, GITHUB_CREATE_ISSUE_TOOL, GITHUB_LIST_PRS_TOOL,
     GITHUB_SEARCH_CODE_TOOL, GITHUB_CREATE_PR_TOOL, GITHUB_MERGE_PR_TOOL,
     GITHUB_DELETE_FILE_TOOL, GITHUB_DELETE_BRANCH_TOOL,
+    # Agentic
+    TASK_DONE_TOOL,
 ]
 
 # Tool names that require a local workspace — excluded when project has no local_path

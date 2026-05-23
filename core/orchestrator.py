@@ -13,7 +13,7 @@ import openai as _openai
 
 from .config import (
     MODEL_NAME, BACKEND, OLLAMA_HOST,
-    MAX_RETRIES, MAX_TOOL_STEPS, VERBOSE_DEFAULT,
+    MAX_RETRIES, MAX_TOOL_STEPS, MAX_AGENT_STEPS, AGENT_DIVERGENCE_LIMIT, VERBOSE_DEFAULT,
     RAG_MAX_CHUNKS, CONTEXT_WINDOW,
     COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT,
     THINKING_MODE,
@@ -92,6 +92,12 @@ _CODE_SIGNAL = re.compile(r"```|def |class |import |error:|traceback", re.IGNORE
 # Short acknowledgements that are never complex regardless of other signals.
 _TRIVIAL = re.compile(
     r"^\s*(ok|okay|thanks|thank you|got it|sounds good|perfect|great|sure|yes|no|yep|nope|cool)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+_MULTI_STEP_RE = re.compile(
+    r'\b(then\b|after that|and then|next,|finally,)\b',
     re.IGNORECASE,
 )
 
@@ -353,6 +359,10 @@ class ChatOrchestrator:
             )
             full_message = f"[Relevant document sections]\n{context}\n\n---\n\n{full_message}"
 
+        # Inject CURRENT TASK block for multi-step requests to anchor the goal
+        if _MULTI_STEP_RE.search(user_message):
+            full_message = f"CURRENT TASK: {user_message}\n\n{full_message}"
+
         user_msg: Dict = {"role": "user", "content": full_message}
         if images:
             user_msg["images"] = images
@@ -361,8 +371,11 @@ class ChatOrchestrator:
 
         fetch_results = []
         _thinking_chars = 0  # accumulated across all tool steps for this turn
+        self._task_done = False
+        self._task_done_summary = ""
+        self._tool_call_hashes: dict = {}  # call_hash -> repeat count
 
-        for step in range(MAX_TOOL_STEPS):
+        for step in range(MAX_AGENT_STEPS):
             if thinking_enabled:
                 yield {"type": "thinking"}
 
@@ -510,6 +523,7 @@ class ChatOrchestrator:
                     results = []
 
                 yield {"type": "search_done", "query": query, "count": len(results), "results": results}
+                yield {"type": "agent_step", "step": step + 1, "tool": "web_search", "status": "success" if results else "error"}
 
                 self.conversation_history.append({
                     "role": "tool",
@@ -526,6 +540,7 @@ class ChatOrchestrator:
                 yield {"type": "fetch_start", "url": url}
                 content = url_fetcher.fetch_url(url)
                 yield {"type": "fetch_done", "url": url, "chars": len(content)}
+                yield {"type": "agent_step", "step": step + 1, "tool": "fetch_url", "status": "success"}
 
                 fetch_results.append({
                     "url": url,
@@ -542,20 +557,61 @@ class ChatOrchestrator:
             else:
                 name = tool_call.function.name
                 args = tool_call.function.arguments
+
+                # Divergence guard: track repeated identical calls
+                if name != "task_done":
+                    call_hash = str(hash(name + json.dumps(args, sort_keys=True)))
+                    repeat_count = self._tool_call_hashes.get(call_hash, 0) + 1
+                    self._tool_call_hashes[call_hash] = repeat_count
+                    diverged = repeat_count > AGENT_DIVERGENCE_LIMIT
+                else:
+                    call_hash = None
+                    diverged = False
+
                 label_start, label_done_fn = _tool_ui_labels(name, args)
                 yield {"type": "tool_start", "tool": name, "label": label_start}
-                result = self._dispatch_tool(name, args)
+
+                if diverged:
+                    result = {"error": f"Same tool+args used {repeat_count} times with the same result. Try a different approach."}
+                else:
+                    result = self._dispatch_tool(name, args)
+
+                if self._task_done:
+                    if _thinking_chars:
+                        self.total_output_tokens += round(_thinking_chars / 3.5)
+                    yield {
+                        "type": "stats",
+                        "input_tokens": self.total_input_tokens,
+                        "output_tokens": self.total_output_tokens,
+                        "context_pct": self.context_pct,
+                    }
+                    yield {"type": "done", "content": self._task_done_summary}
+                    return
+
+                observation = self._wrap_observation(name, result)
                 yield {"type": "tool_done", "tool": name, "label": label_done_fn(result)}
+                yield {"type": "agent_step", "step": step + 1, "tool": name, "status": observation["status"]}
                 self.conversation_history.append({
                     "role": "tool",
                     "tool_call_id": tool_call_id,
                     "name": name,
-                    "content": json.dumps(result),
+                    "content": json.dumps(observation),
                 })
 
-        yield {"type": "error", "message": f"Reached {MAX_TOOL_STEPS} tool calls without a final answer."}
+        yield {"type": "error", "message": f"Reached {MAX_AGENT_STEPS} tool calls without a final answer."}
 
     # ── Tool dispatch ─────────────────────────────────────────────────────────
+
+    def _wrap_observation(self, tool_name: str, result: dict) -> dict:
+        """Normalise a tool result into a structured observation for the model."""
+        if isinstance(result, dict) and "error" in result:
+            return {"status": "error", "payload": None, "error_details": result["error"]}
+        return {"status": "success", "payload": result}
+
+    def _mark_task_done(self, summary: str) -> dict:
+        self._task_done = True
+        self._task_done_summary = summary
+        return {"done": True}
 
     def _dispatch_tool(self, name: str, args: dict) -> dict:
         dispatch = {
@@ -582,6 +638,7 @@ class ChatOrchestrator:
             "github_merge_pr":      lambda a: github_tools.github_merge_pr(a["repo"], a["pr_number"], a.get("merge_method", "merge"), a.get("confirm", False)),
             "github_delete_file":   lambda a: github_tools.github_delete_file(a["repo"], a["path"], a["message"], a.get("branch", ""), a.get("confirm", False)),
             "github_delete_branch": lambda a: github_tools.github_delete_branch(a["repo"], a["branch"], a.get("confirm", False)),
+            "task_done":            lambda a: self._mark_task_done(a.get("summary", "Task complete.")),
         }
         fn = dispatch.get(name)
         if fn is None:

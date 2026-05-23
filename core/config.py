@@ -39,8 +39,10 @@ THINKING_MODE: str = _get("thinking_mode", "adaptive")  # adaptive | always | ne
 
 # ── Search ────────────────────────────────────────────────────────────────────
 MAX_SEARCH_RESULTS = 5
-MAX_TOOL_STEPS = 10  # max tool calls per user turn before giving up
-MAX_RETRIES = 3      # API-level error retries per model call
+MAX_TOOL_STEPS = 10      # max tool calls per user turn before giving up
+MAX_AGENT_STEPS = 15     # raised cap for agentic multi-step tasks
+AGENT_DIVERGENCE_LIMIT = 2  # identical tool+args repeats before injecting a redirect
+MAX_RETRIES = 3          # API-level error retries per model call
 USE_NATIVE_SEARCH = False  # DDGS chosen for privacy (see docs/architecture.md)
 SEARCH_TIMEOUT = 30
 
