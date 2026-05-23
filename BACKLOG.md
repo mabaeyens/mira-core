@@ -2,6 +2,9 @@
 
 ## Done
 
+- [2026-05-23] Agentic loop — `task_done` tool signals explicit task completion; divergence guard injects redirect after 2 identical tool+args repeats; all tool results wrapped in `{status, payload, error_details}`; `agent_step` SSE event emitted after every tool call; step cap raised to 15; RULE 7 added to system prompt (`core/orchestrator.py`, `core/tools.py`, `core/prompts.py`, `core/config.py`).
+- [2026-05-23] Conciseness rule for Mira — system prompt now instructs Mira to ask one clarifying question when a request is ambiguous, produce one answer (not multiple variants), and avoid multi-paragraph explanations (`core/prompts.py`).
+- [2026-05-23] Switched default model to `gemma4:26b-mlx` — MLX format cuts cold TTFT from ~31s to ~2.6s with no TPS regression; updated `core/config.py` and `docs/model-comparison-m5-macbook.md`; oMLX tombstone note added (crashed base M5 32GB, permanently abandoned).
 - [2026-05-21] Released v0.1.31 (build 31) to TestFlight — iOS text selection fix + session isolation + string verification mandate.
 - [2026-05-21] String verification mandate (RULE 6) — system prompt now requires Mira to use `run_shell` / `python3 -c` for any opaque string comparison >20 chars (API keys, tokens, hashes); visual inspection banned. Prevents anchor bias (stop after first mismatch found) from hiding subsequent errors (`core/prompts.py`).
 - [2026-05-21] Fixed session bleed — empty `conversation_id` in `/chat` used to silently inherit the currently-loaded orchestrator session; now always creates a fresh conversation, so curl tests or clients without an explicit ID never inject into the user's active chat (`server.py`).
@@ -21,13 +24,18 @@
 
 ## Pending
 
+### Agentic loop
+- [ ] Native app rendering for `agent_step` events — show a step counter or progress indicator during multi-step tasks (iOS/macOS apps currently ignore this new event type)
+- [ ] Test `task_done` end-to-end with a real multi-step task (e.g. clone repo → find TODOs → file issues); verify divergence guard fires correctly in practice
+- [ ] Parallel tool execution in agentic mode — model sometimes emits multiple tool calls per step; currently only first is executed; consider executing all in parallel and merging before next LLM turn
+
 ### Harness quality
 - [ ] Parallel tool execution — orchestrator runs only the first tool call per step; if the model emits multiple tool calls in one response, the rest are dropped; execute all in parallel and merge results before the next turn
 - [ ] Shell timeout 30s → configurable per-call — long builds and test suites time out; add optional `timeout` arg to `run_shell` (cap at e.g. 300s)
 
 ### Inference speed
 - [ ] Watch for quantized MLX gemma4:26b variant in Ollama registry — current `gemma4:26b` tag runs llama.cpp at ~38 tok/s; MLX path requires bf16 (52GB, won't fit 32GB RAM) and has a cold-prefill bug (#16051); revisit when a q4/q8 MLX tag appears
-- [ ] Monitor oMLX tool-calling stability for gemma4 — issues #617/#666 block it as a Mira backend; check again after oMLX 0.4.x
+- [ ] ~~oMLX~~ — permanently abandoned; crashed base M5 32GB, do not revisit on this hardware
 
 ### Future / nice-to-have
 - [ ] Scanned PDF OCR — detect scanned PDFs (empty text layer) and run OCR (e.g. `tesseract`) before indexing
@@ -45,4 +53,5 @@
 - Model validation at startup uses `client.list()` (all installed models), not `client.ps()` (only in-memory loaded models) — do not revert
 - `OLLAMA_KV_CACHE_TYPE` is global-only — cannot be overridden per model via Modelfile; currently set to `q8_0` in `~/.zprofile`; going to `q4_k` would save ~4GB KV at 64k ctx but affects all models
 - gemma4:26b is a MoE model (4B active params), not dense — decode at ~38 tok/s on llama.cpp; Ollama 0.24 MLX path not yet viable for this model (size + cold prefill bug)
+- Agentic Critic LLM call considered and rejected — proposed plan called for a secondary model call after every tool observation to decide CONTINUE/FINISH; replaced with `task_done` tool + ReAct-style prompting (RULE 7); zero extra latency, same effect
 - Router Agent considered and rejected — adds ~300ms overhead to every complex query (majority of Mira sessions); heuristic-based thinking toggle is the right lever at zero cost
