@@ -112,6 +112,35 @@ def _render_stream(orchestrator: ChatOrchestrator, user_input: str, attachments=
                     for c in event["chunks"]:
                         console.print(f"  [dim]  RAG chunk: [{c['source']} | score {c['score']:.2f}] {c['preview'][:80]}…[/dim]")
 
+            elif etype == "tool_start":
+                if spinner:
+                    spinner.stop()
+                label = event.get("label", event.get("tool", "tool"))
+                spinner = console.status(f"[dim]{label}[/dim]", spinner="dots")
+                spinner.start()
+
+            elif etype == "tool_done":
+                if spinner:
+                    spinner.stop()
+                    spinner = None
+                label = event.get("label", "")
+                ok = not label.startswith("Error")
+                icon = "[green]✅[/green]" if ok else "[yellow]⚠️[/yellow]"
+                console.print(f"  {icon} {label}")
+
+            elif etype == "agent_step":
+                if spinner:
+                    spinner.stop()
+                step = event.get("step", "?")
+                tool = event.get("tool", "")
+                status = event.get("status", "")
+                icon = "✅" if status == "success" else "⚠️"
+                console.print(f"  {icon} Step {step} — {tool}")
+                spinner = None
+
+            elif etype == "compress":
+                console.print(f"  [yellow]🗜️  {event.get('message', 'History compacted')}[/yellow]")
+
             elif etype == "warning":
                 console.print(f"  [yellow]⚠️  {event['message']}[/yellow]")
 
@@ -158,6 +187,7 @@ Available commands:
   /verbose            - Enable verbose mode
   /quiet              - Disable verbose mode
   /reset              - Reset conversation history and RAG index
+  /compact            - Summarise and compress conversation history
   /attach <path>      - Attach a file to the next message (PDF, HTML, image, text)
   /files              - List currently staged attachments
   /detach             - Clear all staged attachments
@@ -178,6 +208,13 @@ Available commands:
 
                 elif cmd == "/reset":
                     orchestrator.reset_conversation()
+
+                elif cmd == "/compact":
+                    summary = orchestrator.compress_history()
+                    if summary:
+                        console.print("  [yellow]🗜️  History compacted.[/yellow]")
+                    else:
+                        console.print("  Nothing to compact yet.")
 
                 elif cmd == "/attach":
                     if not arg:

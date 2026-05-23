@@ -2,6 +2,7 @@
 
 ## Done
 
+- [2026-05-23] Web UI + CLI parity with mira-core backend — web UI now handles `agent_step` events (step counter in status bar), `/compact` slash command intercept, "Think" toggle (sends `thinking_enabled` flag), project panel in sidebar (list/create/delete/select projects, active project badge in header, new conversations scoped to active project), and backend loading banner with `/health` polling. CLI now renders `tool_start`/`tool_done`/`agent_step`/`compress` events and supports `/compact` command (`main.py`, `static/index.html`).
 - [2026-05-23] Configurable shell timeout — `run_shell` now accepts an optional `timeout` parameter (1–300s, default 30s); model can request longer timeouts for builds/test suites; capped server-side to prevent abuse (`core/tools.py`, `core/shell_tools.py`, `core/orchestrator.py`).
 - [2026-05-23] End-to-end `task_done` test — validated full agentic loop against mira-core project: 2 agent_step events, no tool_start for task_done, done event with summary, divergence guard not triggered; all assertions pass.
 - [2026-05-23] Parallel tool execution — all tool calls emitted by the model in a single step now execute concurrently via `ThreadPoolExecutor(max_workers=4)`; results yielded in original order; web_search and fetch_url handled uniformly; task_done short-circuits before the thread pool fires (`core/orchestrator.py`).

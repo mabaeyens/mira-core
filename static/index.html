@@ -52,6 +52,111 @@
       border-right: 1px solid #1f2937;
     }
 
+    /* Project section */
+    #projectSection {
+      border-bottom: 1px solid #1f2937;
+      flex-shrink: 0;
+    }
+
+    #projectHeader {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px 6px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #6b7280;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    #newProjectBtn {
+      background: none;
+      border: none;
+      color: #6b7280;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0;
+    }
+    #newProjectBtn:hover { color: #e5e7eb; }
+
+    .proj-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      cursor: pointer;
+      border-left: 3px solid transparent;
+      font-size: 12px;
+      color: #9ca3af;
+      transition: background 0.1s;
+    }
+    .proj-item:hover { background: #1f2937; }
+    .proj-item.active { background: #1e3a5f; border-left-color: #3b82f6; color: #93c5fd; }
+
+    .proj-item-name {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .proj-delete {
+      display: none;
+      background: none;
+      border: none;
+      color: #6b7280;
+      cursor: pointer;
+      font-size: 12px;
+      line-height: 1;
+      padding: 0 2px;
+      flex-shrink: 0;
+    }
+    .proj-item:hover .proj-delete { display: inline; }
+    .proj-delete:hover { color: #ef4444; }
+
+    #newProjectForm {
+      padding: 6px 10px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    #newProjectForm input {
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: var(--radius-sm);
+      color: #e5e7eb;
+      font-size: 12px;
+      padding: 5px 8px;
+      outline: none;
+      width: 100%;
+    }
+    #newProjectForm input:focus { border-color: #3b82f6; }
+    #newProjectForm input::placeholder { color: #4b5563; }
+
+    .proj-form-btns {
+      display: flex;
+      gap: 5px;
+      justify-content: flex-end;
+    }
+
+    .proj-form-btns button {
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: var(--radius-sm);
+      color: #9ca3af;
+      cursor: pointer;
+      font-size: 12px;
+      padding: 4px 10px;
+    }
+    #projSaveBtn { background: #1e3a5f; border-color: #3b82f6; color: #93c5fd; }
+    #projSaveBtn:hover { background: #1d4ed8; }
+
+    /* Conversations section */
+    #convSection { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+
     #newConvBtn {
       margin: 10px;
       padding: 8px 12px;
@@ -71,6 +176,7 @@
       flex: 1;
       overflow-y: auto;
       padding: 0 0 8px;
+      min-height: 0;
     }
 
     .conv-item {
@@ -893,8 +999,28 @@
 <body>
 
 <nav id="sidebar">
-  <button id="newConvBtn">＋ New conversation</button>
-  <div id="convList"></div>
+  <!-- Projects section -->
+  <div id="projectSection">
+    <div id="projectHeader">
+      <span>Projects</span>
+      <button id="newProjectBtn" title="New project">＋</button>
+    </div>
+    <div id="projectList"></div>
+    <div id="newProjectForm" style="display:none">
+      <input id="projNameInput" type="text" placeholder="Name" autocomplete="off">
+      <input id="projPathInput" type="text" placeholder="Local path (optional)" autocomplete="off">
+      <input id="projRepoInput" type="text" placeholder="GitHub owner/repo (optional)" autocomplete="off">
+      <div class="proj-form-btns">
+        <button id="projCancelBtn">Cancel</button>
+        <button id="projSaveBtn">Add</button>
+      </div>
+    </div>
+  </div>
+  <!-- Conversations section -->
+  <div id="convSection">
+    <button id="newConvBtn">＋ New conversation</button>
+    <div id="convList"></div>
+  </div>
 </nav>
 
 <div class="main-area">
@@ -904,10 +1030,14 @@
     <span class="logo">✨</span>
     <span class="title">Mira</span>
     <span class="model-badge" id="modelBadge">gemma4:26b</span>
+    <span class="model-badge" id="projectBadge" style="display:none;background:#f0fdf4;color:#166534;border:1px solid #86efac"></span>
   </div>
   <div class="header-right">
     <span class="stat-badge" id="tokenBadge" title="Total session tokens: input / output">↑0k ↓0k</span>
     <span class="stat-badge" id="ctxBadge" title="Context window usage (64k)">ctx:0%</span>
+    <label class="verbose-label">
+      <input type="checkbox" id="thinkingToggle"> Think
+    </label>
     <label class="verbose-label">
       <input type="checkbox" id="verboseToggle"> Verbose
     </label>
@@ -982,7 +1112,8 @@
   const inputEl     = document.getElementById('input');
   const sendBtn     = document.getElementById('sendBtn');
   const resetBtn    = document.getElementById('resetBtn');
-  const verboseChk  = document.getElementById('verboseToggle');
+  const verboseChk    = document.getElementById('verboseToggle');
+  const thinkingChk   = document.getElementById('thinkingToggle');
   const welcomeEl   = document.getElementById('welcome');
   const modelBadge  = document.getElementById('modelBadge');
   const tokenBadge  = document.getElementById('tokenBadge');
@@ -1131,7 +1262,14 @@
   }
 
   async function newConversation() {
-    const resp = await fetch('/conversations', { method: 'POST' });
+    const body = activeProjectId
+      ? JSON.stringify({ project_id: activeProjectId })
+      : '{}';
+    const resp = await fetch('/conversations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
     const data = await resp.json();
     currentConvId = data.id;
     messagesEl.innerHTML = '';
@@ -1148,7 +1286,145 @@
     newConversation();
   });
 
-  // ── Fetch initial status ─────────────────────────────────────────────────
+  // ── Projects ──────────────────────────────────────────────────────────────
+  let activeProjectId = null;
+
+  const projectListEl  = document.getElementById('projectList');
+  const newProjectBtn  = document.getElementById('newProjectBtn');
+  const newProjectForm = document.getElementById('newProjectForm');
+  const projNameInput  = document.getElementById('projNameInput');
+  const projPathInput  = document.getElementById('projPathInput');
+  const projRepoInput  = document.getElementById('projRepoInput');
+  const projCancelBtn  = document.getElementById('projCancelBtn');
+  const projSaveBtn    = document.getElementById('projSaveBtn');
+
+  async function loadProjectList() {
+    try {
+      const resp = await fetch('/projects');
+      const data = await resp.json();
+      renderProjectList(data.projects || []);
+    } catch {}
+  }
+
+  function renderProjectList(projects) {
+    projectListEl.innerHTML = '';
+    for (const proj of projects) {
+      const item = document.createElement('div');
+      item.className = 'proj-item' + (proj.id === activeProjectId ? ' active' : '');
+      item.dataset.id = proj.id;
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'proj-delete';
+      delBtn.title = 'Delete project';
+      delBtn.textContent = '✕';
+      delBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await fetch(`/projects/${proj.id}`, { method: 'DELETE' });
+        if (activeProjectId === proj.id) {
+          activeProjectId = null;
+          updateProjectBadge(null);
+        }
+        loadProjectList();
+      });
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'proj-item-name';
+      nameEl.textContent = proj.name;
+      nameEl.title = proj.local_path || proj.github_repo || '';
+
+      item.appendChild(delBtn);
+      item.appendChild(nameEl);
+
+      item.addEventListener('click', () => {
+        activeProjectId = activeProjectId === proj.id ? null : proj.id;
+        updateProjectBadge(activeProjectId ? proj.name : null);
+        loadProjectList();
+      });
+
+      projectListEl.appendChild(item);
+    }
+  }
+
+  function updateProjectBadge(name) {
+    const badge = document.getElementById('projectBadge');
+    if (name) {
+      badge.textContent = name;
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+
+  newProjectBtn.addEventListener('click', () => {
+    newProjectForm.style.display = newProjectForm.style.display === 'none' ? 'flex' : 'none';
+    if (newProjectForm.style.display !== 'none') projNameInput.focus();
+  });
+
+  projCancelBtn.addEventListener('click', () => {
+    newProjectForm.style.display = 'none';
+    projNameInput.value = '';
+    projPathInput.value = '';
+    projRepoInput.value = '';
+  });
+
+  projSaveBtn.addEventListener('click', async () => {
+    const name = projNameInput.value.trim();
+    if (!name) { projNameInput.focus(); return; }
+    const local_path = projPathInput.value.trim();
+    const github_repo = projRepoInput.value.trim();
+    if (!local_path && !github_repo) {
+      projPathInput.focus();
+      return;
+    }
+    try {
+      const resp = await fetch('/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, local_path, github_repo }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        alert(err.detail || 'Failed to create project');
+        return;
+      }
+    } catch (e) {
+      alert(e.message);
+      return;
+    }
+    projNameInput.value = '';
+    projPathInput.value = '';
+    projRepoInput.value = '';
+    newProjectForm.style.display = 'none';
+    loadProjectList();
+  });
+
+  // ── Fetch initial status + health polling ────────────────────────────────
+  let _loadingBannerActive = false;
+
+  function showLoadingBanner() {
+    if (_loadingBannerActive) return;
+    _loadingBannerActive = true;
+    statusBar.style.display = 'flex';
+    statusText.textContent = 'Model loading…';
+  }
+
+  function hideLoadingBanner() {
+    if (!_loadingBannerActive) return;
+    _loadingBannerActive = false;
+    if (!isStreaming) statusBar.style.display = 'none';
+  }
+
+  async function pollHealth() {
+    try {
+      const r = await fetch('/health');
+      if (r.ok) {
+        const data = await r.json();
+        if (data.backend_ready) { hideLoadingBanner(); return; }
+      }
+    } catch {}
+    setTimeout(pollHealth, 3000);
+  }
+
   fetch('/status').then(r => r.json()).then(s => {
     modelBadge.textContent  = s.model;
     verboseChk.checked      = s.verbose;
@@ -1159,6 +1435,13 @@
       loadConvList();
     }
   }).catch(() => {});
+
+  // Check backend readiness; start polling if not yet ready
+  fetch('/health').then(r => r.json()).then(data => {
+    if (!data.backend_ready) { showLoadingBanner(); pollHealth(); }
+  }).catch(() => { showLoadingBanner(); pollHealth(); });
+
+  loadProjectList();
 
   // ── Auto-resize textarea ─────────────────────────────────────────────────
   inputEl.addEventListener('input', () => {
@@ -1587,6 +1870,22 @@
     const text = inputEl.value.trim();
     if (!text && stagedFiles.length === 0) return;
 
+    if (text === '/compact') {
+      inputEl.value = '';
+      inputEl.style.height = 'auto';
+      setStreaming(true, 'Compacting…');
+      try {
+        const r = await fetch('/compact', { method: 'POST' });
+        const data = await r.json();
+        addStatusChip('warning-msg', `🗜️ ${escapeHtml(data.message || 'History compacted.')}`);
+      } catch (e) {
+        addStatusChip('error-msg', `❌ ${escapeHtml(e.message)}`);
+      } finally {
+        setStreaming(false);
+      }
+      return;
+    }
+
     scrollPinned = true;   // re-pin for the new response
     inputEl.value = '';
     inputEl.style.height = 'auto';
@@ -1642,6 +1941,7 @@
       const form = new FormData();
       form.append('message', text || ' ');
       if (currentConvId) form.append('conversation_id', currentConvId);
+      form.append('thinking_enabled', thinkingChk.checked ? 'true' : 'false');
       for (const file of filesToSend) form.append('files', file);
       for (const path of pathsToSend) form.append('paths', path);
 
@@ -1875,6 +2175,10 @@
 
         case 'compress':
           addStatusChip('warning-msg', `🗜️ ${escapeHtml(event.message)}`);
+          break;
+
+        case 'agent_step':
+          setStatus(`Step ${event.step} — ${event.tool}`);
           break;
 
         case 'heartbeat':
