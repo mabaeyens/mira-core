@@ -52,7 +52,8 @@ def _abs_outside_ws_pattern(workspace_root: str) -> re.Pattern:
     )
 
 
-def run_shell(command: str, cwd: str = ".", force: bool = False, root: Optional[str] = None) -> Dict[str, Any]:
+def run_shell(command: str, cwd: str = ".", force: bool = False, root: Optional[str] = None, timeout: int = SHELL_TIMEOUT) -> Dict[str, Any]:
+    timeout = max(1, min(timeout, 300))
     effective_root = root or WORKSPACE_ROOT
     try:
         work_dir = safe_path(cwd, effective_root)
@@ -92,7 +93,7 @@ def run_shell(command: str, cwd: str = ".", force: bool = False, root: Optional[
             cwd=str(work_dir),
             capture_output=True,
             text=True,
-            timeout=SHELL_TIMEOUT,
+            timeout=timeout,
         )
         return {
             "command": command,
@@ -103,6 +104,6 @@ def run_shell(command: str, cwd: str = ".", force: bool = False, root: Optional[
             "truncated": len(result.stdout) > 8000 or len(result.stderr) > 2000,
         }
     except subprocess.TimeoutExpired:
-        return {"error": f"Timed out after {SHELL_TIMEOUT}s", "command": command}
+        return {"error": f"Timed out after {timeout}s", "command": command}
     except Exception as e:
         return {"error": str(e), "command": command}

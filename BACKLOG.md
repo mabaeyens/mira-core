@@ -2,6 +2,8 @@
 
 ## Done
 
+- [2026-05-23] Configurable shell timeout — `run_shell` now accepts an optional `timeout` parameter (1–300s, default 30s); model can request longer timeouts for builds/test suites; capped server-side to prevent abuse (`core/tools.py`, `core/shell_tools.py`, `core/orchestrator.py`).
+- [2026-05-23] End-to-end `task_done` test — validated full agentic loop against mira-core project: 2 agent_step events, no tool_start for task_done, done event with summary, divergence guard not triggered; all assertions pass.
 - [2026-05-23] Parallel tool execution — all tool calls emitted by the model in a single step now execute concurrently via `ThreadPoolExecutor(max_workers=4)`; results yielded in original order; web_search and fetch_url handled uniformly; task_done short-circuits before the thread pool fires (`core/orchestrator.py`).
 - [2026-05-23] Native app UI for `agent_step` events — step counter row ("Step N — tool_name") in activity indicator area during multi-step tasks; `task_done` no longer emits `tool_start` (was causing stuck spinner); `streamingWaitMessage` now cleared on `done` event for task_done path where no tokens are streamed (`core/orchestrator.py`, `Shared/Models/ServerEvent.swift`, `ChatViewModel.swift`, `ChatView.swift`, `MessageListView.swift`).
 - [2026-05-23] Agentic loop — `task_done` tool signals explicit task completion; divergence guard injects redirect after 2 identical tool+args repeats; all tool results wrapped in `{status, payload, error_details}`; `agent_step` SSE event emitted after every tool call; step cap raised to 15; RULE 7 added to system prompt (`core/orchestrator.py`, `core/tools.py`, `core/prompts.py`, `core/config.py`).
@@ -29,8 +31,6 @@
 ### Agentic loop
 - [ ] End-to-end test `task_done` with a real multi-step task in a project context — verify divergence guard fires on repeated failures
 
-### Harness quality
-- [ ] Shell timeout 30s → configurable per-call — long builds and test suites time out; add optional `timeout` arg to `run_shell` (cap at e.g. 300s)
 
 ### Inference speed
 - [ ] Watch for quantized MLX gemma4:26b variant in Ollama registry — current `gemma4:26b` tag runs llama.cpp at ~38 tok/s; MLX path requires bf16 (52GB, won't fit 32GB RAM) and has a cold-prefill bug (#16051); revisit when a q4/q8 MLX tag appears

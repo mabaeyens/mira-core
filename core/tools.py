@@ -177,6 +177,7 @@ RUN_SHELL_TOOL = {
                 "command": {"type": "string", "description": "Shell command to execute"},
                 "cwd": {"type": "string", "description": "Working directory relative to workspace root (default: root)", "default": "."},
                 "force": {"type": "boolean", "description": "Set true to run a previously flagged dangerous command after user confirms", "default": False},
+                "timeout": {"type": "integer", "description": "Timeout in seconds (default 30, max 300). Use for long builds or test suites.", "default": 30},
             },
             "required": ["command"],
         },

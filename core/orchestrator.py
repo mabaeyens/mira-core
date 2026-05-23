@@ -646,7 +646,7 @@ class ChatOrchestrator:
             "search_files": lambda a: fs_tools.search_files(a.get("pattern", ""), a.get("path", "."), a.get("case_sensitive", False), root=self.workspace_root),
             "move_file":    lambda a: fs_tools.move_file(a.get("src", ""), a.get("dst", ""), root=self.workspace_root),
             "delete_file":  lambda a: fs_tools.delete_file(a.get("path", ""), a.get("confirm", False), root=self.workspace_root),
-            "run_shell":    lambda a: shell_tools.run_shell(a.get("command", ""), a.get("cwd", "."), a.get("force", False), root=self.workspace_root),
+            "run_shell":    lambda a: shell_tools.run_shell(a.get("command", ""), a.get("cwd", "."), a.get("force", False), root=self.workspace_root, timeout=a.get("timeout", 30)),
             "github_clone_repo":    lambda a: self._clone_and_register(a),
             "github_list_repos":    lambda a: github_tools.github_list_repos(a.get("repo_type", "owner")),
             "github_read_file":     lambda a: github_tools.github_read_file(a["repo"], a["path"], a.get("ref", "")),
