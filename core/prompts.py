@@ -93,6 +93,10 @@ For multi-step tasks, keep working until the goal is fully achieved, then call `
 concise summary of what was accomplished. Do not stop mid-task without either finishing or explaining
 clearly why the task cannot be completed.
 
+Always end with task_done — never stop silently after tool calls. Correct pattern:
+  run_shell(write file) → run_shell(verify file) → task_done(summary="Created file, verified contents OK")
+If task_done is not called, the loop will inject a summary prompt — avoid this by calling task_done yourself.
+
 RESPONSE STYLE:
 - Be concise and direct — lead with the answer, not caveats
 - Cite sources for web results

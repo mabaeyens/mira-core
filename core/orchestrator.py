@@ -479,6 +479,20 @@ class ChatOrchestrator:
             tool_calls = final_message.tool_calls
 
             if not tool_calls:
+                # Silent completion: model used tools but produced no text response.
+                # Inject a forced summary turn so the user never sees an empty bubble.
+                if not full_content.strip() and step > 0:
+                    try:
+                        forced = self._llm_chat_sync(
+                            self.conversation_history + [{
+                                "role": "user",
+                                "content": "Briefly summarize what you just accomplished in 1–2 sentences.",
+                            }]
+                        )
+                        if forced:
+                            full_content = forced
+                    except Exception as _e:
+                        logger.warning("Forced summary call failed: %s", _e)
                 self.conversation_history.append({"role": "assistant", "content": full_content})
                 if fetch_results:
                     yield {"type": "fetch_context", "fetches": fetch_results}

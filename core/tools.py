@@ -170,7 +170,7 @@ RUN_SHELL_TOOL = {
     "type": "function",
     "function": {
         "name": "run_shell",
-        "description": "Run a shell command. Working directory is within the workspace. Destructive commands (rm -rf, git reset --hard, etc.) require force=true after user approval.",
+        "description": "Run a shell command. Working directory is within the workspace. Destructive commands (rm -rf, git reset --hard, etc.) require force=true after user approval. For counting or aggregation tasks, use a single shell pipeline (e.g. find ... | xargs wc -l | tail -1) rather than many sequential calls.",
         "parameters": {
             "type": "object",
             "properties": {
