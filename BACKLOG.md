@@ -2,6 +2,10 @@
 
 ## Done
 
+- [2026-05-24] Released v0.1.33 (build 33) to TestFlight — Edit/Resend buttons now work after successful responses; model dot turns gray when server is unreachable/starting; project badge refreshes on delete; agent step indicator format fix.
+- [2026-05-24] Mira-specific benchmark suite — `scripts/bench_compare.py` + `scripts/bench_questions.yaml` with 10 questions (baseline, code, reasoning, thinking toggle, agentic tool use, multi-turn long-context). Results in `docs/bench-results-2026-05-24.md`. Key finding: qwen3.6 wins on warm TTFT and t/s; gemma4 wins on cold TTFT, wall time for complex tasks, and memory headroom. Both models chose GitHub MCP tools over run_shell for agentic Q6–Q8; neither used task_done for Q9 (file creation).
+- [2026-05-24] Added `OLLAMA_MAX_LOADED_MODELS=1` to `~/.zprofile` — prevents accidental dual-load during model switches.
+- [2026-05-24] Updated `docs/model-comparison-m5-macbook.md` — clarified 256K is native Qwen3.6 capability not live config; added OLLAMA_MAX_LOADED_MODELS=1 to optimization tips; fixed qwen3.6:27b memory breakdown (was showing 256K KV cache, should be 64K).
 - [2026-05-24] mlx-lm benchmarked as Ollama replacement — installed `mlx-lm 0.31.3` via `uv tool install mlx-lm`; tested `Qwen3.6-35B-A3B-4bit` (44 tok/s) and `mlx-community/gemma-4-26b-a4b-it-4bit` (38 tok/s); both models cached locally. Raw throughput is competitive but thinking mode cannot be disabled in this version — TTFT of 28–62s on simple tasks makes it worse UX than Ollama live streaming. No Mira code changed. Revisit when mlx-lm exposes `max_thinking_tokens` as an API param.
 
 - [2026-05-23] Web UI + CLI parity with mira-core backend — web UI now handles `agent_step` events (step counter in status bar), `/compact` slash command intercept, "Think" toggle (sends `thinking_enabled` flag), project panel in sidebar (list/create/delete/select projects, active project badge in header, new conversations scoped to active project), and backend loading banner with `/health` polling. CLI now renders `tool_start`/`tool_done`/`agent_step`/`compress` events and supports `/compact` command (`main.py`, `static/index.html`).
@@ -33,6 +37,9 @@
 
 ### Agentic loop
 - [ ] End-to-end test `task_done` with a real multi-step task in a project context — verify divergence guard fires on repeated failures
+- [ ] Q9 benchmark failure: neither gemma4 nor qwen3.6 used tools for "create a file and verify it" — system prompt may need stronger incentive for `run_shell` on concrete local actions
+- [ ] Benchmark Q6–Q8: reformulate to tasks GitHub tools can't handle (e.g. local file ops, /tmp paths) to specifically test `run_shell` path
+- [ ] Manual quality scoring for `docs/bench-results-2026-05-24.md` — review JSONL files in `scripts/`
 
 
 ### Inference speed
