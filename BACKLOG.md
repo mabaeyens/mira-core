@@ -2,6 +2,8 @@
 
 ## Done
 
+- [2026-05-24] mlx-lm benchmarked as Ollama replacement — installed `mlx-lm 0.31.3` via `uv tool install mlx-lm`; tested `Qwen3.6-35B-A3B-4bit` (44 tok/s) and `mlx-community/gemma-4-26b-a4b-it-4bit` (38 tok/s); both models cached locally. Raw throughput is competitive but thinking mode cannot be disabled in this version — TTFT of 28–62s on simple tasks makes it worse UX than Ollama live streaming. No Mira code changed. Revisit when mlx-lm exposes `max_thinking_tokens` as an API param.
+
 - [2026-05-23] Web UI + CLI parity with mira-core backend — web UI now handles `agent_step` events (step counter in status bar), `/compact` slash command intercept, "Think" toggle (sends `thinking_enabled` flag), project panel in sidebar (list/create/delete/select projects, active project badge in header, new conversations scoped to active project), and backend loading banner with `/health` polling. CLI now renders `tool_start`/`tool_done`/`agent_step`/`compress` events and supports `/compact` command (`main.py`, `static/index.html`).
 - [2026-05-23] Configurable shell timeout — `run_shell` now accepts an optional `timeout` parameter (1–300s, default 30s); model can request longer timeouts for builds/test suites; capped server-side to prevent abuse (`core/tools.py`, `core/shell_tools.py`, `core/orchestrator.py`).
 - [2026-05-23] End-to-end `task_done` test — validated full agentic loop against mira-core project: 2 agent_step events, no tool_start for task_done, done event with summary, divergence guard not triggered; all assertions pass.
@@ -34,6 +36,7 @@
 
 
 ### Inference speed
+- [ ] mlx-lm thinking mode — `max_thinking_tokens` API param not yet exposed in mlx-lm 0.31.3; both Qwen3.6-35B-A3B-4bit and gemma-4-26b-a4b-it-4bit are cached locally at ~/.cache/huggingface/hub; re-benchmark when this lands (check mlx-lm release notes)
 - [ ] Watch for quantized MLX gemma4:26b variant in Ollama registry — current `gemma4:26b` tag runs llama.cpp at ~38 tok/s; MLX path requires bf16 (52GB, won't fit 32GB RAM) and has a cold-prefill bug (#16051); revisit when a q4/q8 MLX tag appears
 - [ ] ~~oMLX~~ — permanently abandoned; crashed base M5 32GB, do not revisit on this hardware
 
@@ -53,5 +56,6 @@
 - Model validation at startup uses `client.list()` (all installed models), not `client.ps()` (only in-memory loaded models) — do not revert
 - `OLLAMA_KV_CACHE_TYPE` is global-only — cannot be overridden per model via Modelfile; currently set to `q8_0` in `~/.zprofile`; going to `q4_k` would save ~4GB KV at 64k ctx but affects all models
 - gemma4:26b is a MoE model (4B active params), not dense — decode at ~38 tok/s on llama.cpp; Ollama 0.24 MLX path not yet viable for this model (size + cold prefill bug)
+- mlx-lm 0.31.3: all tested models (Qwen3.6-35B-A3B, gemma-4-26b) have thinking mode forced on with no API disable path; streaming is buffered (silent wait then burst), not live; raw tok/s is 38–44 on M5 base 24GB but TTFT of 28–62s makes it worse than Ollama for production; installed at `~/.local/bin/mlx_lm.server`
 - Agentic Critic LLM call considered and rejected — proposed plan called for a secondary model call after every tool observation to decide CONTINUE/FINISH; replaced with `task_done` tool + ReAct-style prompting (RULE 7); zero extra latency, same effect
 - Router Agent considered and rejected — adds ~300ms overhead to every complex query (majority of Mira sessions); heuristic-based thinking toggle is the right lever at zero cost

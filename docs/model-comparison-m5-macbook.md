@@ -1,7 +1,7 @@
 # Model Comparison: MacBook Pro M5 (32GB RAM) Performance Guide
 
 > **Hardware**: MacBook Pro 14-inch, M5 (2025), 32GB LPDDR5X RAM, 1TB SSD, macOS 26.4.1, Ollama 0.24.0 / llama.cpp b9260
-> **Last Updated**: May 23, 2026
+> **Last Updated**: May 24, 2026
 
 > Benchmark results measured and timed directly via the Ollama API and llama-server on this hardware. All test runs executed locally.
 
@@ -53,6 +53,48 @@ llama.cpp b9260 successfully compiles Metal shaders for M5 (no tensor API errors
 ## oMLX — evaluated and removed (May 23, 2026)
 
 oMLX v0.3.9 was tested as an alternative MLX inference backend. Loading Qwen3.6-35B-A3B (~23 GB in MLX format) plus oMLX's Python/MLX runtime (~3–4 GB) exceeded the 32 GB memory budget and crashed the machine. This is consistent with a history of instability on base M5 32 GB. oMLX has been uninstalled. **Do not revisit on this hardware.**
+
+---
+
+## mlx-lm 0.31.3 — evaluated and blocked on thinking mode (May 24, 2026)
+
+mlx-lm is the Python library that oMLX is built on. It was tested directly as a stable alternative after oMLX's repeated crashes. Installed via `uv tool install mlx-lm` (`~/.local/bin/mlx_lm.server`).
+
+### Models tested
+
+| Model | Source | Weights | Raw tok/s | TTFT | Verdict |
+|-------|--------|---------|-----------|------|---------|
+| `Qwen3.6-35B-A3B-4bit` | mlx-community | 16 GB (cached) | **44** | 28–62s | ⚠️ see below |
+| `gemma-4-26b-a4b-it-4bit` | mlx-community (official) | 15.6 GB (cached) | **38** | 11–40s | ⚠️ see below |
+| `gemma-4-26b-a4b-it-UD-MLX-4bit` | unsloth | 15.6 GB (cached) | **32** | 11–68s | ⚠️ see below |
+
+### Thinking mode — uncontrollable in mlx-lm 0.31.3
+
+All three models run in permanent thinking mode. Every request generates 300–1900 thinking tokens before any content is produced. The following suppression methods were all tested and confirmed ineffective:
+- `extra_body: { enable_thinking: false }`
+- `thinking: false` top-level param (works non-streaming only, ignored in streaming)
+- System prompt instructing no thinking
+- `/no_think` prefix in user message
+- Assistant prefix injection with empty `<think></think>` tag
+
+Streaming is buffered — the client waits silently through the entire thinking phase, then receives the full response in one burst. This is behaviorally equivalent to a slow non-streaming call.
+
+### Benchmark results (budget = 4000 tokens)
+
+| Task | Model | Think tok | Content tok | TTFT | Overall tok/s |
+|------|-------|-----------|-------------|------|--------------|
+| Fibonacci fn | gemma-4-26b official | 654 | 88 | 20s | 37.8 |
+| FastAPI endpoint | gemma-4-26b official | 334 | 82 | 11s | 37.4 |
+| Code review | gemma-4-26b official | 606 | 858 | 40s | 37.0 |
+| Fibonacci fn | Qwen3.6-35B-A3B | 1588 | 74 | 37s | 44.5 |
+| FastAPI endpoint | Qwen3.6-35B-A3B | 1167 | 85 | 28s | 44.0 |
+| Code review | Qwen3.6-35B-A3B | 1896 | 804 | 62s | 43.3 |
+
+### Conclusion
+
+Raw tok/s (38–44) is competitive — higher than Ollama gemma4:26b-mlx (~39 t/s). But TTFT of 11–62s before the first content token makes it objectively worse UX than Ollama live streaming for typical Mira sessions.
+
+**Do not wire into Mira backend until `max_thinking_tokens` is exposed as an API parameter** (not yet in 0.31.3). Both downloaded models remain cached at `~/.cache/huggingface/hub/`.
 
 ---
 
@@ -316,13 +358,15 @@ MTP shows no meaningful speedup on M5 (~+4% on coding, −10% on medium). Per-st
 
 ### Final comparison: all models tested
 
-| Model | Server | Sustained t/s | vs gemma4:26b |
-|-------|--------|--------------|---------------|
-| **gemma4:26b-mlx** | Ollama | **~39 t/s** | baseline |
-| gemma4:26b Q4_K_M | Ollama | **~38 t/s** | −1% |
-| Qwen3.6-35B-A3B UD-Q4_K_XL (MoE) | llama-server b9260 | **~29 t/s** | **1.3× slower** |
-| Qwen3.6-27B Q4_K_M (dense) | llama-server b9260 | ~6 t/s | **6× slower** |
-| Qwen3.6-27B UD-Q4_K_XL (dense) | llama-server b9260 | ~6 t/s | **6× slower** |
+| Model | Server | Sustained t/s | TTFT | vs gemma4:26b |
+|-------|--------|--------------|------|---------------|
+| **gemma4:26b-mlx** | Ollama | **~39 t/s** | ~1s (live stream) | baseline |
+| gemma4:26b Q4_K_M | Ollama | **~38 t/s** | ~1s (live stream) | −1% |
+| Qwen3.6-35B-A3B-4bit | mlx-lm 0.31.3 | **~44 t/s** | 28–62s ⚠️ thinking | faster raw, worse UX |
+| gemma-4-26b-a4b-it-4bit | mlx-lm 0.31.3 | **~38 t/s** | 11–40s ⚠️ thinking | same raw, worse UX |
+| Qwen3.6-35B-A3B UD-Q4_K_XL (MoE) | llama-server b9260 | **~29 t/s** | ~1s | **1.3× slower** |
+| Qwen3.6-27B Q4_K_M (dense) | llama-server b9260 | ~6 t/s | ~1s | **6× slower** |
+| Qwen3.6-27B UD-Q4_K_XL (dense) | llama-server b9260 | ~6 t/s | ~1s | **6× slower** |
 
 ### llama-server run command (35B-A3B, if you want it)
 
