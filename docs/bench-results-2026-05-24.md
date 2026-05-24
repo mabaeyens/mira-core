@@ -112,16 +112,16 @@
 | 8 | agentic-read-reason | 1 | read_file | no |
 | 9 | agentic-task-done | 3 | write_file, list_files, run_shell, write_file, read_file | no |
 
-### Manual quality scores (fill in after review)
+### Manual quality scores
 
 Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 
-| Q | Difficulty | Category | gemma4:26b-mlx score |
-|---|-----------|---------|---|
-| 6 | hard | agentic-single-tool | — |
-| 7 | hard | agentic-multi-step | — |
-| 8 | hard | agentic-read-reason | — |
-| 9 | expert | agentic-task-done | — |
+| Q | Difficulty | Category | gemma4:26b-mlx score | Notes |
+|---|-----------|---------|---|---|
+| 6 | hard | agentic-single-tool | 0 | 15× run_shell, hit MAX_AGENT_STEPS, no answer produced |
+| 7 | hard | agentic-multi-step | 1 | Output present but matched noise (yaml/jsonl files), no real TODO/FIXME in .py files |
+| 8 | hard | agentic-read-reason | 2 | Correct explanation, accurate code quotes, proper structure |
+| 9 | expert | agentic-task-done | 1 | File created (correct content), wrong path (project root not /tmp), no task_done, no text summary |
 
 ---
 
@@ -145,16 +145,16 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | 8 | agentic-read-reason | 1 | ERR | — |
 | 9 | agentic-task-done | 3 | ERR | — |
 
-### Manual quality scores (fill in after review)
+### Manual quality scores
 
 Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 
-| Q | Difficulty | Category | qwen3.6:35b-mlx score |
-|---|-----------|---------|---|
-| 6 | hard | agentic-single-tool | — |
-| 7 | hard | agentic-multi-step | — |
-| 8 | hard | agentic-read-reason | — |
-| 9 | expert | agentic-task-done | — |
+| Q | Difficulty | Category | qwen3.6:35b-mlx score | Notes |
+|---|-----------|---------|---|---|
+| 6 | hard | agentic-single-tool | N/A | Invalid run — mira.yaml pointed to gemma4; all results are ERR |
+| 7 | hard | agentic-multi-step | N/A | Invalid run — see above |
+| 8 | hard | agentic-read-reason | N/A | Invalid run — see above |
+| 9 | expert | agentic-task-done | N/A | Invalid run — see above |
 
 ---
 
@@ -178,13 +178,43 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | 8 | agentic-read-reason | 1 | read_file | no |
 | 9 | agentic-task-done | 3 | write_file, list_files, write_file, run_shell | no |
 
-### Manual quality scores (fill in after review)
+### Manual quality scores
 
 Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 
-| Q | Difficulty | Category | qwen3.6:35b-mlx score |
-|---|-----------|---------|---|
-| 6 | hard | agentic-single-tool | — |
-| 7 | hard | agentic-multi-step | — |
-| 8 | hard | agentic-read-reason | — |
-| 9 | expert | agentic-task-done | — |
+| Q | Difficulty | Category | qwen3.6:35b-mlx score | Notes |
+|---|-----------|---------|---|---|
+| 6 | hard | agentic-single-tool | 0 | SAME_TOOL_REPEAT_LIMIT fired at run_shell×7, no answer produced |
+| 7 | hard | agentic-multi-step | 0 | 6 tool calls executed, 0 chars content — model completed tools but emitted no text response |
+| 8 | hard | agentic-read-reason | 2 | Correct explanation, accurate code quotes, clear structure |
+| 9 | expert | agentic-task-done | 1 | File created (correct content), wrong path (project root not /tmp), no task_done, no text summary |
+
+---
+
+## Q6–Q9 Re-run Analysis (2026-05-24, project-scoped)
+
+### Scores
+
+| Q | Category | Expected calls | gemma4 score | qwen3.6 score |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | 0/2 | 0/2 |
+| 7 | agentic-multi-step | 2 | 1/2 | 0/2 |
+| 8 | agentic-read-reason | 1 | **2/2** | **2/2** |
+| 9 | agentic-task-done | 3 | 1/2 | 1/2 |
+| **Total** | | | **4/8** | **3/8** |
+
+### Findings
+
+**Q6 (count lines):** Both models looped. gemma4 ran 15 near-identical `find | wc` variants and hit `MAX_AGENT_STEPS` without producing a number. qwen3.6 hit `SAME_TOOL_REPEAT_LIMIT` at run_shell×7. Neither got a final answer. Correct answer was ~4,616 lines (excl. `.venv`). Both models treated the first tool result as uncertain and kept retrying — this is a prompting/trust gap, not a capability gap.
+
+**Q7 (find TODO/FIXME):** gemma4 grep'd correctly but included false positives from `bench_questions.yaml` and `bench_raw_*.jsonl` — no actual TODO/FIXME comments exist in the .py files. qwen3.6 ran 6 tool calls successfully but emitted no closing text response (silent completion failure — model treats tool results as sufficient without summarizing).
+
+**Q8 (explain divergence guard):** Both models read the file once and produced complete, accurate explanations with relevant code quotes. Best result in this set — read-then-reason is the sweet spot for current agentic capability.
+
+**Q9 (create file + verify):** Both models used `write_file` (project-scoped) instead of `run_shell echo >`, writing to the project root instead of `/tmp/`. Content was correct (`May 24, 2026\nbench OK`). Neither called `task_done`, neither produced a text summary. The task was effectively completed via tools but the agent loop ended silently.
+
+### Open issues
+
+1. **task_done never fires:** Neither model called `task_done` after completing Q9. RULE 7 in the system prompt says to call it "when the task is complete" but both models terminate the tool loop without signaling done. Needs a stronger prompt signal or an example.
+2. **Silent completions (qwen3.6 Q7, Q9):** qwen3.6 completes tool calls then emits zero tokens. Likely treating tool results as the final answer. This prevents any text response from reaching the user.
+3. **Loop behavior (Q6):** Both models retry a working command with minor variations. A one-shot instruction ("run one command and stop") or capping the observation feedback would help.
