@@ -45,7 +45,7 @@ def make_prompt(q: dict) -> str | None:
 
 def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversation_id: str) -> dict:
     """
-    POST /chat and consume the SSE stream.
+    POST /chat (multipart/form-data) and consume the SSE stream.
     Returns:
         ttft_ms       — ms to first content token
         wall_ms       — total wall time ms
@@ -55,13 +55,11 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
         eval_tokens   — token count from done event (if present)
         eval_tps      — tokens/sec from done event (if present)
     """
-    payload = {
+    # /chat takes Form fields, not JSON
+    form_data = {
         "message": prompt,
         "conversation_id": conversation_id,
-        "model": model,
-        "thinking_enabled": thinking,
-        "tools_enabled": tools,
-        "stream": True,
+        "thinking_enabled": str(thinking).lower(),
     }
 
     t_start = time.perf_counter()
@@ -73,7 +71,7 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
     eval_tps = None
 
     try:
-        with requests.post(f"{BASE_URL}/chat", json=payload, stream=True, timeout=300) as resp:
+        with requests.post(f"{BASE_URL}/chat", data=form_data, stream=True, timeout=300) as resp:
             resp.raise_for_status()
             for raw_line in resp.iter_lines():
                 if not raw_line:
@@ -91,24 +89,25 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
 
                 event_type = event.get("type", "")
 
-                if event_type == "content" and ttft_ms is None:
+                if event_type == "token" and ttft_ms is None:
                     ttft_ms = (time.perf_counter() - t_start) * 1000
 
-                if event_type == "content":
-                    content_parts.append(event.get("text", ""))
+                if event_type == "token":
+                    content_parts.append(event.get("content", ""))
 
                 elif event_type == "tool_start":
-                    tool_name = event.get("name", "unknown")
-                    if tool_name != "task_done":
+                    tool_name = event.get("tool", "unknown")
+                    if tool_name == "task_done":
+                        task_done_fired = True
+                    else:
                         tool_calls.append(tool_name)
 
-                elif event_type == "task_done":
-                    task_done_fired = True
-
                 elif event_type == "done":
-                    meta = event.get("usage") or event.get("metrics") or {}
-                    eval_tokens = meta.get("eval_count") or meta.get("eval_tokens")
-                    eval_tps = meta.get("eval_rate") or meta.get("tokens_per_second")
+                    # done event carries no timing metadata in current server — wall time is our measure
+                    pass
+
+                elif event_type == "stats":
+                    eval_tokens = event.get("output_tokens")
 
     except requests.exceptions.Timeout:
         return {"error": "timeout after 300s"}
@@ -117,6 +116,11 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
 
     wall_ms = (time.perf_counter() - t_start) * 1000
 
+    # Derive t/s from wall time and token count (TTFT to end = generation phase)
+    if eval_tokens and ttft_ms:
+        gen_s = (wall_ms - ttft_ms) / 1000
+        eval_tps = round(eval_tokens / gen_s, 1) if gen_s > 0 else None
+
     return {
         "ttft_ms": round(ttft_ms) if ttft_ms else None,
         "wall_ms": round(wall_ms),
@@ -124,7 +128,7 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
         "tool_calls": tool_calls,
         "task_done": task_done_fired,
         "eval_tokens": eval_tokens,
-        "eval_tps": round(eval_tps, 1) if eval_tps else None,
+        "eval_tps": eval_tps,
     }
 
 
@@ -181,7 +185,7 @@ def run_benchmark(model: str, questions: list[dict]) -> list[dict]:
         else:
             result = stream_chat(
                 q["prompt"],
-                model,
+                model,  # passed for logging only — server uses its configured model
                 thinking=q.get("thinking", False),
                 tools=q.get("tools", False),
                 conversation_id=f"{BENCH_CONV_ID}-q{qid}",
