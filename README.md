@@ -2,12 +2,7 @@
 
 A local AI assistant with autonomous web search, file attachments (PDF/HTML/images/text), and RAG for large documents. Available as a CLI tool and a local web interface with streaming markdown responses.
 
-Supports two local inference backends:
-
-| Backend | Model | Context | Host |
-|---------|-------|---------|------|
-| **Ollama** (default) | gemma4:26b | 64k tokens | `http://localhost:11434` |
-| **oMLX** | Qwen3.6-35B-A3B | 262k tokens | `http://localhost:8080` |
+Runs on a local Ollama backend — no cloud APIs, no API keys.
 
 ## Features
 
@@ -20,22 +15,12 @@ Supports two local inference backends:
 
 ## Prerequisites
 
-### Ollama (default)
-
 - **Python 3.12+** and **uv**
 - **Ollama** v0.24.0+ installed and running
-- **gemma4:26b**: `ollama pull gemma4:26b`
+- **gemma4:26b-mlx**: `ollama pull gemma4:26b-mlx`
 - **nomic-embed-text** (RAG embeddings): `ollama pull nomic-embed-text`
 
-### oMLX (alternative)
-
-- **Python 3.12+** and **uv**
-- **oMLX** installed at `/Applications/oMLX.app`
-- API key in `~/.omlx/settings.json` under `auth.api_key`
-
-Set `backend: omlx` in `mira.yaml` to use oMLX (see [Configuration](#configuration)).
-
-Mira starts the configured backend automatically on launch — no manual server command needed.
+Mira starts Ollama automatically on launch — no manual `ollama serve` needed.
 
 ## Setup
 
@@ -61,7 +46,7 @@ python server.py
 
 For remote access (iPad via Tailscale), the server also listens on HTTPS port **8443** — configure `SSL_CERTFILE` / `SSL_KEYFILE` in the plist (see [macOS LaunchAgent](#macos-launchagent-optional)) and connect to `https://<mac-hostname>:8443`.
 
-Mira starts the configured inference backend automatically. If oMLX or Ollama is already running, it reuses the existing process.
+Mira starts Ollama automatically. If it is already running, Mira reuses the existing process.
 
 ### Ollama env vars
 
@@ -141,8 +126,8 @@ RAG documents persist in the session index across turns — no need to re-attach
 Copy `mira.yaml.example` to `mira.yaml` and edit. All fields are optional — omit any to keep the built-in default.
 
 ```yaml
-backend: ollama            # ollama | omlx
-model: gemma4:26b
+backend: ollama
+model: gemma4:26b-mlx
 host: http://localhost:11434
 
 embed_backend: ollama
@@ -154,13 +139,13 @@ context_window: 65536
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `backend` | `ollama` | Inference backend: `ollama` or `omlx` |
-| `model` | `gemma4:26b` | Model name as shown in the backend (`Qwen3.6-35B-A3B` for oMLX) |
-| `host` | `http://localhost:11434` | Backend host URL (`http://localhost:8080` for oMLX) |
+| `backend` | `ollama` | Inference backend (`ollama` only) |
+| `model` | `gemma4:26b-mlx` | Model name as shown in Ollama |
+| `host` | `http://localhost:11434` | Backend host URL |
 | `embed_backend` | same as `backend` | Embedding backend for RAG |
 | `embed_model` | `nomic-embed-text` | Embedding model |
 | `embed_host` | same as `host` | Embedding host URL |
-| `context_window` | `65536` | Token context window (Qwen3.6-35B-A3B: `262144`) |
+| `context_window` | `65536` | Token context window |
 
 Additional settings (not user-configurable via `mira.yaml` — edit `core/config.py` only if needed):
 

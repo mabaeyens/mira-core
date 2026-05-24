@@ -13,7 +13,7 @@ uv run python -m pytest tests/test_queries.py::test_name   # single test
 
 ## Hardware
 
-MacBook Pro M5 Max — see `hardware-specs.md` for full specs and Ollama env var rationale.
+MacBook M5 base (24GB unified memory) — see `docs/model-comparison-m5-macbook.md` for benchmarks and Ollama env var rationale.
 
 ## Ports
 
@@ -21,5 +21,4 @@ MacBook Pro M5 Max — see `hardware-specs.md` for full specs and Ollama env var
 |---------|------|-------|
 | Mira web server (HTTP) | 8000 | local browser / iOS on same network |
 | Mira web server (HTTPS) | 8443 | Tailscale / remote iOS access |
-| oMLX inference | 8080 | internal only — iOS never connects here |
 | Ollama inference | 11434 | internal only |

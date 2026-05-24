@@ -54,7 +54,7 @@ static/index.html    — single-page web UI (vanilla HTML/CSS/JS + marked.js)
 | `compress` | `message` | Context window compressed — emitted after `done` when `context_pct` exceeded threshold |
 | `heartbeat` | — | Keepalive — emitted periodically during long tool calls to prevent connection timeout |
 
-**Thinking toggle:** `stream_chat()` accepts `thinking_enabled: bool = True`. For oMLX this passes `enable_thinking` in `extra_body`; for Ollama it passes `think=thinking_enabled` to the client AND injects `/no_think` into the system prompt when off (Qwen3 model-level control, belt-and-suspenders). Both backends support thinking mode — Gemma4:26b yields thinking text in `chunk.message.thinking`; Qwen3.6 yields `<think>…</think>` tags in `chunk.message.content`. The server form field `thinking_enabled` (default `true`) flows through from the app's thinking toggle button in the input bar.
+**Thinking toggle:** `stream_chat()` accepts `thinking_enabled: bool = True`. Passes `think=thinking_enabled` to the Ollama client. Gemma4 yields thinking text in `chunk.message.thinking`. The server form field `thinking_enabled` (default `true`) flows through from the app's thinking toggle button in the input bar.
 
 **Mockable boundary:** `_call_llm()` is the single point tests mock — returns an iterable of stream chunks with `.message.content`, `.message.tool_calls`, `.done`.
 
@@ -112,7 +112,7 @@ This is transparent to clients — the next turn proceeds normally with a shorte
 | `GET` | `/conversations/{id}/messages` | Full message history |
 | `GET` | `/info` | Model name, backend, host, context_window, hardware |
 | `GET` | `/backend` | Current backend/model/host/context_window |
-| `POST` | `/backend` | Switch inference backend (`{"backend": "ollama"\|"omlx"}`); blocks until ready |
+| `POST` | `/backend` | Switch inference backend (`{"backend": "ollama"}`); blocks until ready |
 | `GET` | `/rag/documents` | List indexed RAG documents |
 | `DELETE` | `/rag/documents/{name}` | Remove a RAG document |
 
@@ -137,20 +137,9 @@ Ollama offers a free-tier web search API, but signup requires a phone number and
 
 `USE_NATIVE_SEARCH` is `False` in `config.py` — do not change it.
 
-## oMLX model setup
+## Backend startup
 
-oMLX discovers models from `~/.omlx/models/`. Each subdirectory becomes a model ID:
-
-```
-~/.omlx/models/
-└── Qwen3.6-35B-A3B/        ← model_id used in API calls
-    ├── config.json
-    └── *.safetensors
-```
-
-Download the model via the oMLX admin UI (`http://localhost:8080/admin`) before starting Mira with `backend: omlx`. The `model` field in `mira.yaml` must match the directory name exactly.
-
-On Mira startup, `backend_manager.ensure_backend_running()` starts oMLX (or Ollama) automatically if not already running. The app's `/health` endpoint returns `backend_ready: false` until the inference server is reachable with the configured model, and the iOS/macOS chat view shows a banner with a "Start" button during that time.
+On Mira startup, `backend_manager.ensure_backend_running()` starts Ollama automatically if not already running. The app's `/health` endpoint returns `backend_ready: false` until the inference server is reachable with the configured model, and the iOS/macOS chat view shows a banner with a "Start" button during that time.
 
 ## Configuration reference
 
@@ -158,13 +147,13 @@ On Mira startup, `backend_manager.ensure_backend_running()` starts oMLX (or Olla
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| `backend` | `ollama` | `ollama` or `omlx` |
-| `model` | `gemma4:26b` | Model name as shown in the backend (`Qwen3.6-35B-A3B` for oMLX) |
-| `host` | `http://localhost:11434` | LLM server URL (`http://localhost:8080` for oMLX) |
-| `embed_backend` | same as `backend` | `ollama` or `omlx` |
+| `backend` | `ollama` | `ollama` only |
+| `model` | `gemma4:26b-mlx` | Model name as shown in Ollama |
+| `host` | `http://localhost:11434` | LLM server URL |
+| `embed_backend` | same as `backend` | Embedding backend for RAG |
 | `embed_model` | `nomic-embed-text` | Embedding model |
 | `embed_host` | same as `host` | Embedding server URL |
-| `context_window` | `65536` | Token context (262144 for Qwen3.6-35B-A3B on oMLX) |
+| `context_window` | `65536` | Token context window |
 
 **RAG / search knobs in `core/config.py`** (no `mira.yaml` equivalent — edit directly):
 `USE_NATIVE_SEARCH`, `MAX_SEARCH_RESULTS`, `SEARCH_TIMEOUT`, `MAX_RETRIES`, `MAX_TOOL_STEPS`, `VERBOSE_DEFAULT`, `RERANK_MODEL`, `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP`, `RAG_RETRIEVE_K`, `RAG_RERANK_TOP_K`, `RAG_SCORE_THRESHOLD`, `RAG_MAX_CHUNKS`
@@ -176,8 +165,6 @@ Behaviours that are intentional and must not be removed:
 - **Gemma4 (Ollama):** emits `tool_calls` in an intermediate chunk (`done=False`) — handled by `accumulated_tool_calls` in `orchestrator.py`.
 - **Gemma4 (Ollama):** occasionally emits LaTeX (e.g. `$\rightarrow$`) — `preprocessLatex()` in `index.html` converts to Unicode.
 - **Gemma4 (Ollama) thinking:** when `think=True`, Ollama yields thinking text in `chunk.message.thinking` (separate from `chunk.message.content`). The streaming loop checks this field and emits `thinking` events with the content before processing normal tokens.
-- **Qwen3.6 (oMLX) thinking:** emits `<think>…</think>` blocks in the content stream — the streaming loop detects and strips them; thinking content is silently consumed and never reaches token events or `full_content`. Do not remove.
-- **Qwen3.6 (oMLX):** tool calls arrive fully assembled in the done chunk (OpenAI streaming format), not as intermediate fragments.
 
 ## Test patterns
 
