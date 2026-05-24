@@ -227,7 +227,7 @@ class ChatOrchestrator:
     def _llm_chat_sync(self, messages: List[Dict]) -> str:
         """Non-streaming single-turn LLM call. Returns the text content."""
         if self.backend == "ollama":
-            resp = self._ollama.chat(model=self.model, messages=messages, stream=False)
+            resp = self._ollama.chat(model=self.model, messages=_normalize_messages_for_ollama(messages), stream=False)
             return (resp.message.content or "").strip()
         else:
             resp = self._oai.chat.completions.create(model=self.model, messages=messages)
@@ -383,6 +383,19 @@ class ChatOrchestrator:
             if thinking_enabled:
                 yield {"type": "thinking"}
 
+            # Soft step limit: warn the model at the halfway point so it can wrap up
+            # rather than hitting the hard cap silently.
+            if step == MAX_AGENT_STEPS // 2:
+                self.conversation_history.append({
+                    "role": "user",
+                    "content": (
+                        f"[System: You have made {step} tool calls so far. "
+                        f"If your task is complete, call task_done now with a summary. "
+                        f"Otherwise consolidate your remaining work into as few commands as possible — "
+                        f"the hard limit is {MAX_AGENT_STEPS} total steps.]"
+                    ),
+                })
+
             full_content = ""
             final_message = None
 
@@ -491,6 +504,8 @@ class ChatOrchestrator:
                         )
                         if forced:
                             full_content = forced
+                            # Mark as implicit task_done so done event carries the flag
+                            self._mark_task_done(forced)
                     except Exception as _e:
                         logger.warning("Forced summary call failed: %s", _e)
                 self.conversation_history.append({"role": "assistant", "content": full_content})
@@ -520,7 +535,7 @@ class ChatOrchestrator:
                     "output_tokens": self.total_output_tokens,
                     "context_pct": self.context_pct,
                 }
-                yield {"type": "done", "content": full_content}
+                yield {"type": "done", "content": full_content, "task_done": self._task_done}
                 return
 
             # Model requested tool call(s) — normalize history append

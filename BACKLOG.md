@@ -2,6 +2,8 @@
 
 ## Done
 
+- [2026-05-24] Q6-Q9 re-run (round 3) — gemma4: Q7 task_done=YES ✅, Q8 ✅, Q9 forced-summary 312 chars but task_done flag not scoring (done event task_done flag fix in progress); Q6 still hits 12-call cap. Key bug found+fixed: `_llm_chat_sync` was missing `_normalize_messages_for_ollama` (caused validation errors when history had tool_calls). Added: RULE 8 (pipeline aggregation examples), soft step-limit injection at step 7, done event carries `task_done` flag, bench runner reads that flag.
+- [2026-05-24] Q6-Q9 re-run after fixes — gemma4: 5/8 (Q7 2/2 ✅, Q8 2/2 ✅, Q9 1/2 forced-summary works, Q6 0/2 still hits cap); qwen3.6: 3/8 (Q8 2/2 ✅, Q6 1/2 partial forced-summary, Q7+Q9 0/2 hit MAX_AGENT_STEPS=15 — RULE 7 made qwen3.6 more persistent but it now over-runs instead of silently completing). SAME_TOOL_REPEAT_LIMIT raised 6→12 to fix Q7 for gemma4. Forced summary token-yield fix (`orchestrator.py`) + bench runner done-event fallback (`bench_compare.py`).
 - [2026-05-24] Silent completion fix + task_done prompt + Q6 pipeline hint — `core/orchestrator.py`: forced `_llm_chat_sync` summary turn when loop exits with 0 response tokens after tool use; `core/prompts.py`: RULE 7 now has concrete write→verify→task_done example + "never stop silently" note; `core/tools.py`: run_shell description now hints to use single shell pipelines for counting/aggregation rather than many sequential calls.
 - [2026-05-24] Manual quality scoring for Q6-Q9 re-run — gemma4: 4/8 (Q8 2/2, Q9 1/2, Q7 1/2, Q6 0/2); qwen3.6: 3/8 (Q8 2/2, Q9 1/2, Q6+Q7 0/2). Analysis in `docs/bench-results-2026-05-24.md`. Key issues: both models loop on Q6, qwen3.6 produces silent completions (tools succeed, 0-char response), neither calls task_done on Q9.
 - [2026-05-24] Hard tool call caps in orchestrator — added `MAX_TOOL_CALLS_PER_TURN=20` and `SAME_TOOL_REPEAT_LIMIT=6` to `core/config.py` + `core/orchestrator.py`; stops infinite near-identical tool call loops (qwen3.6 was making 20+ slightly-varied `run_shell` calls, evading the identical-call divergence guard). Also fixed bench runner: `/projects` response shape (`{"projects":[...]}` not bare list), wall-clock timeout (300s), per-chunk timeout (120s), `error` SSE event capture.
@@ -40,8 +42,8 @@
 ## Pending
 
 ### Agentic loop
-- [ ] End-to-end test `task_done` with a real multi-step task in a project context — verify divergence guard fires on repeated failures
-- [ ] Re-run Q6-Q9 bench after today's fixes to verify: (a) task_done fires on Q9, (b) no silent completions on Q7/Q9, (c) Q6 uses a single pipeline command
+- [ ] Q6 still broken — RULE 8 not preventing gemma4 from decomposing count task into 12+ sequential calls; model is simply not following the aggregation rule; may need stronger phrasing or a different approach
+- [ ] qwen3.6 Q7+Q9 — pending re-run with soft step-limit injection (step 7 nudge) and done event task_done flag to verify improvement
 
 
 ### Inference speed

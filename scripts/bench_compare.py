@@ -138,8 +138,12 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
                     return {"error": event.get("message", "server error"), "tool_calls": tool_calls, "wall_ms": wall_ms}
 
                 elif event_type == "done":
-                    # done event carries no timing metadata in current server — wall time is our measure
-                    pass
+                    # Capture content from done event as fallback (e.g. forced summary injected by orchestrator)
+                    done_content = event.get("content", "")
+                    if done_content and not content_parts:
+                        content_parts.append(done_content)
+                    if event.get("task_done"):
+                        task_done_fired = True
 
                 elif event_type == "stats":
                     eval_tokens = event.get("output_tokens")
