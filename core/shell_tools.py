@@ -46,8 +46,11 @@ _DANGEROUS = [
 
 def _abs_outside_ws_pattern(workspace_root: str) -> re.Pattern:
     ws = str(Path(workspace_root).expanduser().resolve())
+    # Match /word-start sequences that are absolute paths outside the workspace.
+    # Require a letter/digit after / so sed s/^/- / and similar regex delimiters
+    # aren't falsely flagged (metacharacters like ^ $ . [ are not path components).
     return re.compile(
-        r'(?<!\w)/'
+        r'(?<!\w)/(?=[a-zA-Z0-9])'
         r'(?!' + re.escape(ws.lstrip('/')) + r'(?:/|$))',
     )
 

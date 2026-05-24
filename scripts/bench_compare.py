@@ -32,15 +32,15 @@ QUESTIONS_FILE = SCRIPTS_DIR / "bench_questions.yaml"
 SERVER_PY = SCRIPTS_DIR.parent / "server.py"
 
 
-def get_project_id(project_name: str) -> str:
-    """Look up a project by name and return its ID. Raises if not found."""
+def get_project_id(project_name: str) -> tuple[str, str]:
+    """Look up a project by name. Returns (project_id, local_path). Raises if not found."""
     resp = requests.get(f"{BASE_URL}/projects", timeout=5)
     resp.raise_for_status()
     payload = resp.json()
     projects = payload["projects"] if isinstance(payload, dict) else payload
     for p in projects:
         if p["name"].lower() == project_name.lower():
-            return p["id"]
+            return p["id"], p.get("local_path", "")
     names = [p["name"] for p in projects]
     raise ValueError(f"Project '{project_name}' not found. Available: {names}")
 
@@ -212,7 +212,7 @@ def run_multi_turn(q: dict, model: str) -> dict:
     }
 
 
-def run_benchmark(model: str, questions: list[dict], project_id: str | None = None) -> list[dict]:
+def run_benchmark(model: str, questions: list[dict], project_id: str | None = None, workspace_root: str = "") -> list[dict]:
     results = []
     for q in questions:
         qid = q["id"]
@@ -225,8 +225,9 @@ def run_benchmark(model: str, questions: list[dict], project_id: str | None = No
             # Fresh conversation per question; scoped to project for agentic questions
             use_project = project_id if q.get("tools") else None
             conv_id = create_bench_conversation(use_project)
+            prompt = q["prompt"].replace("{workspace_root}", workspace_root) if workspace_root else q["prompt"]
             result = stream_chat(
-                q["prompt"],
+                prompt,
                 model,
                 thinking=q.get("thinking", False),
                 tools=q.get("tools", False),
@@ -346,9 +347,10 @@ def main():
 
     # Resolve project for agentic questions
     project_id = None
+    workspace_root = ""
     if args.project_name:
         try:
-            project_id = get_project_id(args.project_name)
+            project_id, workspace_root = get_project_id(args.project_name)
             print(f"Project '{args.project_name}' → id={project_id}")
         except ValueError as e:
             print(f"ERROR: {e}")
@@ -368,7 +370,7 @@ def main():
 
     for model in args.model:
         print(f"\nBenchmarking {model}...")
-        results = run_benchmark(model, questions, project_id=project_id)
+        results = run_benchmark(model, questions, project_id=project_id, workspace_root=workspace_root)
         all_results[model] = results
 
         raw_path = raw_dir / f"bench_raw_{today}_{model.replace(':', '_').replace('/', '_')}.jsonl"

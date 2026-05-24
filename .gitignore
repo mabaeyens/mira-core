@@ -63,3 +63,9 @@ mira.yaml
 
 # Local session specs (pre-coding 5-bullet plans, not for review)
 specs/
+
+# Bench test artifacts (created by agentic Q9 during bench runs)
+tmp/
+tmp_workaround/
+mira_bench_test.txt
+files.txt

@@ -2,6 +2,7 @@
 
 ## Done
 
+- [2026-05-25] Q7 sandbox false-positive fix + bench prompt cleanup — `_abs_outside_ws_pattern` in `core/shell_tools.py` falsely rejected `sed 's/^/- /'` and similar commands because `^/` is not preceded by a word char, matching the "absolute path outside workspace" regex. Fix: require `[a-zA-Z0-9]` after the `/` so real path components (start with letters) are caught but sed/awk regex delimiters (start with metacharacters) are not. Q7 now runs without path errors. gemma4: 1 call (correct files, filenames only — 1/2); qwen3.6: 7 calls (full grouped output with summary observation — 2/2). Also: bench_questions.yaml prompts replace hardcoded `/Users/…` paths with `{workspace_root}` (substituted at runtime from project `local_path`); bench_compare.py updated to resolve and substitute; bench artifact files removed (`tmp/`, `files.txt`, `mira_bench_test.txt`).
 - [2026-05-25] Q6-Q9 bench round 4 — both models pass Q7+Q9 with task_done=YES. Key fixes: (1) task_done done-event flag missing from short-circuit path (line 583, was always False); (2) RULE 8 example `xargs wc -l | tail -1` → `xargs cat | wc -l` (macOS batching gave inconsistent totals, causing model retry loops); (3) "Do not retry for formatting" note in RULE 8; (4) Q6 prompt changed to `core/` only (excluded .venv inflating count to 4.9M lines); (5) SAME_TOOL_REPEAT_LIMIT 12→15; (6) Hard forced summary at step MAX_AGENT_STEPS-2 (step 13) — synthesizes answer without waiting for model, fixes qwen3.6 Q7 over-run. gemma4 final: Q6/Q7/Q9 task_done=YES ✅, Q8 content only; qwen3.6 final: Q7/Q9 task_done=YES ✅, Q6/Q8 content only.
 
 - [2026-05-24] Q6-Q9 re-run (round 3) — gemma4: Q7 task_done=YES ✅, Q8 ✅, Q9 forced-summary 312 chars but task_done flag not scoring (done event task_done flag fix in progress); Q6 still hits 12-call cap. Key bug found+fixed: `_llm_chat_sync` was missing `_normalize_messages_for_ollama` (caused validation errors when history had tool_calls). Added: RULE 8 (pipeline aggregation examples), soft step-limit injection at step 7, done event carries `task_done` flag, bench runner reads that flag.
@@ -44,8 +45,7 @@
 ## Pending
 
 ### Agentic loop
-- [ ] Q6 still broken — RULE 8 not preventing gemma4 from decomposing count task into 12+ sequential calls; model is simply not following the aggregation rule; may need stronger phrasing or a different approach
-- [ ] qwen3.6 Q7+Q9 — pending re-run with soft step-limit injection (step 7 nudge) and done event task_done flag to verify improvement
+- [ ] Q7 gemma4 content quality — 1-call pipeline now works but model outputs filenames only, not grouped TODO/FIXME text; grep command uses `-l` style (files-only) instead of including matched lines; may need stronger prompt wording ("include the comment text and line number")
 
 
 ### Inference speed
