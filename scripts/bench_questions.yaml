@@ -1,0 +1,92 @@
+questions:
+  - id: 1
+    difficulty: easy
+    category: baseline
+    tools: false
+    thinking: false
+    prompt: "What is 2+2? Reply with just the number."
+    expected_tool_calls: 0
+    notes: "Micro-benchmark — TTFT and cold-load penalty only."
+
+  - id: 2
+    difficulty: easy
+    category: code-no-tools
+    tools: false
+    thinking: false
+    prompt: "Write a Python function that parses a log line in format 'YYYY-MM-DD HH:MM:SS [LEVEL] message' and returns a dict with keys: date, level, message."
+    expected_tool_calls: 0
+    notes: "Classic code gen. No reasoning required."
+
+  - id: 3
+    difficulty: medium
+    category: reasoning
+    tools: false
+    thinking: false
+    prompt: "A FastAPI server returns 503 intermittently under load. Walk through a systematic debugging approach — list concrete steps."
+    expected_tool_calls: 0
+    notes: "Run twice for question 5: once thinking=false, once thinking=true."
+
+  - id: 4
+    difficulty: medium
+    category: long-output
+    tools: false
+    thinking: false
+    prompt: "Write a complete Python context manager that wraps a sqlite3 connection: handles transactions, rolls back on exception, logs queries to stderr if LOG_SQL=1 env var is set. Include type hints."
+    expected_tool_calls: 0
+    notes: "Stress-tests generation throughput — long output expected."
+
+  - id: 5
+    difficulty: medium
+    category: thinking-toggle
+    tools: false
+    thinking: true
+    prompt: "A FastAPI server returns 503 intermittently under load. Walk through a systematic debugging approach — list concrete steps."
+    expected_tool_calls: 0
+    notes: "Same prompt as Q3 with thinking enabled. Compare quality delta and wall-time cost."
+
+  - id: 6
+    difficulty: hard
+    category: agentic-single-tool
+    tools: true
+    thinking: false
+    prompt: "How many lines of Python code are in the mira-core project? Count only .py files, exclude anything under tests/ or __pycache__."
+    expected_tool_calls: 1
+    notes: "Expects run_shell with find + wc -l. Single tool call sufficient."
+
+  - id: 7
+    difficulty: hard
+    category: agentic-multi-step
+    tools: true
+    thinking: false
+    prompt: "Find all TODO and FIXME comments in the mira-core project. Group them by file and output as a markdown list."
+    expected_tool_calls: 2
+    notes: "May use grep via run_shell or multiple read_file calls. Record actual tool call count."
+
+  - id: 8
+    difficulty: hard
+    category: agentic-read-reason
+    tools: true
+    thinking: false
+    prompt: "Read the orchestrator.py file in mira-core and describe how the divergence guard works. What exactly triggers it, what does it check, and what does it emit when triggered?"
+    expected_tool_calls: 1
+    notes: "Expects read_file on orchestrator.py, then reasoning. Correct answer: 3 identical tool+args combos triggers error SSE event."
+
+  - id: 9
+    difficulty: expert
+    category: agentic-task-done
+    tools: true
+    thinking: false
+    prompt: "Create the file /tmp/mira_bench_test.txt containing today's date and the string 'bench OK'. Then verify the file exists and contains the right content. Report what you found."
+    expected_tool_calls: 3
+    notes: "Expects: run_shell (write) + run_shell (verify) + task_done. Check that task_done fires."
+
+  - id: 10
+    difficulty: expert
+    category: multi-turn-long-context
+    tools: false
+    thinking: false
+    turns: 2
+    prompt_turn1: "__INJECT_SERVER_PY__"
+    prompt_turn2: "In the file I just shared, where is the agentic loop's divergence guard implemented? Quote the exact code block that detects repeated identical tool calls."
+    expected_tool_calls: 0
+    notes: "Turn 1 pastes server.py contents (~context stress). Turn 2 tests retrieval. bench_compare.py replaces __INJECT_SERVER_PY__ with actual file contents."
