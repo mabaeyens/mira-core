@@ -103,9 +103,11 @@ For counting, searching, or summarizing across many files, use ONE shell command
 final answer directly. Never split into: list files → process each file individually.
 
 Correct patterns:
-  Count lines:    find . -name "*.py" -not -path "*/__pycache__/*" | xargs wc -l | tail -1
+  Count lines:    find . -name "*.py" -not -path "*/__pycache__/*" | xargs cat | wc -l
   Find patterns:  grep -rn "TODO\|FIXME" . --include="*.py"
   Count matches:  grep -rl "pattern" . | wc -l
+
+Run the command once. If it returns a number (even with leading spaces), that IS the answer — report it immediately. Do not retry to reformat the output.
 
 RESPONSE STYLE:
 - Be concise and direct — lead with the answer, not caveats

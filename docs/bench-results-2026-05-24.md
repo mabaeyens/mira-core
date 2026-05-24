@@ -416,3 +416,411 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | 7 | hard | agentic-multi-step | — |
 | 8 | hard | agentic-read-reason | — |
 | 9 | expert | agentic-task-done | — |
+
+---
+
+## Benchmark Results — 2026-05-24
+
+### Timing
+
+| Q | Difficulty | Category | gemma4:26b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 6 | hard | agentic-single-tool | ERR: wall-clock timeout after 300s (4 tool calls) | — | — |
+| 7 | hard | agentic-multi-step | ERR: wall-clock timeout after 300s (0 tool calls) | — | — |
+| 8 | hard | agentic-read-reason | ERR: wall-clock timeout after 300s (0 tool calls) | — | — |
+| 9 | expert | agentic-task-done | ERR: wall-clock timeout after 300s (0 tool calls) | — | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | gemma4:26b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | ERR | — |
+| 7 | agentic-multi-step | 2 | ERR | — |
+| 8 | agentic-read-reason | 1 | ERR | — |
+| 9 | agentic-task-done | 3 | ERR | — |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | gemma4:26b-mlx score |
+|---|-----------|---------|---|
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | — |
+| 8 | hard | agentic-read-reason | — |
+| 9 | expert | agentic-task-done | — |
+
+---
+
+## Benchmark Results — 2026-05-24
+
+### Timing
+
+| Q | Difficulty | Category | gemma4:26b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 6 | hard | agentic-single-tool | ERR: Stopped: run_shell×13 — same tool called too many times in one turn. | — | — |
+| 7 | hard | agentic-multi-step | 39198ms | 137.3s | 28.9 |
+| 8 | hard | agentic-read-reason | 29118ms | 66.2s | 11.3 |
+| 9 | expert | agentic-task-done | — | 28.7s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | gemma4:26b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | ERR | — |
+| 7 | agentic-multi-step | 2 | run_shell, run_shell, run_shell | no |
+| 8 | agentic-read-reason | 1 | read_file | no |
+| 9 | agentic-task-done | 3 | write_file, run_shell, run_shell | no |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | gemma4:26b-mlx score |
+|---|-----------|---------|---|
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | — |
+| 8 | hard | agentic-read-reason | — |
+| 9 | expert | agentic-task-done | — |
+
+---
+
+## Benchmark Results — 2026-05-24
+
+### Timing
+
+| Q | Difficulty | Category | gemma4:26b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 9 | expert | agentic-task-done | — | 30.9s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | gemma4:26b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 9 | agentic-task-done | 3 | run_shell, run_shell, run_shell | YES |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | gemma4:26b-mlx score |
+|---|-----------|---------|---|
+| 9 | expert | agentic-task-done | — |
+
+---
+
+## Benchmark Results — 2026-05-24
+
+### Timing
+
+| Q | Difficulty | Category | gemma4:26b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 6 | hard | agentic-single-tool | — | 66.2s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | gemma4:26b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell | YES |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | gemma4:26b-mlx score |
+|---|-----------|---------|---|
+| 6 | hard | agentic-single-tool | — |
+
+---
+
+## Benchmark Results — 2026-05-24
+
+### Timing
+
+| Q | Difficulty | Category | gemma4:26b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 6 | hard | agentic-single-tool | ERR: Stopped: run_shell×13 — same tool called too many times in one turn. | — | — |
+| 7 | hard | agentic-multi-step | 59504ms | 156.0s | 31.5 |
+| 8 | hard | agentic-read-reason | 28878ms | 78.6s | 12.1 |
+| 9 | expert | agentic-task-done | — | 32.0s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | gemma4:26b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | ERR | — |
+| 7 | agentic-multi-step | 2 | run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell | no |
+| 8 | agentic-read-reason | 1 | read_file | no |
+| 9 | agentic-task-done | 3 | run_shell, run_shell, run_shell | YES |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | gemma4:26b-mlx score |
+|---|-----------|---------|---|
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | — |
+| 8 | hard | agentic-read-reason | — |
+| 9 | expert | agentic-task-done | — |
+
+---
+
+## Benchmark Results — 2026-05-24
+
+### Timing
+
+| Q | Difficulty | Category | gemma4:26b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 6 | hard | agentic-single-tool | ERR: Stopped: run_shell×13 — same tool called too many times in one turn. | — | — |
+| 7 | hard | agentic-multi-step | — | 132.4s | — |
+| 8 | hard | agentic-read-reason | 30726ms | 76.9s | 11.0 |
+| 9 | expert | agentic-task-done | — | 33.2s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | gemma4:26b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | ERR | — |
+| 7 | agentic-multi-step | 2 | run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell | YES |
+| 8 | agentic-read-reason | 1 | read_file | no |
+| 9 | agentic-task-done | 3 | run_shell, run_shell, run_shell | YES |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | gemma4:26b-mlx score |
+|---|-----------|---------|---|
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | — |
+| 8 | hard | agentic-read-reason | — |
+| 9 | expert | agentic-task-done | — |
+
+---
+
+## Benchmark Results — 2026-05-24
+
+### Timing
+
+| Q | Difficulty | Category | gemma4:26b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 6 | hard | agentic-single-tool | ERR: Reached 15 tool calls without a final answer. | — | — |
+| 7 | hard | agentic-multi-step | 66194ms | 149.9s | 40.1 |
+| 8 | hard | agentic-read-reason | 30355ms | 65.6s | 13.2 |
+| 9 | expert | agentic-task-done | — | 31.3s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | gemma4:26b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | ERR | — |
+| 7 | agentic-multi-step | 2 | run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell | no |
+| 8 | agentic-read-reason | 1 | read_file | no |
+| 9 | agentic-task-done | 3 | run_shell, run_shell, run_shell | YES |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | gemma4:26b-mlx score |
+|---|-----------|---------|---|
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | — |
+| 8 | hard | agentic-read-reason | — |
+| 9 | expert | agentic-task-done | — |
+
+---
+
+## Benchmark Results — 2026-05-24
+
+### Timing
+
+| Q | Difficulty | Category | gemma4:26b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 6 | hard | agentic-single-tool | ERR: Reached 15 tool calls without a final answer. | — | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | gemma4:26b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | ERR | — |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | gemma4:26b-mlx score |
+|---|-----------|---------|---|
+| 6 | hard | agentic-single-tool | — |
+
+---
+
+## Benchmark Results — 2026-05-24
+
+### Timing
+
+| Q | Difficulty | Category | gemma4:26b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 6 | hard | agentic-single-tool | — | 39.2s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | gemma4:26b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell | YES |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | gemma4:26b-mlx score |
+|---|-----------|---------|---|
+| 6 | hard | agentic-single-tool | — |
+
+---
+
+## Benchmark Results — 2026-05-24
+
+### Timing
+
+| Q | Difficulty | Category | gemma4:26b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 6 | hard | agentic-single-tool | — | 36.5s | — |
+| 7 | hard | agentic-multi-step | 69665ms | 162.9s | 41.3 |
+| 8 | hard | agentic-read-reason | 30641ms | 60.4s | 13.2 |
+| 9 | expert | agentic-task-done | — | 22.5s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | gemma4:26b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | run_shell, run_shell | YES |
+| 7 | agentic-multi-step | 2 | run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell | no |
+| 8 | agentic-read-reason | 1 | read_file | no |
+| 9 | agentic-task-done | 3 | run_shell, run_shell, run_shell | YES |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | gemma4:26b-mlx score |
+|---|-----------|---------|---|
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | — |
+| 8 | hard | agentic-read-reason | — |
+| 9 | expert | agentic-task-done | — |
+
+---
+
+## Benchmark Results — 2026-05-24
+
+### Timing
+
+| Q | Difficulty | Category | qwen3.6:35b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 6 | hard | agentic-single-tool | 8199ms | 69.2s | 7.3 |
+| 7 | hard | agentic-multi-step | ERR: Reached 15 tool calls without a final answer. | — | — |
+| 8 | hard | agentic-read-reason | 20351ms | 78.8s | 8.8 |
+| 9 | expert | agentic-task-done | 2189ms | 41.2s | 6.8 |
+
+### Agentic results
+
+| Q | Category | Expected calls | qwen3.6:35b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell | no |
+| 7 | agentic-multi-step | 2 | ERR | — |
+| 8 | agentic-read-reason | 1 | read_file | no |
+| 9 | agentic-task-done | 3 | write_file, run_shell, run_shell | no |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | qwen3.6:35b-mlx score |
+|---|-----------|---------|---|
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | — |
+| 8 | hard | agentic-read-reason | — |
+| 9 | expert | agentic-task-done | — |
+
+---
+
+## Benchmark Results — 2026-05-24
+
+### Timing
+
+| Q | Difficulty | Category | qwen3.6:35b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 7 | hard | agentic-multi-step | ERR: Reached 15 tool calls without a final answer. | — | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | qwen3.6:35b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 7 | agentic-multi-step | 2 | ERR | — |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | qwen3.6:35b-mlx score |
+|---|-----------|---------|---|
+| 7 | hard | agentic-multi-step | — |
+
+---
+
+## Benchmark Results — 2026-05-24
+
+### Timing
+
+| Q | Difficulty | Category | qwen3.6:35b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 7 | hard | agentic-multi-step | 18368ms | 141.2s | 15.6 |
+
+### Agentic results
+
+| Q | Category | Expected calls | qwen3.6:35b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 7 | agentic-multi-step | 2 | run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, search_files, search_files, run_shell, run_shell, run_shell | YES |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | qwen3.6:35b-mlx score |
+|---|-----------|---------|---|
+| 7 | hard | agentic-multi-step | — |
+
+---
+
+## Benchmark Results — 2026-05-25
+
+### Timing
+
+| Q | Difficulty | Category | qwen3.6:35b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 6 | hard | agentic-single-tool | 11464ms | 62.3s | 4.2 |
+| 7 | hard | agentic-multi-step | 36084ms | 147.5s | 14.5 |
+| 8 | hard | agentic-read-reason | 26606ms | 96.3s | 14.2 |
+| 9 | expert | agentic-task-done | 21719ms | 72.9s | 14.3 |
+
+### Agentic results
+
+| Q | Category | Expected calls | qwen3.6:35b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | run_shell, run_shell, run_shell, run_shell | no |
+| 7 | agentic-multi-step | 2 | run_shell, run_shell, run_shell, run_shell, run_shell, list_files, run_shell, search_files, run_shell, run_shell, run_shell, run_shell, run_shell | YES |
+| 8 | agentic-read-reason | 1 | read_file | no |
+| 9 | agentic-task-done | 3 | write_file, run_shell, run_shell, read_file, run_shell, run_shell, run_shell, run_shell, run_shell, read_file, write_file, read_file, run_shell | YES |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | qwen3.6:35b-mlx score |
+|---|-----------|---------|---|
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | — |
+| 8 | hard | agentic-read-reason | — |
+| 9 | expert | agentic-task-done | — |

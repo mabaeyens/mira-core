@@ -49,7 +49,7 @@ questions:
     category: agentic-single-tool
     tools: true
     thinking: false
-    prompt: "Using shell commands, count the total number of lines across all .py files in /Users/miguel/Documents/Projects/mira-core — exclude anything under tests/ or __pycache__. Show only the total line count."
+    prompt: "Using a single shell command, count the total number of lines across all .py files in /Users/miguel/Documents/Projects/mira-core/core — exclude __pycache__. Show only the total line count."
     expected_tool_calls: 1
     notes: "Expects run_shell with find + wc -l on explicit local path. Single tool call sufficient. GitHub tools cannot fulfill this."
 

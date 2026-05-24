@@ -383,8 +383,7 @@ class ChatOrchestrator:
             if thinking_enabled:
                 yield {"type": "thinking"}
 
-            # Soft step limit: warn the model at the halfway point so it can wrap up
-            # rather than hitting the hard cap silently.
+            # Soft step limit: warn the model at the halfway point and again near the hard cap.
             if step == MAX_AGENT_STEPS // 2:
                 self.conversation_history.append({
                     "role": "user",
@@ -395,6 +394,39 @@ class ChatOrchestrator:
                         f"the hard limit is {MAX_AGENT_STEPS} total steps.]"
                     ),
                 })
+            elif step == MAX_AGENT_STEPS - 3:
+                self.conversation_history.append({
+                    "role": "user",
+                    "content": (
+                        f"[System: URGENT — only {MAX_AGENT_STEPS - step} steps remain before hard cutoff. "
+                        f"You MUST call task_done NOW with a summary of what you have found so far. "
+                        f"Do not make any more tool calls.]"
+                    ),
+                })
+            elif step == MAX_AGENT_STEPS - 2 and self._total_tool_calls > 0 and not self._task_done:
+                # Hard forced summary: model has been running too long — synthesize a
+                # response from what it has gathered so far.
+                try:
+                    forced = self._llm_chat_sync(
+                        self.conversation_history + [{
+                            "role": "user",
+                            "content": "Summarize what you have accomplished or found so far, in 2-3 sentences.",
+                        }]
+                    )
+                    if forced:
+                        self._mark_task_done(forced)
+                        if _thinking_chars:
+                            self.total_output_tokens += round(_thinking_chars / 3.5)
+                        yield {
+                            "type": "stats",
+                            "input_tokens": self.total_input_tokens,
+                            "output_tokens": self.total_output_tokens,
+                            "context_pct": self.context_pct,
+                        }
+                        yield {"type": "done", "content": forced, "task_done": True}
+                        return
+                except Exception as _e:
+                    logger.warning("Hard forced summary failed: %s", _e)
 
             full_content = ""
             final_message = None
@@ -580,7 +612,7 @@ class ChatOrchestrator:
                     "output_tokens": self.total_output_tokens,
                     "context_pct": self.context_pct,
                 }
-                yield {"type": "done", "content": self._task_done_summary}
+                yield {"type": "done", "content": self._task_done_summary, "task_done": True}
                 return
 
             # Emit start events for all tools upfront before parallel execution
