@@ -2,6 +2,7 @@
 
 ## Done
 
+- [2026-05-24] Silent completion fix + task_done prompt + Q6 pipeline hint — `core/orchestrator.py`: forced `_llm_chat_sync` summary turn when loop exits with 0 response tokens after tool use; `core/prompts.py`: RULE 7 now has concrete write→verify→task_done example + "never stop silently" note; `core/tools.py`: run_shell description now hints to use single shell pipelines for counting/aggregation rather than many sequential calls.
 - [2026-05-24] Manual quality scoring for Q6-Q9 re-run — gemma4: 4/8 (Q8 2/2, Q9 1/2, Q7 1/2, Q6 0/2); qwen3.6: 3/8 (Q8 2/2, Q9 1/2, Q6+Q7 0/2). Analysis in `docs/bench-results-2026-05-24.md`. Key issues: both models loop on Q6, qwen3.6 produces silent completions (tools succeed, 0-char response), neither calls task_done on Q9.
 - [2026-05-24] Hard tool call caps in orchestrator — added `MAX_TOOL_CALLS_PER_TURN=20` and `SAME_TOOL_REPEAT_LIMIT=6` to `core/config.py` + `core/orchestrator.py`; stops infinite near-identical tool call loops (qwen3.6 was making 20+ slightly-varied `run_shell` calls, evading the identical-call divergence guard). Also fixed bench runner: `/projects` response shape (`{"projects":[...]}` not bare list), wall-clock timeout (300s), per-chunk timeout (120s), `error` SSE event capture.
 - [2026-05-24] Bench Q6-Q9 re-run (gemma4) — tools now available via `--project-name mira-core`; gemma4 made real tool calls: Q6 15×run_shell (over-eager), Q7 5×run_shell, Q8 1×read_file ✓, Q9 write_file+list_files+run_shell+write_file+read_file (no task_done). Results appended to `docs/bench-results-2026-05-24.md`.
@@ -39,9 +40,8 @@
 ## Pending
 
 ### Agentic loop
-- [ ] **Strengthen task_done prompt signal** — neither gemma4 nor qwen3.6 called task_done on Q9 despite successfully completing the task via tools. RULE 7 says "when the task is complete, call task_done" but both models end the loop silently. Fix: add an explicit concrete example to the system prompt showing a write+verify sequence ending with task_done. File: `core/prompts.py`. Acceptance: Q9 bench calls task_done consistently.
-- [ ] **Fix qwen3.6 silent completions** — on Q7 and Q9, qwen3.6 executed all tool calls but emitted zero response tokens (no closing summary). The model appears to treat tool results as the final answer. Fix options: (a) add a post-tool-loop instruction "Always write a brief summary after completing tool calls", (b) inject a final forced turn if the agentic loop exits with 0 response tokens. File: `core/orchestrator.py` or `core/prompts.py`.
 - [ ] End-to-end test `task_done` with a real multi-step task in a project context — verify divergence guard fires on repeated failures
+- [ ] Re-run Q6-Q9 bench after today's fixes to verify: (a) task_done fires on Q9, (b) no silent completions on Q7/Q9, (c) Q6 uses a single pipeline command
 
 
 ### Inference speed
