@@ -36,7 +36,8 @@ def get_project_id(project_name: str) -> str:
     """Look up a project by name and return its ID. Raises if not found."""
     resp = requests.get(f"{BASE_URL}/projects", timeout=5)
     resp.raise_for_status()
-    projects = resp.json()
+    payload = resp.json()
+    projects = payload["projects"] if isinstance(payload, dict) else payload
     for p in projects:
         if p["name"].lower() == project_name.lower():
             return p["id"]
@@ -63,6 +64,10 @@ def make_prompt(q: dict) -> str | None:
     if q.get("turns", 1) > 1:
         return None
     return q["prompt"]
+
+
+MAX_TOOL_CALLS = 25
+WALL_TIMEOUT_S = 300  # hard wall-clock limit per question (5 min)
 
 
 def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversation_id: str) -> dict:
@@ -93,9 +98,13 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
     eval_tps = None
 
     try:
-        with requests.post(f"{BASE_URL}/chat", data=form_data, stream=True, timeout=300) as resp:
+        with requests.post(f"{BASE_URL}/chat", data=form_data, stream=True, timeout=120) as resp:
             resp.raise_for_status()
             for raw_line in resp.iter_lines():
+                if time.perf_counter() - t_start > WALL_TIMEOUT_S:
+                    return {"error": f"wall-clock timeout after {WALL_TIMEOUT_S}s ({len(tool_calls)} tool calls)"}
+                if len(tool_calls) > MAX_TOOL_CALLS:
+                    return {"error": f"too many tool calls ({len(tool_calls)}), likely infinite loop"}
                 if not raw_line:
                     continue
                 line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
@@ -124,6 +133,10 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
                     else:
                         tool_calls.append(tool_name)
 
+                elif event_type == "error":
+                    wall_ms = round((time.perf_counter() - t_start) * 1000)
+                    return {"error": event.get("message", "server error"), "tool_calls": tool_calls, "wall_ms": wall_ms}
+
                 elif event_type == "done":
                     # done event carries no timing metadata in current server — wall time is our measure
                     pass
@@ -132,7 +145,7 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
                     eval_tokens = event.get("output_tokens")
 
     except requests.exceptions.Timeout:
-        return {"error": "timeout after 300s"}
+        return {"error": "timeout after 60s (no data from server)"}
     except Exception as e:
         return {"error": str(e)}
 

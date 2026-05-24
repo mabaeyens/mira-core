@@ -14,7 +14,8 @@ import openai as _openai
 
 from .config import (
     MODEL_NAME, BACKEND, OLLAMA_HOST,
-    MAX_RETRIES, MAX_TOOL_STEPS, MAX_AGENT_STEPS, AGENT_DIVERGENCE_LIMIT, VERBOSE_DEFAULT,
+    MAX_RETRIES, MAX_TOOL_STEPS, MAX_AGENT_STEPS, AGENT_DIVERGENCE_LIMIT,
+    MAX_TOOL_CALLS_PER_TURN, SAME_TOOL_REPEAT_LIMIT, VERBOSE_DEFAULT,
     RAG_MAX_CHUNKS, CONTEXT_WINDOW,
     COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT,
     THINKING_MODE,
@@ -375,6 +376,8 @@ class ChatOrchestrator:
         self._task_done = False
         self._task_done_summary = ""
         self._tool_call_hashes: dict = {}  # call_hash -> repeat count
+        self._total_tool_calls = 0           # hard cap: MAX_TOOL_CALLS_PER_TURN
+        self._tool_name_counts: dict = {}    # tool name -> call count for SAME_TOOL_REPEAT_LIMIT
 
         for step in range(MAX_AGENT_STEPS):
             if thinking_enabled:
@@ -520,9 +523,21 @@ class ChatOrchestrator:
                     repeat_count = self._tool_call_hashes.get(call_hash, 0) + 1
                     self._tool_call_hashes[call_hash] = repeat_count
                     diverged = repeat_count > AGENT_DIVERGENCE_LIMIT
+                    self._total_tool_calls += 1
+                    self._tool_name_counts[name] = self._tool_name_counts.get(name, 0) + 1
                 else:
                     diverged = False
                 prepared.append((tc_id, name, args, diverged))
+
+            # Hard caps: bail before executing if limits are exceeded
+            if self._total_tool_calls > MAX_TOOL_CALLS_PER_TURN:
+                yield {"type": "error", "message": f"Stopped: exceeded {MAX_TOOL_CALLS_PER_TURN} tool calls in one turn."}
+                return
+            over_limit = [(n, c) for n, c in self._tool_name_counts.items() if c > SAME_TOOL_REPEAT_LIMIT]
+            if over_limit:
+                names_str = ", ".join(f"{n}×{c}" for n, c in over_limit)
+                yield {"type": "error", "message": f"Stopped: {names_str} — same tool called too many times in one turn."}
+                return
 
             # task_done short-circuits the whole batch immediately
             if any(name == "task_done" for _, name, _, _ in prepared):

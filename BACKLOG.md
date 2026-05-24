@@ -2,6 +2,8 @@
 
 ## Done
 
+- [2026-05-24] Hard tool call caps in orchestrator — added `MAX_TOOL_CALLS_PER_TURN=20` and `SAME_TOOL_REPEAT_LIMIT=6` to `core/config.py` + `core/orchestrator.py`; stops infinite near-identical tool call loops (qwen3.6 was making 20+ slightly-varied `run_shell` calls, evading the identical-call divergence guard). Also fixed bench runner: `/projects` response shape (`{"projects":[...]}` not bare list), wall-clock timeout (300s), per-chunk timeout (120s), `error` SSE event capture.
+- [2026-05-24] Bench Q6-Q9 re-run (gemma4) — tools now available via `--project-name mira-core`; gemma4 made real tool calls: Q6 15×run_shell (over-eager), Q7 5×run_shell, Q8 1×read_file ✓, Q9 write_file+list_files+run_shell+write_file+read_file (no task_done). Results appended to `docs/bench-results-2026-05-24.md`.
 - [2026-05-24] Released v0.1.33 (build 33) to TestFlight — Edit/Resend buttons now work after successful responses; model dot turns gray when server is unreachable/starting; project badge refreshes on delete; agent step indicator format fix.
 - [2026-05-24] Mira-specific benchmark suite — `scripts/bench_compare.py` + `scripts/bench_questions.yaml` with 10 questions (baseline, code, reasoning, thinking toggle, agentic tool use, multi-turn long-context). Results in `docs/bench-results-2026-05-24.md`. Key finding: qwen3.6 wins on warm TTFT and t/s; gemma4 wins on cold TTFT, wall time for complex tasks, and memory headroom. Both models chose GitHub MCP tools over run_shell for agentic Q6–Q8; neither used task_done for Q9 (file creation).
 - [2026-05-24] Added `OLLAMA_MAX_LOADED_MODELS=1` to `~/.zprofile` — prevents accidental dual-load during model switches.
@@ -36,10 +38,10 @@
 ## Pending
 
 ### Agentic loop
+- [ ] **qwen3.6 Q6-Q9 bench** — mira.yaml set to qwen3.6, server up, purged. Run: `python scripts/bench_compare.py --model qwen3.6:35b-mlx --questions 6,7,8,9 --project-name mira-core`. After: restore mira.yaml to gemma4, commit all changes.
 - [ ] End-to-end test `task_done` with a real multi-step task in a project context — verify divergence guard fires on repeated failures
-- [ ] Q9 benchmark failure: neither gemma4 nor qwen3.6 used tools for "create a file and verify it" — system prompt may need stronger incentive for `run_shell` on concrete local actions
-- [ ] Benchmark Q6–Q8: reformulate to tasks GitHub tools can't handle (e.g. local file ops, /tmp paths) to specifically test `run_shell` path
-- [ ] Manual quality scoring for `docs/bench-results-2026-05-24.md` — review JSONL files in `scripts/`
+- [ ] Q9 benchmark: gemma4 used tools (write_file+read_file) but no task_done — investigate why task_done wasn't called despite successful file creation; system prompt may need stronger signal
+- [ ] Manual quality scoring for re-run Q6-Q9 results in `docs/bench-results-2026-05-24.md`
 
 
 ### Inference speed
