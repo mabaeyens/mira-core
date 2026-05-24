@@ -172,16 +172,6 @@ async def info():
         "context_window": _rt["context_window"],
         "hardware": hardware,
     }
-    if _rt["backend"] == "omlx":
-        try:
-            cfg = json.loads((Path.home() / ".omlx" / "settings.json").read_text())
-            cache = cfg.get("cache", {})
-            ssd_dir = cache.get("ssd_cache_dir") or str(Path.home() / ".omlx" / "cache")
-            result["ssd_cache_dir"] = ssd_dir
-            result["ssd_cache_max_size"] = cache.get("ssd_cache_max_size", "auto")
-            result["hot_cache_size"] = cache.get("hot_cache_max_size", "0")
-        except Exception:
-            pass
     return result
 
 
