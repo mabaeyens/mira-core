@@ -69,16 +69,18 @@
 
 | Q | Difficulty | Category | gemma4 | qwen3.6 | Notes |
 |---|-----------|---------|--------|---------|-------|
-| 1 | easy | baseline | — | — | |
-| 2 | easy | code-no-tools | — | — | |
-| 3 | medium | reasoning | — | — | |
-| 4 | medium | long-output | — | — | |
-| 5 | medium | thinking-toggle | — | — | Compare quality delta on/off |
-| 6 | hard | agentic-single-tool | — | — | Used GitHub tools, not run_shell |
-| 7 | hard | agentic-multi-step | — | — | |
-| 8 | hard | agentic-read-reason | — | — | |
-| 9 | expert | agentic-task-done | — | — | Both failed to use tools |
-| 10 | expert | multi-turn-long-context | — | — | |
+| 1 | easy | baseline | 2 | 2 | Both returned "4". |
+| 2 | easy | code-no-tools | 2 | 2 | Both correct parsers. qwen3.6 adds datetime validation. |
+| 3 | medium | reasoning | 2 | 2 | Both solid. qwen3.6 more structured (17 steps + code examples); gemma4 more concise. |
+| 4 | medium | long-output | 2 | 2 | Both working sqlite3 context managers with rollback + LOG_SQL. qwen3.6 uses `@contextmanager` + logging module; gemma4 uses class-based `__enter__`/`__exit__`. |
+| 5 | medium | thinking-toggle | 1 | 2 | gemma4: first sentence says "553 Service Unavailable" (wrong — SMTP code, not HTTP). Rest correct. qwen3.6: correct throughout, no regression vs Q3. **Delta: thinking helped qwen3.6, hurt gemma4.** |
+| 6 | hard | agentic-single-tool | 0 | 0 | Benchmark design flaw — see note below. |
+| 7 | hard | agentic-multi-step | 0 | 0 | Benchmark design flaw — see note below. |
+| 8 | hard | agentic-read-reason | 0 | 0 | Benchmark design flaw — see note below. |
+| 9 | expert | agentic-task-done | 0 | 0 | Benchmark design flaw — see note below. |
+| 10 | expert | multi-turn-long-context | 1 | 0 | gemma4: correctly identified guard is in `core.orchestrator` not `server.py` — partial credit. qwen3.6: kept trying to search GitHub for the file rather than reasoning from injected code. |
+
+**Q6–Q9 root cause (not a model failure):** The benchmark used `conversation_id=__bench__` which creates a bare conversation with no project. Without a project association, Mira's `_active_tools` filter removes all local tools (`run_shell`, `read_file`, etc.) — neither model ever had access to them. Both correctly fell back to what was available (GitHub tools for Q6–Q8; "filesystem unavailable" for Q9). This is a benchmark runner design flaw, not a capability gap. Fixed in v2: `bench_compare.py` now accepts `--project-name` and creates project-scoped conversations for agentic questions. Q6–Q8 prompts also rewritten with explicit absolute paths.
 
 ---
 

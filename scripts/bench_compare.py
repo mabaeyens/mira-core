@@ -3,9 +3,12 @@
 bench_compare.py — Mira model benchmark runner.
 
 Usage:
-    python scripts/bench_compare.py --model gemma4:26b-mlx
-    python scripts/bench_compare.py --model qwen3.6:35b-mlx
-    python scripts/bench_compare.py --model gemma4:26b-mlx --model qwen3.6:35b-mlx
+    python scripts/bench_compare.py --model gemma4:26b-mlx --project-name mira-core
+    python scripts/bench_compare.py --model qwen3.6:35b-mlx --project-name mira-core
+    python scripts/bench_compare.py --model gemma4:26b-mlx --model qwen3.6:35b-mlx --project-name mira-core
+
+--project-name is required for agentic questions (Q6–Q9) to make run_shell and read_file available.
+Without it, local tools are filtered out and agentic questions will fail.
 
 Outputs:
     docs/bench-results-YYYY-MM-DD.md   (created/appended)
@@ -23,11 +26,30 @@ import requests
 import yaml
 
 BASE_URL = "http://localhost:8000"
-BENCH_CONV_ID = "__bench__"
 SCRIPTS_DIR = Path(__file__).parent
 DOCS_DIR = SCRIPTS_DIR.parent / "docs"
 QUESTIONS_FILE = SCRIPTS_DIR / "bench_questions.yaml"
 SERVER_PY = SCRIPTS_DIR.parent / "server.py"
+
+
+def get_project_id(project_name: str) -> str:
+    """Look up a project by name and return its ID. Raises if not found."""
+    resp = requests.get(f"{BASE_URL}/projects", timeout=5)
+    resp.raise_for_status()
+    projects = resp.json()
+    for p in projects:
+        if p["name"].lower() == project_name.lower():
+            return p["id"]
+    names = [p["name"] for p in projects]
+    raise ValueError(f"Project '{project_name}' not found. Available: {names}")
+
+
+def create_bench_conversation(project_id: str | None = None) -> str:
+    """Create a fresh conversation (optionally project-scoped) and return its ID."""
+    payload = {"project_id": project_id or ""}
+    resp = requests.post(f"{BASE_URL}/conversations", json=payload, timeout=5)
+    resp.raise_for_status()
+    return resp.json()["id"]
 
 
 def load_questions() -> list[dict]:
@@ -133,8 +155,8 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
 
 
 def run_multi_turn(q: dict, model: str) -> dict:
-    """Run a 2-turn question (Q10). Uses a unique conversation ID."""
-    conv_id = f"{BENCH_CONV_ID}-q{q['id']}"
+    """Run a 2-turn question (Q10). Uses a fresh conversation."""
+    conv_id = create_bench_conversation()
 
     # Turn 1: inject server.py contents
     if not SERVER_PY.exists():
@@ -173,7 +195,7 @@ def run_multi_turn(q: dict, model: str) -> dict:
     }
 
 
-def run_benchmark(model: str, questions: list[dict]) -> list[dict]:
+def run_benchmark(model: str, questions: list[dict], project_id: str | None = None) -> list[dict]:
     results = []
     for q in questions:
         qid = q["id"]
@@ -183,12 +205,15 @@ def run_benchmark(model: str, questions: list[dict]) -> list[dict]:
         if q.get("turns", 1) > 1:
             result = run_multi_turn(q, model)
         else:
+            # Fresh conversation per question; scoped to project for agentic questions
+            use_project = project_id if q.get("tools") else None
+            conv_id = create_bench_conversation(use_project)
             result = stream_chat(
                 q["prompt"],
-                model,  # passed for logging only — server uses its configured model
+                model,
                 thinking=q.get("thinking", False),
                 tools=q.get("tools", False),
-                conversation_id=f"{BENCH_CONV_ID}-q{qid}",
+                conversation_id=conv_id,
             )
 
         result["id"] = qid
@@ -284,6 +309,9 @@ def main():
     parser = argparse.ArgumentParser(description="Mira model benchmark runner")
     parser.add_argument("--model", action="append", required=True, help="Model tag(s) to benchmark")
     parser.add_argument("--questions", type=str, default=None, help="Comma-separated question IDs (default: all)")
+    parser.add_argument("--project-name", type=str, default=None,
+                        help="Project name to scope agentic questions (enables run_shell/read_file). "
+                             "Must match a project in Mira's project list.")
     args = parser.parse_args()
 
     questions = load_questions()
@@ -299,6 +327,21 @@ def main():
         print(f"ERROR: Mira server not reachable at {BASE_URL}: {e}")
         sys.exit(1)
 
+    # Resolve project for agentic questions
+    project_id = None
+    if args.project_name:
+        try:
+            project_id = get_project_id(args.project_name)
+            print(f"Project '{args.project_name}' → id={project_id}")
+        except ValueError as e:
+            print(f"ERROR: {e}")
+            sys.exit(1)
+    else:
+        agentic_qs = [q for q in questions if q.get("tools")]
+        if agentic_qs:
+            print("WARNING: agentic questions present but --project-name not set. "
+                  "Local tools (run_shell, read_file) will be unavailable.")
+
     today = date.today().isoformat()
     raw_dir = SCRIPTS_DIR
     docs_dir = DOCS_DIR
@@ -308,7 +351,7 @@ def main():
 
     for model in args.model:
         print(f"\nBenchmarking {model}...")
-        results = run_benchmark(model, questions)
+        results = run_benchmark(model, questions, project_id=project_id)
         all_results[model] = results
 
         raw_path = raw_dir / f"bench_raw_{today}_{model.replace(':', '_').replace('/', '_')}.jsonl"

@@ -49,27 +49,27 @@ questions:
     category: agentic-single-tool
     tools: true
     thinking: false
-    prompt: "How many lines of Python code are in the mira-core project? Count only .py files, exclude anything under tests/ or __pycache__."
+    prompt: "Using shell commands, count the total number of lines across all .py files in /Users/miguel/Documents/Projects/mira-core — exclude anything under tests/ or __pycache__. Show only the total line count."
     expected_tool_calls: 1
-    notes: "Expects run_shell with find + wc -l. Single tool call sufficient."
+    notes: "Expects run_shell with find + wc -l on explicit local path. Single tool call sufficient. GitHub tools cannot fulfill this."
 
   - id: 7
     difficulty: hard
     category: agentic-multi-step
     tools: true
     thinking: false
-    prompt: "Find all TODO and FIXME comments in the mira-core project. Group them by file and output as a markdown list."
+    prompt: "Using shell commands, find all TODO and FIXME comments in /Users/miguel/Documents/Projects/mira-core. Group them by file and output as a markdown list."
     expected_tool_calls: 2
-    notes: "May use grep via run_shell or multiple read_file calls. Record actual tool call count."
+    notes: "Expects grep via run_shell on explicit local path. Record actual tool call count. GitHub tools cannot fulfill this."
 
   - id: 8
     difficulty: hard
     category: agentic-read-reason
     tools: true
     thinking: false
-    prompt: "Read the orchestrator.py file in mira-core and describe how the divergence guard works. What exactly triggers it, what does it check, and what does it emit when triggered?"
+    prompt: "Read the file /Users/miguel/Documents/Projects/mira-core/core/orchestrator.py and explain how the divergence guard works. What exactly triggers it, what does it check, and what does it emit when triggered? Quote the relevant code."
     expected_tool_calls: 1
-    notes: "Expects read_file on orchestrator.py, then reasoning. Correct answer: 3 identical tool+args combos triggers error SSE event."
+    notes: "Expects read_file on explicit local path, then reasoning. Correct answer: identical tool+args repeated 3 times triggers an error SSE event."
 
   - id: 9
     difficulty: expert
