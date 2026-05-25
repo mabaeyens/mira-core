@@ -104,3 +104,51 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | Q | Difficulty | Category | qwen3.6:35b-mlx score |
 |---|-----------|---------|---|
 | 7 | hard | agentic-multi-step | — |
+
+---
+
+## Benchmark Results — 2026-05-25
+
+### Timing
+
+| Q | Difficulty | Category | gemma4:26b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 7 | hard | agentic-multi-step | 16513ms | 51.2s | 31.4 |
+
+### Agentic results
+
+| Q | Category | Expected calls | gemma4:26b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 7 | agentic-multi-step | 2 | run_shell, run_shell | no |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | gemma4:26b-mlx score |
+|---|-----------|---------|---|
+| 7 | hard | agentic-multi-step | — |
+
+---
+
+## Benchmark Results — 2026-05-25
+
+### Timing
+
+| Q | Difficulty | Category | qwen3.6:35b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 7 | hard | agentic-multi-step | 31041ms | 120.2s | 17.2 |
+
+### Agentic results
+
+| Q | Category | Expected calls | qwen3.6:35b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 7 | agentic-multi-step | 2 | run_shell, run_shell, run_shell, list_files, run_shell, run_shell, search_files, run_shell | no |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | qwen3.6:35b-mlx score |
+|---|-----------|---------|---|
+| 7 | hard | agentic-multi-step | — |

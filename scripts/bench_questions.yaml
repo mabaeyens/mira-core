@@ -58,7 +58,7 @@ questions:
     category: agentic-multi-step
     tools: true
     thinking: false
-    prompt: "Using a single shell command, find all TODO and FIXME comments in {workspace_root} — exclude .venv, .git, and __pycache__. Group results by file and output as a markdown list."
+    prompt: "Using a single shell command, find all TODO and FIXME comments in {workspace_root} — exclude .venv, .git, and __pycache__. For each match include the filename, line number, and the full comment text. Group results by file and output as a markdown list."
     expected_tool_calls: 2
     notes: "Expects grep via run_shell on explicit local path. Record actual tool call count. GitHub tools cannot fulfill this."
 
