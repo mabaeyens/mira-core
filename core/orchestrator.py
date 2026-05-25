@@ -21,7 +21,7 @@ from .config import (
     THINKING_MODE,
 )
 from .tools import TOOLS, _LOCAL_TOOLS
-from .prompts import build_system_prompt, SEARCH_RESULT_TEMPLATE
+from .prompts import build_system_prompt, SEARCH_RESULT_TEMPLATE, PLAN_PROMPT
 from .search_engine import SearchEngine
 from .rag_engine import RagEngine
 from . import url_fetcher
@@ -390,6 +390,27 @@ class ChatOrchestrator:
             user_msg["images"] = images
 
         self.conversation_history.append(user_msg)
+
+        # ReAct plan step: reason before acting on complex agentic tasks
+        _should_plan = (
+            bool(self._active_tools)
+            and not _TRIVIAL.match(user_message)
+            and (_should_think(user_message) or bool(_MULTI_STEP_RE.search(user_message)))
+        )
+        if _should_plan:
+            try:
+                plan_text = self._llm_chat_sync(
+                    self.conversation_history + [{"role": "user", "content": PLAN_PROMPT}]
+                )
+                if plan_text:
+                    yield {"type": "plan", "content": plan_text}
+                    self.conversation_history.append({"role": "assistant", "content": plan_text})
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": "[System: Plan noted. Now execute step by step.]",
+                    })
+            except Exception as _e:
+                logger.warning("Plan step failed: %s", _e)
 
         fetch_results = []
         _thinking_chars = 0  # accumulated across all tool steps for this turn

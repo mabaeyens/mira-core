@@ -106,3 +106,8 @@ SEARCH_RESULT_TEMPLATE = """
 SEARCH RESULTS FOR: "{query}"
 {results_text}
 """
+
+PLAN_PROMPT = (
+    "[System: Before calling any tools, briefly state your plan for this task "
+    "in 2-3 bullet points. Be concise — one line per step. Do not call any tools yet.]"
+)
