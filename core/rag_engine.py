@@ -1,13 +1,14 @@
 """
 RAG engine for Mira.
 
-Pipeline: chunk → embed → store (ChromaDB in-memory) → retrieve → rerank (CrossEncoder)
+Pipeline: chunk → embed → store (ChromaDB) → retrieve → rerank (CrossEncoder)
 
 Embedding backend: Ollama (ollama.embed) or oMLX/OpenAI-compatible (/v1/embeddings).
 Configured via EMBED_BACKEND in config / mira.yaml.
 
 Key design decisions:
-- EphemeralClient: fully in-memory, no SQLite/persistence issues
+- Per-project PersistentClient: indexed docs survive server restarts, scoped to project
+- No-project sessions use EphemeralClient (fully in-memory, no persistence issues)
 - Manual metadata filtering for remove(): where-clause API is unreliable in ChromaDB 1.x
 - clear() recreates the client — collection.delete() alone does not release RAM reliably
 - CrossEncoder is loaded lazily but pre-warmed in a background thread at startup
@@ -17,7 +18,7 @@ Key design decisions:
 import logging
 import threading
 import uuid
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import chromadb
 import ollama
@@ -29,6 +30,7 @@ from .config import (
     RAG_CHUNK_SIZE, RAG_CHUNK_OVERLAP,
     RAG_RETRIEVE_K, RAG_RERANK_TOP_K,
     RAG_SCORE_THRESHOLD, RAG_MAX_CHUNKS,
+    RAG_DIR,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,7 +42,7 @@ _EMBED_CHAR_LIMIT = 4096
 
 
 class RagEngine:
-    """In-memory RAG index for a single chat session."""
+    """RAG index for Mira. Per-project sessions use a PersistentClient; no-project sessions use EphemeralClient."""
 
     def __init__(self):
         if EMBED_BACKEND == "ollama":
@@ -61,15 +63,28 @@ class RagEngine:
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    def _init_db(self) -> None:
-        self._client = chromadb.EphemeralClient()
-        # Unique name per instance: ChromaDB 1.x uses a shared Rust backend per
-        # process, so two EphemeralClient instances would collide on the same name.
-        self._col_name = f"docs_{uuid.uuid4().hex[:8]}"
-        self._collection = self._client.create_collection(
-            name=self._col_name,
-            metadata={"hnsw:space": "cosine"},
-        )
+    def _init_db(self, project_id: Optional[str] = None) -> None:
+        self._project_id = project_id
+        if project_id is not None:
+            project_dir = RAG_DIR / project_id
+            project_dir.mkdir(parents=True, exist_ok=True)
+            self._client = chromadb.PersistentClient(path=str(project_dir))
+            self._col_name = "docs"
+            self._collection = self._client.get_or_create_collection(
+                name=self._col_name,
+                metadata={"hnsw:space": "cosine"},
+            )
+            self._persistent = True
+        else:
+            self._client = chromadb.EphemeralClient()
+            # Unique name per instance: ChromaDB 1.x uses a shared Rust backend per
+            # process, so two EphemeralClient instances would collide on the same name.
+            self._col_name = f"docs_{uuid.uuid4().hex[:8]}"
+            self._collection = self._client.create_collection(
+                name=self._col_name,
+                metadata={"hnsw:space": "cosine"},
+            )
+            self._persistent = False
 
     def reinitialize_client(self, embed_backend: str, embed_host: str) -> None:
         """Switch embedding backend at runtime."""
@@ -85,10 +100,23 @@ class RagEngine:
             self._oai_embed = _openai.OpenAI(base_url=base, api_key=_read_omlx_api_key())
 
     def clear(self) -> None:
-        """Drop and recreate the in-memory store, releasing all RAM."""
+        """Wipe all indexed documents. For ephemeral: recreates in-memory store. For persistent: deletes and recreates the on-disk collection."""
+        if self._persistent:
+            self._client.delete_collection(self._col_name)
+            self._collection = self._client.create_collection(
+                name=self._col_name,
+                metadata={"hnsw:space": "cosine"},
+            )
+        else:
+            del self._collection
+            del self._client
+            self._init_db()
+
+    def load_project(self, project_id: Optional[str] = None) -> None:
+        """Switch to a project's persistent ChromaDB store, or back to ephemeral if None."""
         del self._collection
         del self._client
-        self._init_db()
+        self._init_db(project_id)
 
     # ── Public API ────────────────────────────────────────────────────────────
 

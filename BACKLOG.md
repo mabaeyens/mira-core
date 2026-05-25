@@ -2,6 +2,7 @@
 
 ## Done
 
+- [2026-05-25] Persistent RAG — ChromaDB `PersistentClient` per project so indexed documents survive server restarts. `core/config.py` gains `RAG_DIR = ~/.local/share/mira/chroma_db/`. `RagEngine._init_db(project_id)` uses `PersistentClient(path=RAG_DIR/project_id)` + `get_or_create_collection("docs")` when a project is active; falls back to `EphemeralClient` (random-name collection) for no-project sessions. New `load_project(project_id)` method switches collections at runtime. `clear()` now deletes+recreates the on-disk collection (persistent) vs. recreating the in-memory client (ephemeral). All three `rag_engine.clear()` call sites in orchestrator replaced with `load_project(project_id)`. Verified: `chroma.sqlite3` created at correct path on first project conversation load.
 - [2026-05-25] Structured outputs for generate_title — `_llm_chat_sync` now accepts an optional `format` (JSON schema dict), passed through to Ollama `format` and OAI `response_format`. `generate_title()` uses `_TITLE_SCHEMA` to constrain output to `{"title": "..."}`, then strips any markdown fences before parsing. Result: clean 4-6 word titles with no "Here's a title:" prefix or trailing punctuation artifacts. Verified: gemma4 returns `{"title": "Reversing a List in Python"}` correctly. Agentic loop unchanged (tools= already provides native structure there).
 - [2026-05-25] write_file/edit_file tools + bench Q11–Q12 — tools were already fully implemented (`core/fs_tools.py`, `core/tools.py`, orchestrator dispatch). Added `edit_file` UI label (`Editing {path}` / `Edited line {n} — {path}`), bench questions Q11 (agentic-write-file) and Q12 (agentic-edit-file), and `bench/` to `.gitignore`. Both models score 4/4: gemma4 used correct file tools on both (extra run_shell probe on Q12); qwen3.6 matched exact expected call sequence on both.
 - [2026-05-25] Text-response exit as first-class path — orchestrator now calls `_mark_task_done()` when the model returns non-empty text after doing tool work (not just on explicit `task_done` calls or silent exits). `done` event carries `task_done: true` for this path. Also: RULE 7 simplified from 9 lines to 3 (removed "ONLY valid way" mandate); RULE 8 removed from system prompt and its examples moved into `run_shell` tool description where they're visible at call-time. qwen3.6 Q9 goes 1/2 → 2/2; both models now 7/8. Architectural principle established: tool-specific guidance belongs in tool descriptions, cross-cutting rules in the system prompt.
@@ -59,7 +60,6 @@
 
 ### Future / nice-to-have
 - [ ] Scanned PDF OCR — detect scanned PDFs (empty text layer) and run OCR (e.g. `tesseract`) before indexing
-- [ ] Persistent RAG index — ChromaDB `PersistentClient` option so documents survive server restarts
 
 ## Notes
 

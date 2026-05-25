@@ -213,7 +213,7 @@ class ChatOrchestrator:
         self.total_output_tokens = 0
         self.last_prompt_tokens = 0
         self._add_system_prompt()
-        self.rag_engine.clear()
+        self.rag_engine.load_project(project["id"] if project else None)
 
     def load_conversation(self, conv_id: str, project: Optional[Dict] = None) -> None:
         from . import db
@@ -228,7 +228,7 @@ class ChatOrchestrator:
         self.last_prompt_tokens = 0
         self._add_system_prompt()
         self.conversation_history.extend(messages)
-        self.rag_engine.clear()
+        self.rag_engine.load_project(project["id"] if project else None)
         logger.info("Loaded conversation %s: %d messages", conv_id, len(messages))
 
     # ── Post-turn helpers ────────────────────────────────────────────────────
@@ -918,7 +918,7 @@ class ChatOrchestrator:
         self.conv_id = None
         self._is_new_conv = False
         self._add_system_prompt()
-        self.rag_engine.clear()
+        self.rag_engine.load_project(self.project["id"] if self.project else None)
         logger.info("Conversation reset.")
 
 
