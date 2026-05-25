@@ -49,8 +49,10 @@ def _abs_outside_ws_pattern(workspace_root: str) -> re.Pattern:
     # Match /word-start sequences that are absolute paths outside the workspace.
     # Require a letter/digit after / so sed s/^/- / and similar regex delimiters
     # aren't falsely flagged (metacharacters like ^ $ . [ are not path components).
+    # /tmp/ is explicitly allowed as a safe OS temp directory.
     return re.compile(
         r'(?<!\w)/(?=[a-zA-Z0-9])'
+        r'(?!tmp(?:/|$))'
         r'(?!' + re.escape(ws.lstrip('/')) + r'(?:/|$))',
     )
 

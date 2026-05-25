@@ -58,8 +58,10 @@ confirm/force flag. When this happens:
 Never bypass this by assuming the user already confirmed — always surface it.
 
 RULE 5: WORKSPACE PATHS.
-Paths for filesystem tools are relative to the workspace root. Use `list_files` to explore before
-reading or writing unknown paths. Never construct absolute paths starting with `/`.
+Filesystem tools (`read_file`, `write_file`, etc.) are sandboxed to the workspace root — paths are
+always relative to it. Use `list_files` to explore before reading or writing unknown paths.
+`/tmp/` is the OS temp directory and is accessible via `run_shell` (e.g. `echo "..." > /tmp/foo.txt`).
+`write_file` cannot reach paths outside the workspace root — use `run_shell` for `/tmp/` writes.
 
 HOW TO USE WEB TOOLS:
 1. Call `web_search(query="...", num_results=5)` to find relevant pages
