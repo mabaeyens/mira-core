@@ -80,6 +80,24 @@ questions:
     expected_tool_calls: 3
     notes: "Expects: run_shell (write) + run_shell (verify) + task_done. Check that task_done fires."
 
+  - id: 11
+    difficulty: hard
+    category: agentic-write-file
+    tools: true
+    thinking: false
+    prompt: "Create the file bench/write_test.txt in the workspace containing exactly two lines: the current date in YYYY-MM-DD format, and the text 'write_file bench OK'. Read it back to confirm the content is correct."
+    expected_tool_calls: 2
+    notes: "Expects write_file + read_file. Score 2/2 if write_file used with correct content; 1/2 if run_shell (echo) used with correct content; 0/2 if content wrong."
+
+  - id: 12
+    difficulty: hard
+    category: agentic-edit-file
+    tools: true
+    thinking: false
+    prompt: "In the workspace, create the file bench/edit_test.txt containing the single line 'status: pending'. Then change the status to 'complete' and read the file back to confirm."
+    expected_tool_calls: 3
+    notes: "Expects write_file + edit_file + read_file. Score 2/2 if both tools used with correct final content; 1/2 if run_shell substitution used with correct content; 0/2 if content wrong."
+
   - id: 10
     difficulty: expert
     category: multi-turn-long-context

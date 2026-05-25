@@ -43,6 +43,9 @@ def _tool_ui_labels(name: str, args: dict):
     if name == "write_file":
         p = args.get("path", "")
         return f"Writing {p}", lambda r: _ok(r, f"{r.get('action','Wrote')} {r.get('bytes_written', 0):,} bytes — {p}")
+    if name == "edit_file":
+        p = args.get("path", "")
+        return f"Editing {p}", lambda r: _ok(r, f"Edited line {r.get('line', '?')} — {p}")
     if name == "list_files":
         p = args.get("path", ".")
         return f"Listing {p}", lambda r: _ok(r, f"{r.get('count', 0)} entries — {p}")

@@ -89,3 +89,36 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | task_done compliance | 2/4 explicit (Q6, Q9) | 1/4 explicit (Q9 via text-exit path) |
 
 **Both models score 7/8.** gemma4 is 1.8× faster on wall time; qwen3.6 produces more thorough output on Q8. Shared weakness: neither model uses a single pipeline for Q6. Q9 task_done for qwen3.6 is now first-class (scaffolding recognizes text-response-after-tool-use as implicit task completion).
+
+---
+
+## Q11–Q12 Results — 2026-05-25
+
+Questions: Q11 (agentic-write-file), Q12 (agentic-edit-file) — first run of new file-tool questions.
+
+### Timing
+
+| Q | Difficulty | Category | TTFT | wall | t/s | Model |
+|---|-----------|---------|---|---|---|---|
+| 11 | hard | agentic-write-file | — | 35.4s | — | gemma4:26b-mlx |
+| 12 | hard | agentic-edit-file | — | 32.6s | — | gemma4:26b-mlx |
+| 11 | hard | agentic-write-file | 7311ms | 42.3s | 3.5 | qwen3.6:35b-mlx |
+| 12 | hard | agentic-edit-file | 5897ms | 47.0s | 4.3 | qwen3.6:35b-mlx |
+
+### Agentic results
+
+| Q | Category | Expected calls | gemma4 calls | gemma4 task_done | qwen3.6 calls | qwen3.6 task_done |
+|---|---------|----------------|---|---|---|---|
+| 11 | agentic-write-file | 2 | write_file, read_file | YES | write_file, read_file | YES |
+| 12 | agentic-edit-file | 3 | run_shell, write_file, edit_file, read_file | YES | write_file, edit_file, read_file | YES |
+
+### Quality scores
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | gemma4 score | gemma4 notes | qwen3.6 score | qwen3.6 notes |
+|---|-----------|---------|---|---|---|---|
+| 11 | hard | agentic-write-file | 2 | write_file used, both lines correct, verified | 2 | write_file used, both lines correct, verified |
+| 12 | hard | agentic-edit-file | 2 | edit_file used correctly; extra run_shell probe (+1 call) | 2 | Perfect 3 calls: write_file → edit_file → read_file |
+
+**Both models score 4/4 on Q11–Q12.** File tools work correctly. gemma4 added a superfluous `run_shell` probe on Q12 (+1 call vs expected 3); qwen3.6 matched the expected call sequence exactly.
