@@ -2,6 +2,7 @@
 
 ## Done
 
+- [2026-05-25] Text-response exit as first-class path — orchestrator now calls `_mark_task_done()` when the model returns non-empty text after doing tool work (not just on explicit `task_done` calls or silent exits). `done` event carries `task_done: true` for this path. Also: RULE 7 simplified from 9 lines to 3 (removed "ONLY valid way" mandate); RULE 8 removed from system prompt and its examples moved into `run_shell` tool description where they're visible at call-time. qwen3.6 Q9 goes 1/2 → 2/2; both models now 7/8. Architectural principle established: tool-specific guidance belongs in tool descriptions, cross-cutting rules in the system prompt.
 - [2026-05-25] Q9 /tmp/ path fix — RULE 5 said "never construct absolute paths starting with `/`" which blocked both models from writing to `/tmp/`. Two-part fix: (1) `_abs_outside_ws_pattern` in `core/shell_tools.py` now exempts `tmp(?:/|$)` so `run_shell` commands targeting `/tmp/` are not rejected; (2) RULE 5 in `core/prompts.py` updated to clarify `/tmp/` is accessible via `run_shell`, and that `write_file` is workspace-sandboxed. gemma4 Q9: now writes `/tmp/mira_bench_test.txt` via `run_shell`, 2 calls, task_done=YES (2/2). qwen3.6 Q9: correct path and content but task_done not called (1/2 — persistent task_done compliance gap for this model).
 - [2026-05-25] Q7 gemma4 content quality fix — added "include the filename, line number, and the full comment text" to Q7 prompt in `bench_questions.yaml`; gemma4 now uses 2 calls with a `grep | awk` pipeline producing correct grouped markdown output with line numbers (2/2). qwen3.6 also re-run: 8 calls, full grouped table output with line numbers (2/2). Both models now score 2/2 on Q7.
 - [2026-05-25] Q7 sandbox false-positive fix + bench prompt cleanup — `_abs_outside_ws_pattern` in `core/shell_tools.py` falsely rejected `sed 's/^/- /'` and similar commands because `^/` is not preceded by a word char, matching the "absolute path outside workspace" regex. Fix: require `[a-zA-Z0-9]` after the `/` so real path components (start with letters) are caught but sed/awk regex delimiters (start with metacharacters) are not. Q7 now runs without path errors. gemma4: 1 call (correct files, filenames only — 1/2); qwen3.6: 7 calls (full grouped output with summary observation — 2/2). Also: bench_questions.yaml prompts replace hardcoded `/Users/…` paths with `{workspace_root}` (substituted at runtime from project `local_path`); bench_compare.py updated to resolve and substitute; bench artifact files removed (`tmp/`, `files.txt`, `mira_bench_test.txt`).
@@ -48,7 +49,6 @@
 
 ### Agentic loop
 
-- [ ] qwen3.6 task_done compliance — model never fires task_done (0/4 on Q6-Q9); ends agentic tasks with a text response instead; not a path or tooling issue, persistent behavioral gap
 
 ### Inference speed
 - [ ] mlx-lm thinking mode — `max_thinking_tokens` API param not yet exposed in mlx-lm 0.31.3; both Qwen3.6-35B-A3B-4bit and gemma-4-26b-a4b-it-4bit are cached locally at ~/.cache/huggingface/hub; re-benchmark when this lands (check mlx-lm release notes)

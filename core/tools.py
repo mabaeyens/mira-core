@@ -170,7 +170,15 @@ RUN_SHELL_TOOL = {
     "type": "function",
     "function": {
         "name": "run_shell",
-        "description": "Run a shell command. Working directory is within the workspace. Destructive commands (rm -rf, git reset --hard, etc.) require force=true after user approval. For counting or aggregation tasks, use a single shell pipeline (e.g. find ... | xargs wc -l | tail -1) rather than many sequential calls.",
+        "description": (
+            "Run a shell command in the workspace. Destructive commands (rm -rf, git reset --hard, etc.) "
+            "require force=true after user approval.\n"
+            "For aggregation tasks, use ONE pipeline — never split into list-files then process-each:\n"
+            "  Count lines:    find . -name '*.py' -not -path '*/__pycache__/*' | xargs cat | wc -l\n"
+            "  Find patterns:  grep -rn 'TODO\\|FIXME' . --include='*.py'\n"
+            "  Count matches:  grep -rl 'pattern' . | wc -l\n"
+            "Run the command once. If it returns a number, that IS the answer — do not reformat or retry."
+        ),
         "parameters": {
             "type": "object",
             "properties": {

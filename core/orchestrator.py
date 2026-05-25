@@ -540,6 +540,9 @@ class ChatOrchestrator:
                             self._mark_task_done(forced)
                     except Exception as _e:
                         logger.warning("Forced summary call failed: %s", _e)
+                elif full_content.strip() and self._total_tool_calls > 0:
+                    # Model completed tool work and responded with text — first-class exit.
+                    self._mark_task_done(full_content)
                 self.conversation_history.append({"role": "assistant", "content": full_content})
                 if fetch_results:
                     yield {"type": "fetch_context", "fetches": fetch_results}
