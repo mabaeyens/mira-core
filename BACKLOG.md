@@ -2,6 +2,7 @@
 
 ## Done
 
+- [2026-05-25] Q9 /tmp/ path fix — RULE 5 said "never construct absolute paths starting with `/`" which blocked both models from writing to `/tmp/`. Two-part fix: (1) `_abs_outside_ws_pattern` in `core/shell_tools.py` now exempts `tmp(?:/|$)` so `run_shell` commands targeting `/tmp/` are not rejected; (2) RULE 5 in `core/prompts.py` updated to clarify `/tmp/` is accessible via `run_shell`, and that `write_file` is workspace-sandboxed. gemma4 Q9: now writes `/tmp/mira_bench_test.txt` via `run_shell`, 2 calls, task_done=YES (2/2). qwen3.6 Q9: correct path and content but task_done not called (1/2 — persistent task_done compliance gap for this model).
 - [2026-05-25] Q7 gemma4 content quality fix — added "include the filename, line number, and the full comment text" to Q7 prompt in `bench_questions.yaml`; gemma4 now uses 2 calls with a `grep | awk` pipeline producing correct grouped markdown output with line numbers (2/2). qwen3.6 also re-run: 8 calls, full grouped table output with line numbers (2/2). Both models now score 2/2 on Q7.
 - [2026-05-25] Q7 sandbox false-positive fix + bench prompt cleanup — `_abs_outside_ws_pattern` in `core/shell_tools.py` falsely rejected `sed 's/^/- /'` and similar commands because `^/` is not preceded by a word char, matching the "absolute path outside workspace" regex. Fix: require `[a-zA-Z0-9]` after the `/` so real path components (start with letters) are caught but sed/awk regex delimiters (start with metacharacters) are not. Q7 now runs without path errors. gemma4: 1 call (correct files, filenames only — 1/2); qwen3.6: 7 calls (full grouped output with summary observation — 2/2). Also: bench_questions.yaml prompts replace hardcoded `/Users/…` paths with `{workspace_root}` (substituted at runtime from project `local_path`); bench_compare.py updated to resolve and substitute; bench artifact files removed (`tmp/`, `files.txt`, `mira_bench_test.txt`).
 - [2026-05-25] Q6-Q9 bench round 4 — both models pass Q7+Q9 with task_done=YES. Key fixes: (1) task_done done-event flag missing from short-circuit path (line 583, was always False); (2) RULE 8 example `xargs wc -l | tail -1` → `xargs cat | wc -l` (macOS batching gave inconsistent totals, causing model retry loops); (3) "Do not retry for formatting" note in RULE 8; (4) Q6 prompt changed to `core/` only (excluded .venv inflating count to 4.9M lines); (5) SAME_TOOL_REPEAT_LIMIT 12→15; (6) Hard forced summary at step MAX_AGENT_STEPS-2 (step 13) — synthesizes answer without waiting for model, fixes qwen3.6 Q7 over-run. gemma4 final: Q6/Q7/Q9 task_done=YES ✅, Q8 content only; qwen3.6 final: Q7/Q9 task_done=YES ✅, Q6/Q8 content only.
@@ -47,6 +48,7 @@
 
 ### Agentic loop
 
+- [ ] qwen3.6 task_done compliance — model never fires task_done (0/4 on Q6-Q9); ends agentic tasks with a text response instead; not a path or tooling issue, persistent behavioral gap
 
 ### Inference speed
 - [ ] mlx-lm thinking mode — `max_thinking_tokens` API param not yet exposed in mlx-lm 0.31.3; both Qwen3.6-35B-A3B-4bit and gemma-4-26b-a4b-it-4bit are cached locally at ~/.cache/huggingface/hub; re-benchmark when this lands (check mlx-lm release notes)
