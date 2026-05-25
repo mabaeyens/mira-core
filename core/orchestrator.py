@@ -654,9 +654,8 @@ class ChatOrchestrator:
                     return {"error": "Same tool+args repeated too many times. Try a different approach."}
                 if name == "web_search":
                     query = args.get("query", "")
-                    num_results = args.get("num_results", 5)
                     try:
-                        results = self.search_engine.search(query, max_results=num_results)
+                        results = self.search_engine.search(query)
                     except Exception as e:
                         logger.error("Search failed: %s", e)
                         results = []
@@ -690,7 +689,7 @@ class ChatOrchestrator:
                         "name": name,
                         "content": SEARCH_RESULT_TEMPLATE.format(
                             query=query,
-                            results_text=self.search_engine.get_search_summary(web_results)
+                            results_text=self.search_engine.format_tool_result(web_results)
                         ),
                     })
                 elif name == "fetch_url":

@@ -90,13 +90,15 @@ class SearchEngine:
             })
         return formatted
     
-    def get_search_summary(self, results: List[Dict]) -> str:
-        """Create a human-readable summary of search results."""
+    def format_tool_result(self, results: List[Dict]) -> str:
+        """Format search results for the model tool response — full snippets, URL co-located."""
         if not results:
             return "No search results found."
-        
         lines = []
-        for i, r in enumerate(results[:5], 1):
-            lines.append(f"{i}. **{r['title']}**\n   {r['snippet'][:200]}...\n   [{r['url']}]")
-        
+        for i, r in enumerate(results, 1):
+            lines.append(
+                f"[{i}] {r['title']}\n"
+                f"URL: {r['url']}\n"
+                f"Snippet: {r['snippet']}"
+            )
         return "\n\n".join(lines)

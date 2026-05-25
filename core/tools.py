@@ -11,11 +11,6 @@ SEARCH_TOOL = {
                 "query": {
                     "type": "string",
                     "description": "The search query string"
-                },
-                "num_results": {
-                    "type": "integer",
-                    "description": "Number of results to return (default 5)",
-                    "default": 5
                 }
             },
             "required": ["query"]
