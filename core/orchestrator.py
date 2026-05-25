@@ -106,6 +106,12 @@ _MULTI_STEP_RE = re.compile(
     re.IGNORECASE,
 )
 
+_TITLE_SCHEMA = {
+    "type": "object",
+    "properties": {"title": {"type": "string"}},
+    "required": ["title"],
+}
+
 
 def _should_think(message: str, has_attachments: bool = False) -> bool:
     """Return True if the message warrants extended reasoning."""
@@ -227,26 +233,37 @@ class ChatOrchestrator:
 
     # ── Post-turn helpers ────────────────────────────────────────────────────
 
-    def _llm_chat_sync(self, messages: List[Dict]) -> str:
+    def _llm_chat_sync(self, messages: List[Dict], format: Optional[dict] = None) -> str:
         """Non-streaming single-turn LLM call. Returns the text content."""
         if self.backend == "ollama":
-            resp = self._ollama.chat(model=self.model, messages=_normalize_messages_for_ollama(messages), stream=False)
+            resp = self._ollama.chat(
+                model=self.model,
+                messages=_normalize_messages_for_ollama(messages),
+                stream=False,
+                **({"format": format} if format else {}),
+            )
             return (resp.message.content or "").strip()
         else:
-            resp = self._oai.chat.completions.create(model=self.model, messages=messages)
-            text = (resp.choices[0].message.content or "").strip()
-            return _strip_think(text)
+            resp = self._oai.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                **({"response_format": {"type": "json_object"}} if format else {}),
+            )
+            return _strip_think((resp.choices[0].message.content or "").strip())
 
     def generate_title(self, first_user_message: str) -> str:
         try:
-            return self._llm_chat_sync([{
-                "role": "user",
-                "content": (
-                    "Reply with a short title for a conversation that starts "
-                    "with this message. 4-6 words, no quotes, no trailing period:\n\n"
+            raw = self._llm_chat_sync(
+                [{"role": "user", "content": (
+                    "Reply with a JSON object {\"title\": \"...\"} containing a short title "
+                    "for a conversation that starts with this message. 4-6 words:\n\n"
                     + first_user_message[:300]
-                ),
-            }])[:80]
+                )}],
+                format=_TITLE_SCHEMA,
+            )
+            # Strip markdown fences some models wrap around JSON output
+            stripped = re.sub(r"^```[a-z]*\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
+            return json.loads(stripped).get("title", raw)[:80]
         except Exception:
             return first_user_message[:60].strip()
 
