@@ -122,3 +122,30 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | 12 | hard | agentic-edit-file | 2 | edit_file used correctly; extra run_shell probe (+1 call) | 2 | Perfect 3 calls: write_file → edit_file → read_file |
 
 **Both models score 4/4 on Q11–Q12.** File tools work correctly. gemma4 added a superfluous `run_shell` probe on Q12 (+1 call vs expected 3); qwen3.6 matched the expected call sequence exactly.
+
+---
+
+## Benchmark Results — 2026-05-25
+
+### Timing
+
+| Q | Difficulty | Category | gemma4:26b-mlx TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 11 | hard | agentic-write-file | — | 37.8s | — |
+| 12 | hard | agentic-edit-file | — | 34.2s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | gemma4:26b-mlx calls | task_done |
+|---|---------|----------------|---|---|
+| 11 | agentic-write-file | 2 | write_file, read_file | YES |
+| 12 | agentic-edit-file | 3 | run_shell, write_file, edit_file, read_file | YES |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | gemma4:26b-mlx score |
+|---|-----------|---------|---|
+| 11 | hard | agentic-write-file | — |
+| 12 | hard | agentic-edit-file | — |
