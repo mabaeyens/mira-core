@@ -2,7 +2,7 @@
 
 ## Done
 
-- [2026-05-25] ReAct plan step — before the agentic loop, `generate_response()` now makes a lightweight `_llm_chat_sync` call asking the model to state its plan in 2-3 bullet points (no tools passed, so it can't act yet). Trigger: tools active + not trivial + `_should_think` or `_MULTI_STEP_RE` fires. Plan text is yielded as `{"type": "plan", ...}` (suppressed from UI) and injected into conversation history so it anchors the subsequent tool execution steps. `PLAN_PROMPT` constant added to `core/prompts.py`. Verified: plan event received for multi-step request; trivial messages skip the step.
+- [2026-05-29] ReAct plan step reverted — added 2026-05-25, removed 2026-05-29. Extra LLM call per agentic step made each iteration ~150s on base M5 (3.8 t/s); a 3-step task took 7.7 min. Quality gain vs. base model was zero (same 7/8 score pre-ReAct). Revisit only with a dedicated small planning model or faster hardware.
 - [2026-05-25] Web search quality — 4 fixes: (1) `format_tool_result` replaces `get_search_summary` with full snippets (no 200-char cap); (2) URL co-located with each result in tool output; (3) `num_results` removed from `SEARCH_TOOL` schema (was a lie — always capped at 5); (4) realistic Chrome User-Agent in `url_fetcher.py`. Verified end-to-end: model answered current Python release without a `fetch_url` follow-up.
 - [2026-05-25] Persistent RAG — ChromaDB `PersistentClient` per project so indexed documents survive server restarts. `core/config.py` gains `RAG_DIR = ~/.local/share/mira/chroma_db/`. `RagEngine._init_db(project_id)` uses `PersistentClient(path=RAG_DIR/project_id)` + `get_or_create_collection("docs")` when a project is active; falls back to `EphemeralClient` (random-name collection) for no-project sessions. New `load_project(project_id)` method switches collections at runtime. `clear()` now deletes+recreates the on-disk collection (persistent) vs. recreating the in-memory client (ephemeral). All three `rag_engine.clear()` call sites in orchestrator replaced with `load_project(project_id)`. Verified: `chroma.sqlite3` created at correct path on first project conversation load.
 - [2026-05-25] Structured outputs for generate_title — `_llm_chat_sync` now accepts an optional `format` (JSON schema dict), passed through to Ollama `format` and OAI `response_format`. `generate_title()` uses `_TITLE_SCHEMA` to constrain output to `{"title": "..."}`, then strips any markdown fences before parsing. Result: clean 4-6 word titles with no "Here's a title:" prefix or trailing punctuation artifacts. Verified: gemma4 returns `{"title": "Reversing a List in Python"}` correctly. Agentic loop unchanged (tools= already provides native structure there).
@@ -53,7 +53,7 @@
 ## Pending
 
 ### Agentic loop
-
+- [ ] Divergence guard e2e bench — Q13 (adversarial retry) shelved 2026-05-29: capable models try different tools instead of repeating identically, so guard never fires via natural prompt. Guard verified correct via code review and existing e2e task_done test. Revisit only if a degenerate loop is observed in production. `divergence_guard` SSE event remains wired up in orchestrator (observable if guard does fire).
 
 ### Inference speed
 - [ ] mlx-lm thinking mode — `max_thinking_tokens` API param not yet exposed in mlx-lm 0.31.3; both Qwen3.6-35B-A3B-4bit and gemma-4-26b-a4b-it-4bit are cached locally at ~/.cache/huggingface/hub; re-benchmark when this lands (check mlx-lm release notes)

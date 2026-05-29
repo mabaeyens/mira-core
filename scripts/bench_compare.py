@@ -67,7 +67,7 @@ def make_prompt(q: dict) -> str | None:
 
 
 MAX_TOOL_CALLS = 25
-WALL_TIMEOUT_S = 300  # hard wall-clock limit per question (5 min)
+WALL_TIMEOUT_S = 600  # hard wall-clock limit per question (10 min)
 
 
 def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversation_id: str) -> dict:
@@ -94,6 +94,7 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
     content_parts = []
     tool_calls = []
     task_done_fired = False
+    divergence_guard_fired = False
     eval_tokens = None
     eval_tps = None
 
@@ -133,9 +134,12 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
                     else:
                         tool_calls.append(tool_name)
 
+                elif event_type == "divergence_guard":
+                    divergence_guard_fired = True
+
                 elif event_type == "error":
                     wall_ms = round((time.perf_counter() - t_start) * 1000)
-                    return {"error": event.get("message", "server error"), "tool_calls": tool_calls, "wall_ms": wall_ms}
+                    return {"error": event.get("message", "server error"), "tool_calls": tool_calls, "wall_ms": wall_ms, "divergence_guard_fired": divergence_guard_fired}
 
                 elif event_type == "done":
                     # Capture content from done event as fallback (e.g. forced summary injected by orchestrator)
@@ -166,6 +170,7 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
         "content": "".join(content_parts),
         "tool_calls": tool_calls,
         "task_done": task_done_fired,
+        "divergence_guard_fired": divergence_guard_fired,
         "eval_tokens": eval_tokens,
         "eval_tps": eval_tps,
     }
@@ -243,7 +248,8 @@ def run_benchmark(model: str, questions: list[dict], project_id: str | None = No
             tps_str = f" @ {result['eval_tps']} t/s" if result["eval_tps"] else ""
             tools_str = f" tools={result['tool_calls']}" if result["tool_calls"] else ""
             done_str = " task_done=YES" if result["task_done"] else ""
-            print(f" TTFT={result['ttft_ms']}ms wall={result['wall_ms']}ms{tps_str}{tools_str}{done_str}")
+            guard_str = " divergence_guard=YES" if result.get("divergence_guard_fired") else ""
+            print(f" TTFT={result['ttft_ms']}ms wall={result['wall_ms']}ms{tps_str}{tools_str}{done_str}{guard_str}")
 
         results.append(result)
     return results
