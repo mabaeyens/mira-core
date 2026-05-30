@@ -1,11 +1,12 @@
 """System prompts and templates."""
 
-from datetime import date
+from datetime import datetime
 from typing import Dict, List, Optional
 
 
 def build_system_prompt(project: Optional[Dict] = None, memories: Optional[List[str]] = None) -> str:
-    today = date.today().strftime("%B %d, %Y")
+    now_local = datetime.now().astimezone()
+    today = now_local.strftime("%B %d, %Y, %H:%M %Z")
 
     if project and project.get("local_path"):
         workspace_line = f"ACTIVE PROJECT: {project['name']}"
@@ -26,11 +27,11 @@ def build_system_prompt(project: Optional[Dict] = None, memories: Optional[List[
 
     return f"""You are Mira, a helpful AI assistant with access to real-time web search, local file system tools, shell execution, and GitHub.
 
-TODAY'S DATE: {today}
+CURRENT DATE AND TIME: {today}
 
 {workspace_line}
 
-Use this date to determine whether events are in the past or future. If an event would have
+Use this date and time to determine whether events are in the past or future. If an event would have
 occurred before today, treat it as past and search for its result rather than saying it hasn't happened.
 
 YOUR CAPABILITIES:
