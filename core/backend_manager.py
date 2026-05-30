@@ -57,12 +57,12 @@ _mlx_lm_proc = None
 _omlx_proc = None
 
 
-def start_mlx_lm() -> None:
+def start_mlx_lm(model: str = MLX_LM_MODEL) -> None:
     global _mlx_lm_proc
     _mlx_lm_proc = subprocess.Popen(
         [
             MLX_LM_CLI,
-            "--model", MLX_LM_MODEL,
+            "--model", model,
             "--host", "127.0.0.1",
             "--port", str(MLX_LM_PORT),
             "--max-tokens", "4096",
@@ -219,3 +219,70 @@ def switch_to(target: str) -> dict:
         start_ollama()
     logger.info("Backend switch to %s complete", target)
     return PRESETS[target]
+
+
+def switch_to_model(backend: str, model_id: str) -> dict:
+    """Switch to a specific model on the given backend.
+
+    For mlx-lm: stops the current server and starts a new one with model_id.
+    For ollama: switches to ollama and uses model_id as the active model.
+    Returns an updated preset dict.
+    """
+    if backend not in PRESETS:
+        raise ValueError(f"Unknown backend {backend!r}.")
+    logger.info("Switching to model %s on %s", model_id, backend)
+    if backend == "mlx-lm":
+        stop_ollama()
+        stop_omlx()
+        start_mlx_lm(model_id)
+    elif backend == "omlx":
+        stop_ollama()
+        stop_mlx_lm()
+        start_omlx()
+    else:
+        stop_mlx_lm()
+        stop_omlx()
+        start_ollama()
+    preset = dict(PRESETS[backend])
+    preset["model"] = model_id
+    logger.info("Model switch to %s/%s complete", backend, model_id)
+    return preset
+
+
+def list_models() -> dict:
+    """Return locally available models across all backends."""
+    from core.models_api import list_mlx_models, list_ollama_models
+    from dataclasses import asdict
+
+    mlx = [asdict(m) for m in list_mlx_models()]
+    oll = [asdict(m) for m in list_ollama_models()]
+    return {"mlx_lm": mlx, "ollama": oll}
+
+
+def pull_mlx_model(model_id: str, progress_cb=None) -> None:
+    """Download a model from HuggingFace into the local mlx cache.
+
+    progress_cb(downloaded_gb, total_gb, percent) is called periodically.
+    Raises on network or auth errors.
+    """
+    from huggingface_hub import snapshot_download
+    import os
+
+    def _tqdm_callback(tqdm_obj):
+        if progress_cb is None:
+            return
+        try:
+            downloaded = tqdm_obj.n / (1024 ** 3)
+            total = (tqdm_obj.total or 0) / (1024 ** 3)
+            pct = int(tqdm_obj.n / tqdm_obj.total * 100) if tqdm_obj.total else 0
+            progress_cb(downloaded, total, pct)
+        except Exception:
+            pass
+
+    snapshot_download(
+        repo_id=model_id,
+        tqdm_class=None,
+        local_files_only=False,
+    )
+    if progress_cb:
+        progress_cb(0, 0, 100)

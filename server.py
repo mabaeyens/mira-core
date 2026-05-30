@@ -216,6 +216,94 @@ async def switch_backend(request: Request, _=Depends(_ready)):
     return {"status": "ok", "backend": _rt["backend"], "model": _rt["model"]}
 
 
+@app.get("/models")
+async def list_models():
+    """Return all locally available models grouped by backend."""
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _bm.list_models)
+    result["active"] = {"backend": _rt["backend"], "model_id": _rt["model"]}
+    return result
+
+
+@app.post("/models/switch")
+async def switch_model(request: Request, _=Depends(_ready)):
+    global _ollama_ready
+    body = await request.json()
+    backend = body.get("backend", "")
+    model_id = body.get("model_id", "")
+    if backend not in ("ollama", "mlx-lm", "omlx"):
+        raise HTTPException(status_code=400, detail="backend must be 'ollama', 'mlx-lm', or 'omlx'")
+    if not model_id:
+        raise HTTPException(status_code=400, detail="model_id is required")
+    if backend == _rt["backend"] and model_id == _rt["model"]:
+        return {"status": "ok", "backend": backend, "model": model_id, "message": "already active"}
+    _ollama_ready = False
+    try:
+        async with _orch_lock:
+            loop = asyncio.get_event_loop()
+            preset = await loop.run_in_executor(None, _bm.switch_to_model, backend, model_id)
+            orchestrator.reinitialize_client(
+                backend=preset["backend"],
+                model=preset["model"],
+                host=preset["host"],
+                embed_backend=preset["embed_backend"],
+                embed_host=preset["embed_host"],
+                context_window=preset["context_window"],
+            )
+            _rt.update(preset)
+    except Exception as e:
+        logger.error("Model switch failed: %s", e)
+        _ollama_ready = True
+        raise HTTPException(status_code=500, detail=str(e))
+    _ollama_ready = True
+    return {"status": "ok", "backend": _rt["backend"], "model": _rt["model"]}
+
+
+@app.post("/models/pull")
+async def pull_model(request: Request):
+    """SSE stream that downloads a model from HuggingFace into the local cache."""
+    body = await request.json()
+    model_id = body.get("model_id", "").strip()
+    if not model_id:
+        raise HTTPException(status_code=400, detail="model_id is required")
+
+    async def event_stream():
+        import queue as _queue
+        q: _queue.Queue = _queue.Queue()
+
+        def progress_cb(downloaded_gb, total_gb, pct):
+            q.put({"downloaded_gb": round(downloaded_gb, 2), "total_gb": round(total_gb, 2), "percent": pct})
+
+        def run_pull():
+            try:
+                _bm.pull_mlx_model(model_id, progress_cb=progress_cb)
+                q.put(None)  # sentinel: done
+            except Exception as exc:
+                q.put({"error": str(exc)})
+
+        loop = asyncio.get_event_loop()
+        pull_future = loop.run_in_executor(None, run_pull)
+
+        while True:
+            try:
+                item = await loop.run_in_executor(None, lambda: q.get(timeout=1))
+            except Exception:
+                if pull_future.done():
+                    break
+                yield {"data": json.dumps({"type": "progress", "percent": 0})}
+                continue
+
+            if item is None:
+                yield {"data": json.dumps({"type": "done", "model_id": model_id})}
+                break
+            if "error" in item:
+                yield {"data": json.dumps({"type": "error", "message": item["error"]})}
+                break
+            yield {"data": json.dumps({"type": "progress", **item})}
+
+    return EventSourceResponse(event_stream())
+
+
 @app.post("/cancel")
 async def cancel():
     for ev in list(_active_cancels.values()):
