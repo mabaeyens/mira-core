@@ -77,10 +77,8 @@ def is_backend_ready(backend: str) -> bool:
     """Return True if the inference backend is reachable and has the model available."""
     try:
         if backend == "omlx":
-            resp = _omlx_request("/v1/models")
-            data = json.loads(resp.read())
-            ids = [m.get("id", "") for m in data.get("data", [])]
-            return OMLX_MODEL in ids
+            _omlx_request("/v1/models")
+            return True
         else:
             urllib.request.urlopen(OLLAMA_HOST + "/api/version", timeout=2)
             return True

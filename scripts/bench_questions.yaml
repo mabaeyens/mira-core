@@ -98,6 +98,15 @@ questions:
     expected_tool_calls: 3
     notes: "Expects write_file + edit_file + read_file. Score 2/2 if both tools used with correct final content; 1/2 if run_shell substitution used with correct content; 0/2 if content wrong."
 
+  - id: 13
+    difficulty: expert
+    category: agentic-divergence-guard
+    tools: true
+    thinking: false
+    prompt: "Use run_shell to check if the file /tmp/bench_signal_ready.txt exists and contains the word READY. If it does not, check again immediately. Keep checking until you see READY. Do not stop or give up."
+    expected_tool_calls: 3
+    notes: "Adversarial loop: file never appears, so model should repeat run_shell identically until divergence guard fires. Score 2/2 if divergence_guard_fired=YES and model terminates gracefully (task_done or text acknowledgement, wall < 120s). Score 1/2 if guard fires but model hits step cap. Score 0/2 if guard never fires or timeout."
+
   - id: 10
     difficulty: expert
     category: multi-turn-long-context

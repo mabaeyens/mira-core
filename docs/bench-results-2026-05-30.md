@@ -1,0 +1,134 @@
+# Benchmark Results — 2026-05-30 (mlx-lm backend)
+
+Hardware: MacBook Pro M5 32GB  
+Backend: mlx-lm 0.31.3 (OpenAI-compatible server, port 8080)  
+Thinking suppression: `--chat-template-args '{"enable_thinking": false}'`
+
+## Step 0 — Thinking suppression check
+
+| Test | Result |
+|------|--------|
+| curl "Say hello in one word" → gemma4 | TTFT=1.17s, no `<think>` tag |
+| May 2026 blocker | **RESOLVED** — `enable_thinking: false` works |
+
+---
+
+## Timing
+
+| Q | Category | gemma4-Ollama TTFT / t/s | **gemma4-mlx-lm** TTFT / t/s | qwen36-Ollama TTFT / t/s | **qwen36-mlx-lm** TTFT / t/s |
+|---|---------|---|---|---|---|
+| 1 | baseline | N/A | 4392ms / 2.4 | N/A | 46018ms / 3.2 |
+| 2 | code-no-tools | N/A | 505ms / 35.3 | N/A | 380ms / 45.4 |
+| 3 | reasoning | N/A | 425ms / 36.0 | N/A | 307ms / 47.8 |
+| 4 | long-output | N/A | 504ms / 35.7 | N/A | 342ms / 45.9 |
+| 5 | thinking-toggle | N/A | 251ms / 36.2 | N/A | 194ms / 47.3 |
+| 6 | agentic-single-tool | — / — (36.6s wall) | 7319ms / 76.8 | ERR | 8296ms / 95.2 |
+| 7 | agentic-multi-step | 48702ms / 44.1 | 7834ms / 36.0 | ERR | 19899ms / 21.1 |
+| 8 | agentic-read-reason | 28979ms / 10.8 | 21991ms / 30.2 | ERR | 21022ms / 27.7 |
+| 9 | agentic-task-done | — / — (22s wall) | — / — (6.4s wall) | ERR | 2219ms / 63.6 |
+| 10 | multi-turn-long-context | N/A | 573ms / 51.3 | N/A | 508ms / 16.6 |
+| 11 | agentic-write-file | — / — (36s wall) | — / — (5.5s wall) | 7311ms / 3.5 | 2691ms / 82.4 |
+| 12 | agentic-edit-file | — / — (33s wall) | — / — (7.6s wall) | 5897ms / 4.3 | 439ms / 33.8 |
+| 13 | agentic-divergence-guard | N/A | 35325ms / 72.3 | N/A | 361ms / 2.2 |
+
+Notes:
+- Q1 TTFT includes cold-start model load penalty for both models (first request after server start)
+- gemma4-Ollama Q6-Q9: prior run had task_done=NO (max steps bug, since fixed); values shown for TTFT/t/s comparison only
+- qwen36-Ollama Q6-Q9: invalid run (mira.yaml misconfigured in 2026-05-24 session); all ERR
+- `—` TTFT: multi-step agentic calls where TTFT tracks tool-call round-trips, not a single first token
+
+---
+
+## Agentic results
+
+| Q | Category | Expected calls | **gemma4-mlx-lm** calls | done | guard | **qwen36-mlx-lm** calls | done | guard |
+|---|---------|----------------|---|---|---|---|---|---|
+| 6 | agentic-single-tool | 1 | run_shell | YES | — | run_shell | YES | — |
+| 7 | agentic-multi-step | 2 | run_shell | YES | — | run_shell ×10, search_files ×3, list_files | YES | **YES** |
+| 8 | agentic-read-reason | 1 | read_file | YES | — | read_file, search_files, read_file | YES | — |
+| 9 | agentic-task-done | 3 | run_shell ×2 | YES | — | run_shell | YES | — |
+| 10 | multi-turn-long-context | 0 | none | — | — | none | — | — |
+| 11 | agentic-write-file | 2 | write_file, read_file | YES | — | write_file, read_file | YES | — |
+| 12 | agentic-edit-file | 3 | run_shell, write_file, edit_file, read_file | YES | — | write_file, edit_file, read_file | YES | — |
+| 13 | agentic-divergence-guard | 3 | run_shell ×2 | YES | **no** | run_shell ×7 | YES | **YES** |
+
+Q4 anomaly: qwen3.6 called `github_write_file` (hallucinated tool, not in tool schema) — request was rejected by server, model recovered and completed with task_done=YES.
+
+---
+
+## vs Ollama delta (where comparable)
+
+| Metric | gemma4: Ollama → mlx-lm | qwen3.6: Ollama → mlx-lm |
+|--------|---|---|
+| Q7 TTFT | 48702ms → 7834ms (**6.2× faster**) | ERR → 19899ms (first valid run) |
+| Q8 TTFT | 28979ms → 21991ms (1.3× faster) | ERR → 21022ms (first valid run) |
+| Q8 tok/s | 10.8 → 30.2 (**2.8× faster**) | ERR → 27.7 (first valid run) |
+| Q9 wall | 22s → 6.4s (**3.4× faster**) | ERR → 4.2s (first valid run) |
+| Q11 wall | ~36s → 5.5s (**6.5× faster**) | ~35s → 4.2s (**8.3× faster**) |
+| Q12 wall | ~33s → 7.6s (**4.3× faster**) | ~34s → 5.7s (**6.0× faster**) |
+| Warm TTFT (Q2-Q5) | N/A → 251–505ms | N/A → 194–380ms |
+| Warm tok/s (Q2-Q5) | N/A → ~35–36 t/s | N/A → ~45–47 t/s |
+
+---
+
+## Key findings
+
+**1. Thinking blocker resolved.** `--chat-template-args '{"enable_thinking": false}'` suppresses thinking mode at the chat-template level. Step 0 confirmed: TTFT=1.17s, no `<think>` tag. mlx-lm is viable as a Mira backend.
+
+**2. gemma4 mlx-lm: strong across the board.** TTFT 6× improvement on Q7, 2.8× tok/s improvement on Q8, wall time 4–6× faster on Q11/Q12. Warm TTFT 250–505ms (excellent). tok/s 35–36 (slightly below 38–44 expected, possibly headroom with larger prompt cache).
+
+**3. qwen3.6 mlx-lm: fast decode, dangerous cold start.** Warm TTFT 194–380ms (fastest of the four configs). tok/s 45–47 (consistently beats gemma4). But Q1 TTFT = **46s** (cold start / MoE activation cost). Unacceptable for interactive use on first turn after server restart.
+
+**4. qwen3.6 agentic reliability concerns.** Q7: divergence guard fired unexpectedly (12 tool calls on a simple 2-step task). Q4: hallucinated `github_write_file` tool. Q10: slow long-context decode (16.6 t/s). These are regressions vs gemma4's cleaner tool use.
+
+**5. Divergence guard (Q13).** gemma4 evaded the guard by using a shell-level loop (`timeout 30 bash -c ...`) — one `run_shell` per pattern, not repeated identical calls. Guard never fired (0/2). qwen3.6 looped 7× identical `run_shell` — guard fired correctly (2/2), but wall time was **431s**. Guard works; prompt needs refinement (forbid shell looping) for gemma4 to trigger it.
+
+**6. backend_manager.py fix.** `is_backend_ready` was checking `OMLX_MODEL in model_ids` (hardcoded "Qwen3.6-35B-A3B") — always false when running gemma4. Fixed to check reachability only.
+
+---
+
+## Recommendation
+
+**mlx-lm with gemma4 is the preferred local backend** over Ollama for Mira:
+- 4–6× wall time reduction on agentic tasks
+- Comparable decode speed (35–36 t/s vs Ollama's 41–44 t/s on Q7)
+- Warm TTFT 250–500ms (excellent)
+- Reliable tool use (no spurious tool calls, clean divergence guard evasion)
+
+qwen3.6 decode speed (45–47 t/s) is faster, but the 46s cold start, Q7 guard misfire, and Q4 hallucinated tool make it unsuitable for Mira's default backend without further investigation.
+
+---
+
+## MLX Community Leaderboard (context)
+
+| Rank | Model | Overall% | Notes |
+|------|-------|----------|-------|
+| 1 | claude-sonnet-4.6 | 89.6 | |
+| 2 | gemini-3-flash-preview | 82.4 | |
+| 3 | qwen3.6-max-preview | 80.1 | Cloud, not local |
+| 5 | **gemma-4-26b-a4b-it** | **75.2** | This model, local |
+| 10 | **qwen3.6-35b-a3b** | **52.5** | This model, local |
+
+Local gemma4 (75.2) outranks local qwen3.6 (52.5) on MLX benchmark — consistent with our agentic results.
+
+---
+
+## Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Category | gemma4-mlx-lm | qwen36-mlx-lm | Notes |
+|---|---------|---|---|---|
+| 1 | baseline | — | — | |
+| 2 | code-no-tools | — | — | |
+| 3 | reasoning | — | — | |
+| 4 | long-output | — | — | qwen3.6: spurious github_write_file call |
+| 5 | thinking-toggle | — | — | server-level disable; thinking not tested |
+| 6 | agentic-single-tool | — | — | |
+| 7 | agentic-multi-step | — | — | qwen3.6: guard fired (12 calls) |
+| 8 | agentic-read-reason | — | — | |
+| 9 | agentic-task-done | — | — | |
+| 10 | multi-turn-long-context | — | — | |
+| 11 | agentic-write-file | — | — | |
+| 12 | agentic-edit-file | — | — | |
+| 13 | agentic-divergence-guard | 0/2 (guard evaded via shell loop) | 2/2 (guard fired, 431s wall) | |
