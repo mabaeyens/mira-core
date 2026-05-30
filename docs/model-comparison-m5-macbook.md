@@ -1,7 +1,35 @@
 # Model Comparison: MacBook Pro M5 (32GB RAM) Performance Guide
 
+## Current Verdict (2026-05-30)
+
+**Winner: mlx-lm 0.31.3 + `mlx-community/gemma-4-26b-a4b-it-4bit`**
+
+| Metric | Value |
+|--------|-------|
+| Warm TTFT | 250–505ms |
+| Sustained t/s | ~35–36 t/s |
+| Memory | ~17GB (15GB weights + KV cache) |
+| Quality | MLX Community leaderboard: 75.2% (#5 overall, 82.3% medium) |
+
+**Why:** mlx-lm delivers 4–6× better wall time than Ollama on agentic tasks (direct MLX kernel access vs. Ollama's llama.cpp Metal path). Thinking is suppressed at the template level via `--chat-template-args '{"enable_thinking": false}'`. Uniform 4-bit is optimal for 32GB M5 — OptiQ mixed-precision costs 20–25% decode throughput (memory bandwidth bottleneck on Apple Silicon).
+
+**Rejected alternatives:**
+- **Ollama inference** — 4–6× slower wall time on agentic tasks (as of 2026-05-30 bench)
+- **omlx 0.3.12** — no throughput advantage over mlx-lm on gemma4; 15–30× TTFT regression on qwen3.6; see `docs/omlx-ctl.md`
+- **OptiQ mixed-precision (4-bit)** — 20–25% slower decode; not worth the quality gain on this hardware
+- **qwen3.6 on mlx-lm** — TTFT 5–6s warm (194–380ms vs mlx-lm's 250–505ms for gemma4); MoE handled less efficiently by mlx-lm engine at the time of testing
+
+**Current `mira.yaml`:**
+```yaml
+backend: mlx-lm
+model: mlx-community/gemma-4-26b-a4b-it-4bit
+host: http://localhost:8080
+```
+
+---
+
 > **Hardware**: MacBook Pro 14-inch, M5 (2025), 32GB LPDDR5X RAM, 1TB SSD, macOS 26.4.1, Ollama 0.24.0 / llama.cpp b9260
-> **Last Updated**: May 24, 2026
+> **Last Updated**: May 24, 2026 (historical benchmarks below) — current verdict above updated 2026-05-30
 
 > Benchmark results measured and timed directly via the Ollama API, llama-server, and mlx-lm on this hardware. All test runs executed locally.
 
@@ -307,6 +335,19 @@ The M5 GPU has per-core Neural Accelerators (Apple advertises 4× AI speedup ove
 | MXFP8 | 8 | ~25% | AMD/Intel GPUs |
 
 For M5 MacBook: Q4_K_M is optimal for GGUF models; NVFP4 is the format used by Qwen3.6 MLX models.
+
+---
+
+## Bench History
+
+| Date | File | Key finding |
+|------|------|-------------|
+| 2026-05-24 | `bench-results-2026-05-24.md` | gemma4:26b-mlx vs Q4_K_M via Ollama — MLX eliminates cold-load penalty; t/s identical |
+| 2026-05-25 | `bench-results-2026-05-25.md` | qwen3.6:35b-mlx vs gemma4:26b-mlx via Ollama — qwen3.6 +38% quality but 1.8× slower wall time |
+| 2026-05-29 | `bench-results-2026-05-29.md` | omlx 0.3.12 viability test — no advantage over mlx-lm on gemma4; 15–30× TTFT regression on qwen3.6 |
+| 2026-05-30 | `bench-results-2026-05-30.md` | mlx-lm promoted to default — 4–6× wall time improvement over Ollama on agentic tasks; OptiQ and unsloth rejected |
+
+---
 
 ### Memory Usage Breakdown
 

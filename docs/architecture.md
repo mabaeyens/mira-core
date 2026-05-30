@@ -10,10 +10,10 @@ main.py (CLI)     server.py (FastAPI + SSE)
                  │
       core/orchestrator.py → ChatOrchestrator
             │  stream_chat(user_message, attachments=None, thinking_enabled=True) → yields events
-            ├── _call_llm() → ollama.chat() OR openai.chat.completions.create()
+            ├── _call_llm() → openai.chat.completions.create() (mlx-lm or ollama, OpenAI-compatible)
             ├── core/search_engine.py → SearchEngine → ddgs.text()
             └── core/rag_engine.py → RagEngine
-                      ├── ollama.embed() OR openai.embeddings.create() (EMBED_BACKEND)
+                      ├── ollama.embed() (EMBED_BACKEND=ollama, transitional → sentence-transformers)
                       ├── chromadb.EphemeralClient (in-memory)
                       └── CrossEncoder (sentence-transformers)
 
@@ -36,7 +36,7 @@ static/index.html    — single-page web UI (vanilla HTML/CSS/JS + marked.js)
 
 | Event | Payload | Meaning |
 |-------|---------|---------|
-| `thinking` | `content` (optional) | Model is processing; Ollama streaming thinking text arrives in `content` |
+| `thinking` | `content` (optional) | Model is processing; thinking text arrives in `content` (Ollama backend only — disabled on mlx-lm) |
 | `token` | `content` | Answer token (buffered by CLI, streamed by web) |
 | `search_start` | `query` | Web search beginning |
 | `search_done` | `query, count, results` | Search complete; `results` is `[{title, url}]` (snippet stripped before SSE) |
@@ -54,7 +54,7 @@ static/index.html    — single-page web UI (vanilla HTML/CSS/JS + marked.js)
 | `compress` | `message` | Context window compressed — emitted after `done` when `context_pct` exceeded threshold |
 | `heartbeat` | — | Keepalive — emitted periodically during long tool calls to prevent connection timeout |
 
-**Thinking toggle:** `stream_chat()` accepts `thinking_enabled: bool = True`. Passes `think=thinking_enabled` to the Ollama client. Gemma4 yields thinking text in `chunk.message.thinking`. The server form field `thinking_enabled` (default `true`) flows through from the app's thinking toggle button in the input bar.
+**Thinking toggle:** `stream_chat()` accepts `thinking_enabled: bool = True`. On the **Ollama backend**, passes `think=thinking_enabled`; Gemma4 yields thinking text in `chunk.message.thinking`. On **mlx-lm**, thinking is suppressed server-side via `--chat-template-args '{"enable_thinking": false}'` (template-level); `max_thinking_tokens` is not yet exposed as an API param in 0.31.3, so the UI toggle is disabled while on mlx-lm. The server form field `thinking_enabled` (default `true`) flows from the app's thinking toggle button in the input bar.
 
 **Mockable boundary:** `_call_llm()` is the single point tests mock — returns an iterable of stream chunks with `.message.content`, `.message.tool_calls`, `.done`.
 
@@ -139,7 +139,7 @@ Ollama offers a free-tier web search API, but signup requires a phone number and
 
 ## Backend startup
 
-On Mira startup, `backend_manager.ensure_backend_running()` starts Ollama automatically if not already running. The app's `/health` endpoint returns `backend_ready: false` until the inference server is reachable with the configured model, and the iOS/macOS chat view shows a banner with a "Start" button during that time.
+On Mira startup, `backend_manager.ensure_backend_running()` launches mlx-lm automatically if not already running (binary at `~/.local/bin/mlx_lm.server`, port 8080). The app's `/health` endpoint returns `backend_ready: false` until the inference server is reachable with the configured model, and the iOS/macOS chat view shows a banner with a "Start" button during that time. Ollama (port 11434) must be started manually when RAG embeddings are needed — it is not auto-started.
 
 ## Configuration reference
 
@@ -147,12 +147,12 @@ On Mira startup, `backend_manager.ensure_backend_running()` starts Ollama automa
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| `backend` | `ollama` | `ollama` only |
-| `model` | `gemma4:26b-mlx` | Model name as shown in Ollama |
-| `host` | `http://localhost:11434` | LLM server URL |
-| `embed_backend` | same as `backend` | Embedding backend for RAG |
+| `backend` | `mlx-lm` | `mlx-lm` (default) or `ollama` |
+| `model` | `mlx-community/gemma-4-26b-a4b-it-4bit` | Model identifier |
+| `host` | `http://localhost:8080` | LLM server URL |
+| `embed_backend` | `ollama` | Embedding backend for RAG (transitional — see `docs/mlx-embeddings-spec.md`) |
 | `embed_model` | `nomic-embed-text` | Embedding model |
-| `embed_host` | same as `host` | Embedding server URL |
+| `embed_host` | `http://localhost:11434` | Embedding server URL |
 | `context_window` | `65536` | Token context window |
 
 **RAG / search knobs in `core/config.py`** (no `mira.yaml` equivalent — edit directly):
@@ -162,9 +162,10 @@ On Mira startup, `backend_manager.ensure_backend_running()` starts Ollama automa
 
 Behaviours that are intentional and must not be removed:
 
-- **Gemma4 (Ollama):** emits `tool_calls` in an intermediate chunk (`done=False`) — handled by `accumulated_tool_calls` in `orchestrator.py`.
-- **Gemma4 (Ollama):** occasionally emits LaTeX (e.g. `$\rightarrow$`) — `preprocessLatex()` in `index.html` converts to Unicode.
-- **Gemma4 (Ollama) thinking:** when `think=True`, Ollama yields thinking text in `chunk.message.thinking` (separate from `chunk.message.content`). The streaming loop checks this field and emits `thinking` events with the content before processing normal tokens.
+- **Gemma4 (mlx-lm):** emits `tool_calls` in an intermediate chunk (`done=False`) — handled by `accumulated_tool_calls` in `orchestrator.py`.
+- **Gemma4:** occasionally emits LaTeX (e.g. `$\rightarrow$`) — `preprocessLatex()` in `index.html` converts to Unicode.
+- **Gemma4 (Ollama) thinking:** when `think=True`, Ollama yields thinking text in `chunk.message.thinking` (separate from `chunk.message.content`). The streaming loop checks this field and emits `thinking` events. Not applicable on mlx-lm — thinking is disabled at the template level.
+- **mlx-lm thinking suppression:** server started with `--chat-template-args '{"enable_thinking": false}'`. The `max_thinking_tokens` API parameter is not yet exposed in mlx-lm 0.31.3; re-enable the UI toggle when it is.
 
 ## Test patterns
 

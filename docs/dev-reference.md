@@ -13,7 +13,7 @@ uv run python -m pytest tests/test_queries.py::test_name   # single test
 
 ## Hardware
 
-MacBook M5 base (24GB unified memory) — see `docs/model-comparison-m5-macbook.md` for benchmarks and Ollama env var rationale.
+MacBook Pro M5 32GB unified memory — see `docs/model-comparison-m5-macbook.md` for the current model verdict and benchmark history.
 
 ## Ports
 
@@ -21,4 +21,5 @@ MacBook M5 base (24GB unified memory) — see `docs/model-comparison-m5-macbook.
 |---------|------|-------|
 | Mira web server (HTTP) | 8000 | local browser / iOS on same network |
 | Mira web server (HTTPS) | 8443 | Tailscale / remote iOS access |
-| Ollama inference | 11434 | internal only |
+| mlx-lm inference | 8080 | started automatically by `backend_manager.py` |
+| Ollama (RAG embeddings) | 11434 | start manually when RAG is needed; transitional — see `docs/mlx-embeddings-spec.md` |

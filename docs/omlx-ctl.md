@@ -1,5 +1,7 @@
 # omlx-ctl
 
+> **STATUS: ARCHIVED (2026-05-30)** — omlx is not recommended as a Mira backend. mlx-lm is the current default (see `docs/model-comparison-m5-macbook.md` for the current verdict). This file is kept for reference in case omlx is revisited.
+
 oMLX 0.3.12 — multi-model OpenAI-compatible inference server for Apple Silicon.
 
 Binary: `/Applications/oMLX.app/Contents/MacOS/omlx-cli`  

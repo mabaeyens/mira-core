@@ -1,3 +1,5 @@
+> Archived bench log. See `model-comparison-m5-macbook.md` for the current verdict.
+
 # Benchmark Results — 2026-05-30 (mlx-lm backend)
 
 Hardware: MacBook Pro M5 32GB  
@@ -470,3 +472,51 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | 12 | hard | agentic-edit-file | — |
 | 13 | expert | agentic-divergence-guard | — |
 | 10 | expert | multi-turn-long-context | — |
+
+---
+
+## Benchmark Results — 2026-05-30
+
+### Timing
+
+| Q | Difficulty | Category | mlx-lm:mlx-lm TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 13 | expert | agentic-divergence-guard | — | 29.8s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | mlx-lm calls | task_done |
+|---|---------|----------------|---|---|
+| 13 | agentic-divergence-guard | 3 | run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell | YES |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | mlx-lm score |
+|---|-----------|---------|---|
+| 13 | expert | agentic-divergence-guard | — |
+
+---
+
+## Benchmark Results — 2026-05-30
+
+### Timing
+
+| Q | Difficulty | Category | mlx-lm:mlx-lm TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 13 | expert | agentic-divergence-guard | — | 23.6s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | mlx-lm calls | task_done |
+|---|---------|----------------|---|---|
+| 13 | agentic-divergence-guard | 3 | run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell | YES |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | mlx-lm score |
+|---|-----------|---------|---|
+| 13 | expert | agentic-divergence-guard | — |

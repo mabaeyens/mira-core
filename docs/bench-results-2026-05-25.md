@@ -1,3 +1,5 @@
+> Archived bench log. See `model-comparison-m5-macbook.md` for the current verdict.
+
 # Benchmark Results — 2026-05-25
 
 Hardware: MacBook Pro M5 32GB · Ollama 0.24.0  
