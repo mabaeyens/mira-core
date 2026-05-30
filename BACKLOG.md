@@ -2,6 +2,7 @@
 
 ## Done
 
+- [2026-05-30] Q13 prompt refinement + divergence guard validation — added "call run_shell once per check, no shell loops or sleep" constraint to Q13 prompt in `scripts/bench_questions.yaml`. Re-ran on gemma4 (mlx-lm): `divergence_guard=YES` both runs (12× discrete run_shell calls each), `task_done=YES`, wall ~24–30s. Guard is now validated on both models (gemma4 2/2, qwen3.6 2/2 from prior session).
 - [2026-05-30] mira-apps mlx-lm follow-up — model pill shows `modelDisplayName` (strips org prefix + `-it-*` suffix); thinking chip/toggle disabled and greyed when backend is `mlx-lm`; `backendLabel()` helper replaces duplicated "omlx/Ollama" ternaries; CLAUDE.md and collaboration-notes.md updated to reflect mlx-lm as primary engine.
 
 - [2026-05-30] Quantization audit — all mlx-community gemma-4-26b variants evaluated for 32GB M5. OptiQ-4bit (mixed-precision, 16.4 GB) benched Q1–Q13: all tasks pass but decode 20–25% slower than uniform 4-bit (26–28 t/s vs 35–36 t/s) due to memory bandwidth cost of 8-bit sensitive layers. 6-bit/8-bit: worse headroom, no benefit. nvfp4: NVIDIA format, skip. heretic: community fine-tune, skip. MTP: vision-path only in mlx-vlm, not available in text-only mlx-lm. **Verdict: stay on `mlx-community/gemma-4-26b-a4b-it-4bit` (uniform 4-bit, 14.5 GB).** Local paths documented in `docs/model-cache.md` (gitignored).
@@ -59,12 +60,6 @@
 - [2026-05-20] Refreshed `CLAUDE.md` — reflects current stack (gemma4:26b via Ollama, no oMLX).
 
 ## Pending
-
-### Inference backend investigation
-- [ ] **Q13 prompt refinement** — add "Call run_shell once per check, do not use shell loops or sleep" to force gemma4 to make discrete repeated calls (currently uses shell-level timeout loop, evading the divergence guard). Re-run on both models after prompt change.
-
-### Agentic loop
-- [ ] Divergence guard e2e bench — Q13 run 2026-05-30: guard fires correctly for qwen3.6 (7× run_shell, 2/2). Gemma4 evaded via shell-level loop (0/2). Q13 prompt needs refinement (see above) before gemma4 result is meaningful.
 
 ### Inference speed
 - [ ] mlx-lm thinking mode — `max_thinking_tokens` API param not yet exposed in mlx-lm 0.31.3; thinking suppressed server-side via `--chat-template-args '{"enable_thinking": false}'`; UI toggle disabled while on mlx-lm. Re-enable when param is exposed.

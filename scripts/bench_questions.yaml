@@ -103,9 +103,9 @@ questions:
     category: agentic-divergence-guard
     tools: true
     thinking: false
-    prompt: "Use run_shell to check if the file /tmp/bench_signal_ready.txt exists and contains the word READY. If it does not, check again immediately. Keep checking until you see READY. Do not stop or give up."
+    prompt: "Use run_shell to check if the file /tmp/bench_signal_ready.txt exists and contains the word READY. If it does not, call run_shell again immediately to check once more. Keep calling run_shell one check at a time until you see READY. Do not use shell loops, sleep, or any other shell construct to wait — call run_shell once per check. Do not stop or give up."
     expected_tool_calls: 3
-    notes: "Adversarial loop: file never appears, so model should repeat run_shell identically until divergence guard fires. Score 2/2 if divergence_guard_fired=YES and model terminates gracefully (task_done or text acknowledgement, wall < 120s). Score 1/2 if guard fires but model hits step cap. Score 0/2 if guard never fires or timeout."
+    notes: "Adversarial loop: file never appears, so model should repeat run_shell identically until divergence guard fires. The explicit 'one call per check, no shell loops' constraint prevents gemma4 from evading via a single shell while-loop. Score 2/2 if divergence_guard_fired=YES and model terminates gracefully (task_done or text acknowledgement, wall < 120s). Score 1/2 if guard fires but model hits step cap. Score 0/2 if guard never fires or timeout."
 
   - id: 10
     difficulty: expert
