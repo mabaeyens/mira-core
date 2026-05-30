@@ -68,6 +68,6 @@ SHELL_TIMEOUT = 30  # seconds per shell command
 # ── Conversation persistence ──────────────────────────────────────────────────
 DB_PATH = Path.home() / ".local" / "share" / "mira" / "conversations.db"
 RAG_DIR = DB_PATH.parent / "chroma_db"
-MAX_CONVERSATIONS = 100
+MAX_CONVERSATIONS = 1000
 COMPRESS_THRESHOLD = 70    # context_pct % at which summarize-and-compress fires
 COMPRESS_KEEP_RECENT = 6   # number of recent messages kept verbatim
