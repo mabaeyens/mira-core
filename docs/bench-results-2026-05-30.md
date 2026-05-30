@@ -414,3 +414,59 @@ Cold-start win (4×) is notable but irrelevant when warm TTFT is 15–30× worse
 | omlx qwen3.6 | No | 15–30× TTFT regression vs mlx-lm |
 
 mlx-lm with gemma4 remains the preferred local backend. omlx 0.3.12 did not crash (regression from 0.3.8/0.3.9 fixed), but offers no performance advantage over mlx-lm on this hardware.
+
+
+---
+
+## Benchmark Results — 2026-05-30
+
+### Timing
+
+| Q | Difficulty | Category | gemma4-26b-optiq-4bit:gemma4-26b-optiq-4bit TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 1 | easy | baseline | 123301ms | 124.3s | 2.0 |
+| 2 | easy | code-no-tools | 549ms | 15.5s | 26.7 |
+| 3 | medium | reasoning | 460ms | 36.6s | 27.6 |
+| 4 | medium | long-output | 544ms | 36.6s | 27.3 |
+| 5 | medium | thinking-toggle | 284ms | 37.0s | 27.2 |
+| 6 | hard | agentic-single-tool | 8447ms | 9.6s | 68.0 |
+| 7 | hard | agentic-multi-step | 9355ms | 111.8s | 27.8 |
+| 8 | hard | agentic-read-reason | 22735ms | 47.9s | 24.2 |
+| 9 | expert | agentic-task-done | — | 7.6s | — |
+| 11 | hard | agentic-write-file | — | 6.9s | — |
+| 12 | hard | agentic-edit-file | — | 9.2s | — |
+| 13 | expert | agentic-divergence-guard | — | 169.0s | — |
+| 10 | expert | multi-turn-long-context | 597ms | 16.6s | 40.8 |
+
+### Agentic results
+
+| Q | Category | Expected calls | gemma4-26b-optiq-4bit calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | run_shell | YES |
+| 7 | agentic-multi-step | 2 | run_shell | YES |
+| 8 | agentic-read-reason | 1 | read_file | YES |
+| 9 | agentic-task-done | 3 | run_shell, run_shell | YES |
+| 11 | agentic-write-file | 2 | write_file, read_file | YES |
+| 12 | agentic-edit-file | 3 | run_shell, write_file, edit_file, read_file | YES |
+| 13 | agentic-divergence-guard | 3 | run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell | YES |
+| 10 | multi-turn-long-context | 0 | none | no |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | gemma4-26b-optiq-4bit score |
+|---|-----------|---------|---|
+| 1 | easy | baseline | — |
+| 2 | easy | code-no-tools | — |
+| 3 | medium | reasoning | — |
+| 4 | medium | long-output | — |
+| 5 | medium | thinking-toggle | — |
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | — |
+| 8 | hard | agentic-read-reason | — |
+| 9 | expert | agentic-task-done | — |
+| 11 | hard | agentic-write-file | — |
+| 12 | hard | agentic-edit-file | — |
+| 13 | expert | agentic-divergence-guard | — |
+| 10 | expert | multi-turn-long-context | — |

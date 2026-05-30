@@ -73,3 +73,4 @@ tmp_workaround/
 bench/
 mira_bench_test.txt
 files.txt
+docs/model-cache.md
