@@ -3,8 +3,7 @@ RAG engine for Mira.
 
 Pipeline: chunk → embed → store (ChromaDB) → retrieve → rerank (CrossEncoder)
 
-Embedding backend: Ollama (ollama.embed) or oMLX/OpenAI-compatible (/v1/embeddings).
-Configured via EMBED_BACKEND in config / mira.yaml.
+Embedding: sentence-transformers (nomic-ai/nomic-embed-text-v1.5, 768 dims, local — no external service).
 
 Key design decisions:
 - Per-project PersistentClient: indexed docs survive server restarts, scoped to project
@@ -21,11 +20,9 @@ import uuid
 from typing import List, Dict, Optional
 
 import chromadb
-import ollama
-import openai as _openai
+from sentence_transformers import SentenceTransformer
 
 from .config import (
-    OLLAMA_HOST, EMBED_BACKEND, EMBED_HOST,
     EMBED_MODEL, RERANK_MODEL,
     RAG_CHUNK_SIZE, RAG_CHUNK_OVERLAP,
     RAG_RETRIEVE_K, RAG_RERANK_TOP_K,
@@ -45,16 +42,7 @@ class RagEngine:
     """RAG index for Mira. Per-project sessions use a PersistentClient; no-project sessions use EphemeralClient."""
 
     def __init__(self):
-        if EMBED_BACKEND == "ollama":
-            self._ollama = ollama.Client(host=EMBED_HOST)
-            self._oai_embed = None
-        else:
-            self._ollama = None
-            base = EMBED_HOST.rstrip("/")
-            if not base.endswith("/v1"):
-                base += "/v1"
-            from .orchestrator import _read_omlx_api_key
-            self._oai_embed = _openai.OpenAI(base_url=base, api_key=_read_omlx_api_key())
+        self._embedder = SentenceTransformer(EMBED_MODEL, trust_remote_code=True)
         self._reranker = None
         self._reranker_lock = threading.Lock()
         self._init_db()
@@ -85,19 +73,6 @@ class RagEngine:
                 metadata={"hnsw:space": "cosine"},
             )
             self._persistent = False
-
-    def reinitialize_client(self, embed_backend: str, embed_host: str) -> None:
-        """Switch embedding backend at runtime."""
-        if embed_backend == "ollama":
-            self._ollama = ollama.Client(host=embed_host)
-            self._oai_embed = None
-        else:
-            self._ollama = None
-            base = embed_host.rstrip("/")
-            if not base.endswith("/v1"):
-                base += "/v1"
-            from .orchestrator import _read_omlx_api_key
-            self._oai_embed = _openai.OpenAI(base_url=base, api_key=_read_omlx_api_key())
 
     def clear(self) -> None:
         """Wipe all indexed documents. For ephemeral: recreates in-memory store. For persistent: deletes and recreates the on-disk collection."""
@@ -231,20 +206,8 @@ class RagEngine:
         return chunks
 
     def _embed(self, texts: List[str]) -> List[List[float]]:
-        """Batch-embed texts using the configured embedding backend."""
-        if EMBED_BACKEND == "ollama":
-            response = self._ollama.embed(
-                model=EMBED_MODEL,
-                input=texts,
-                options={"num_ctx": 2048},
-            )
-            return response.embeddings
-        else:
-            response = self._oai_embed.embeddings.create(
-                model=EMBED_MODEL,
-                input=texts,
-            )
-            return [item.embedding for item in response.data]
+        """Batch-embed texts using sentence-transformers."""
+        return self._embedder.encode(texts, batch_size=64).tolist()
 
     def _load_reranker(self):
         """Load the CrossEncoder model (thread-safe, called once)."""

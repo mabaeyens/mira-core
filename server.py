@@ -203,8 +203,6 @@ async def switch_backend(request: Request, _=Depends(_ready)):
                 backend=preset["backend"],
                 model=preset["model"],
                 host=preset["host"],
-                embed_backend=preset["embed_backend"],
-                embed_host=preset["embed_host"],
                 context_window=preset["context_window"],
             )
             _rt.update(preset)
@@ -246,8 +244,6 @@ async def switch_model(request: Request, _=Depends(_ready)):
                 backend=preset["backend"],
                 model=preset["model"],
                 host=preset["host"],
-                embed_backend=preset["embed_backend"],
-                embed_host=preset["embed_host"],
                 context_window=preset["context_window"],
             )
             _rt.update(preset)

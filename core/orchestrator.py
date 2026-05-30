@@ -182,7 +182,6 @@ class ChatOrchestrator:
             self._add_system_prompt()
 
     def reinitialize_client(self, backend: str, model: str, host: str,
-                            embed_backend: str, embed_host: str,
                             context_window: int) -> None:
         """Switch to a different inference backend at runtime without restarting."""
         self.backend = backend
@@ -195,7 +194,6 @@ class ChatOrchestrator:
             self._ollama = None
             api_key = _read_omlx_api_key() if backend == "omlx" else "none"
             self._oai = _make_oai_client(host, api_key=api_key)
-        self.rag_engine.reinitialize_client(embed_backend, embed_host)
 
     def _add_system_prompt(self):
         if not self.system_prompt_added:

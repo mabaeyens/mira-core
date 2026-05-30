@@ -27,9 +27,7 @@ MODEL_NAME: str = _get("model", "gemma4:26b-mlx")
 OLLAMA_HOST: str = _get("host", os.getenv("OLLAMA_HOST", "http://localhost:11434"))
 
 # ── Embedding backend (for RAG) ───────────────────────────────────────────────
-EMBED_BACKEND: str = _get("embed_backend", BACKEND)
-EMBED_MODEL: str = _get("embed_model", "nomic-embed-text")
-EMBED_HOST: str = _get("embed_host", OLLAMA_HOST)
+EMBED_MODEL: str = _get("embed_model", "nomic-ai/nomic-embed-text-v1.5")
 
 # ── Context window ────────────────────────────────────────────────────────────
 CONTEXT_WINDOW: int = _get("context_window", 65536)
