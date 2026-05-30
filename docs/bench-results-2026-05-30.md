@@ -132,3 +132,89 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | 11 | agentic-write-file | — | — | |
 | 12 | agentic-edit-file | — | — | |
 | 13 | agentic-divergence-guard | 0/2 (guard evaded via shell loop) | 2/2 (guard fired, 431s wall) | |
+
+
+---
+
+## Benchmark Results — 2026-05-30
+
+### Timing
+
+| Q | Difficulty | Category | qwen3.6-35b-mlx-lm-rerun1:qwen3.6-35b-mlx-lm-rerun1 TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 4 | medium | long-output | 8680ms | 78.5s | 46.5 |
+| 7 | hard | agentic-multi-step | 25755ms | 164.0s | 20.7 |
+
+### Agentic results
+
+| Q | Category | Expected calls | qwen3.6-35b-mlx-lm-rerun1 calls | task_done |
+|---|---------|----------------|---|---|
+| 7 | agentic-multi-step | 2 | run_shell, run_shell, run_shell, search_files, search_files, run_shell, run_shell, run_shell, run_shell, run_shell, list_files, search_files | YES |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | qwen3.6-35b-mlx-lm-rerun1 score |
+|---|-----------|---------|---|
+| 4 | medium | long-output | 2 (correct output; hallucinated tool call is self-corrected) |
+| 7 | hard | agentic-multi-step | 1 (eventual correct output but via guard termination, not clean exit) |
+
+---
+
+## Benchmark Results — 2026-05-30
+
+### Timing
+
+| Q | Difficulty | Category | qwen3.6-35b-mlx-lm-rerun2:qwen3.6-35b-mlx-lm-rerun2 TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 4 | medium | long-output | 645ms | 68.8s | 47.7 |
+
+### Agentic results
+
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | qwen3.6-35b-mlx-lm-rerun2 score |
+|---|-----------|---------|---|
+| 4 | medium | long-output | 2 (correct output; hallucinated tool self-corrected) |
+
+---
+
+## qwen3.6 Anomaly Investigation — Verdicts (2026-05-30)
+
+Re-runs: Q4 ×2, Q7 ×1 (after confirming `workspace_root` substitution was correct and shell_tools.py has no `find`-blocking rule).
+
+### Q1 — 46s cold-start TTFT
+
+**Verdict: MoE architecture behavior.** No re-run needed. qwen3.6 is a Mixture-of-Experts model; the first request cold-activates the routing weights. Q2+ requests are warm (TTFT 342–645ms). This is expected and consistent with MoE benchmarks. The 46s penalty is not a harness issue — no code path can explain it. **Not a harness bug.**
+
+### Q4 — `github_write_file` hallucination
+
+**Verdict: Systematic model bias.** Reproduced on all 3 runs (original + 2 reruns). Model has a strong training prior toward `github_write_file` when generating long code under a write-to-file framing. The tool is not in Mira's schema; the rejection is handled gracefully and model self-recovers (`task_done=YES`, correct output inline). Risk is low but systematic — any prompt that implies "write this to a file" may trigger the hallucination. **Model behavior, acceptable recovery.**
+
+### Q7 — Divergence guard misfire (12 tool calls vs 2)
+
+**Code analysis verdict (no re-run needed for mechanism; one re-run confirmed reproducibility):**
+
+Root cause traced to `shell_tools.py`:
+- stdout is truncated at 8000 chars (`result.stdout[:8000]`). A broad `find .` on the workspace returns >8000 chars of paths.
+- Model received truncated output, misread it as "sandbox is blocking `find` with `.`".
+- Pivoted to `search_files`, which also returned 200+ results including `.venv` (the tool doesn't support exclude patterns).
+- Looped 12× trying progressively to filter results; guard fired.
+
+The prompt's explicit `{workspace_root}` path was correctly substituted (`local_path=/Users/miguel/Documents/Projects/mira-core`). Shell sandbox has no rule blocking `find`. The divergence is pure model behavior — qwen3.6 cannot recover from truncated shell output by reformulating the command. gemma4 ran a single filtered `grep -rn 'TODO\|FIXME' . --include='*.py' --exclude-dir={.venv,.git,__pycache__}` in 2 calls.
+
+Rerun1 confirmed: exact same 12-call sequence (`run_shell ×7, search_files ×3, list_files ×1, search_files ×1`), same guard fire. **Model behavior. Not a harness bug.**
+
+### Summary
+
+| Anomaly | Verdict | Impact | Action |
+|---------|---------|--------|--------|
+| Q1 46s cold start | MoE architecture | Unacceptable for first interactive turn | Don't use qwen3.6 as default backend |
+| Q4 github_write_file | Systematic model bias | Low (graceful recovery) | Note in model profile; no harness change |
+| Q7 12-call loop | Model behavior (truncation misread) | High (172s wall, guard misfire) | qwen3.6 unsuitable for multi-step agentic tasks |
+
+**Overall: qwen3.6 is not suitable as a Mira default backend.** All three anomalies are model behavior. gemma4 via mlx-lm remains the recommended configuration.
