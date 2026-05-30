@@ -37,7 +37,7 @@ Connection resilience is critical. Key files:
 
 - FastAPI backend (`uv run python server.py`)
 - mlx-lm (local, port 8080) — `gemma-4-26b-a4b-it-4bit`
-- Ollama (local, port 11434) — `nomic-embed-text` (embed only)
+- sentence-transformers — `nomic-ai/nomic-embed-text-v1.5` (RAG embeddings, local, no server)
 - ChromaDB (bundled with backend)
 
 ### Testing
@@ -105,18 +105,6 @@ Last weekend of each month, run `/security-review` on this repo. Fix HIGH and ME
 - Use `grep` before `Read` to find the exact section
 
 See `MIRA_WORKFLOW.md` section 1 for full details.
-
----
-
-## Sibling App Reference
-
-When solving a problem, check `mira-apps` first for the proven pattern:
-
-- Sidebar logic → `MacRootView.swift` (NavigationSplitView with pinned columnVisibility binding)
-- Observable state → `@Observable @MainActor` pattern
-- SwiftUI conventions → follow what mira-apps does
-
-Borrowed patterns should be noted in commit messages for future reference.
 
 ---
 

@@ -2,7 +2,7 @@
 
 A local AI assistant with autonomous web search, file attachments (PDF/HTML/images/text), and RAG for large documents. Available as a CLI tool and a local web interface with streaming markdown responses.
 
-Runs on a local mlx-lm backend for inference — no cloud APIs, no API keys. Ollama is used only for RAG embeddings (nomic-embed-text) and will be phased out once sentence-transformers embeddings are wired in directly.
+Runs on a local mlx-lm backend for inference — no cloud APIs, no API keys. RAG embeddings use `sentence-transformers` (`nomic-ai/nomic-embed-text-v1.5`) locally — no external services required.
 
 ## Features
 
@@ -18,9 +18,7 @@ Runs on a local mlx-lm backend for inference — no cloud APIs, no API keys. Oll
 - **Python 3.12+** and **uv**
 - **mlx-lm 0.31.3+**: `uv tool install mlx-lm` — inference engine (port 8080)
 - **Model**: `mlx-community/gemma-4-26b-a4b-it-4bit` (cached locally via mlx-lm on first run)
-- **Ollama** v0.24.0+ — only needed for RAG embeddings: `ollama pull nomic-embed-text`
-
-mlx-lm is started automatically by the server (`backend_manager.py`). Ollama must be running separately if RAG is used.
+mlx-lm is started automatically by the server (`backend_manager.py`). The `nomic-ai/nomic-embed-text-v1.5` embedding model is downloaded from HuggingFace on first use (cached locally thereafter).
 
 ## Setup
 
@@ -117,9 +115,7 @@ backend: mlx-lm
 model: mlx-community/gemma-4-26b-a4b-it-4bit
 host: http://localhost:8080
 
-embed_backend: ollama
-embed_model: nomic-embed-text
-embed_host: http://localhost:11434
+embed_model: nomic-ai/nomic-embed-text-v1.5
 
 context_window: 65536
 ```
@@ -129,9 +125,7 @@ context_window: 65536
 | `backend` | `mlx-lm` | Inference backend (`mlx-lm` or `ollama`) |
 | `model` | `mlx-community/gemma-4-26b-a4b-it-4bit` | Model identifier |
 | `host` | `http://localhost:8080` | Backend host URL |
-| `embed_backend` | `ollama` | Embedding backend for RAG |
-| `embed_model` | `nomic-embed-text` | Embedding model |
-| `embed_host` | `http://localhost:11434` | Embedding host URL |
+| `embed_model` | `nomic-ai/nomic-embed-text-v1.5` | HuggingFace embedding model for RAG |
 | `context_window` | `65536` | Token context window |
 
 Additional settings (not user-configurable via `mira.yaml` — edit `core/config.py` only if needed):

@@ -1,5 +1,7 @@
 # Development Log
 
+> **Note (2026-05-30):** The backend has evolved since this log was written. Ollama is now an optional inference backend; mlx-lm handles all inference by default. RAG embeddings use `sentence-transformers` (`nomic-ai/nomic-embed-text-v1.5`) — Ollama is no longer required at runtime. See `docs/architecture.md` for the current state.
+
 This document captures the development history of Mira: the decisions made, the problems encountered, and how they were resolved. It is written after the fact, reconstructed from the full build session.
 
 ## Tooling

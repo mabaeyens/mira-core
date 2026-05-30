@@ -12,10 +12,8 @@ model: gemma4:26b          # Default for Ollama; oMLX model: Qwen3.6-35B-A3B
                                 # For Qwen3 on Ollama, use: qwen3.6:35b-a3b or qwen3.6:27b
 host: http://localhost:11434 # Ollama default port
 
-# ── Embedding backend (for RAG) ───────────────────────────────────────────────
-embed_backend: ollama        # ollama | omlx (must match backend for compatibility)
-embed_model: nomic-embed-text
-embed_host: http://localhost:11434
+# ── Embedding model (for RAG) ─────────────────────────────────────────────────
+embed_model: nomic-ai/nomic-embed-text-v1.5   # HuggingFace model; downloaded once and cached locally
 
 # ── Context window ────────────────────────────────────────────────────────────
 # gemma4:26b: 65536 tokens (64K) - optimal for M5 with 32GB RAM
