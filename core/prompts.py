@@ -4,9 +4,13 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 
-def build_system_prompt(project: Optional[Dict] = None, memories: Optional[List[str]] = None) -> str:
+def current_datetime_str() -> str:
     now_local = datetime.now().astimezone()
-    today = now_local.strftime("%B %d, %Y, %H:%M %Z")
+    return now_local.strftime("%B %d, %Y, %H:%M %Z")
+
+
+def build_system_prompt(project: Optional[Dict] = None, memories: Optional[List[str]] = None) -> str:
+    today = current_datetime_str()
 
     if project and project.get("local_path"):
         workspace_line = f"ACTIVE PROJECT: {project['name']}"

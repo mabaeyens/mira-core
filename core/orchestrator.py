@@ -21,7 +21,7 @@ from .config import (
     THINKING_MODE,
 )
 from .tools import TOOLS, _LOCAL_TOOLS
-from .prompts import build_system_prompt, SEARCH_RESULT_TEMPLATE
+from .prompts import build_system_prompt, current_datetime_str, SEARCH_RESULT_TEMPLATE
 from .search_engine import SearchEngine
 from .rag_engine import RagEngine
 from . import url_fetcher
@@ -326,6 +326,14 @@ class ChatOrchestrator:
             for att in attachments:
                 if att.get("warning"):
                     yield {"type": "warning", "message": att["warning"]}
+
+        # Refresh timestamp so the model always sees the current time, not the conversation-start time
+        if self.conversation_history and self.conversation_history[0]["role"] == "system":
+            self.conversation_history[0]["content"] = re.sub(
+                r"CURRENT DATE AND TIME: .+",
+                f"CURRENT DATE AND TIME: {current_datetime_str()}",
+                self.conversation_history[0]["content"],
+            )
 
         # Adaptive thinking: heuristic decides, but client "force on" always wins
         if self.thinking_mode == "adaptive":
