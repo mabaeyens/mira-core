@@ -44,18 +44,34 @@ _initialized = False
 _ollama_ready = False
 
 def _detect_hardware() -> str:
+    import subprocess as _sp, json as _json, re as _re
     try:
-        import subprocess as _sp, json as _json
         out = _sp.run(
             ["system_profiler", "SPHardwareDataType", "-json"],
             capture_output=True, text=True, timeout=5
         ).stdout
-        hw = _json.loads(out)["SPHardwareDataType"][0]
-        chip = hw.get("chip_type", hw.get("cpu_type", "Apple Silicon"))
+        hw   = _json.loads(out)["SPHardwareDataType"][0]
+        chip = hw.get("chip_type") or hw.get("cpu_type") or ""
         mem  = hw.get("physical_memory", "")
-        return f"{chip} · {mem}" if mem else chip
+        if chip:
+            return f"{chip} · {mem}" if mem else chip
     except Exception:
-        return "Apple Silicon"
+        pass
+    try:
+        out = _sp.run(
+            ["system_profiler", "SPHardwareDataType"],
+            capture_output=True, text=True, timeout=5
+        ).stdout
+        for line in out.splitlines():
+            m = _re.match(r"\s+(?:Chip|Processor Name):\s+(.+)", line)
+            if m:
+                chip  = m.group(1).strip()
+                mem_m = _re.search(r"Memory:\s+(\S+\s*\S*)", out)
+                mem   = mem_m.group(1).strip() if mem_m else ""
+                return f"{chip} · {mem}" if mem else chip
+    except Exception:
+        pass
+    return "Apple Silicon"
 
 _HARDWARE = _detect_hardware()
 
