@@ -13,7 +13,7 @@ main.py (CLI)     server.py (FastAPI + SSE)
             ├── _call_llm() → openai.chat.completions.create() (mlx-lm or ollama, OpenAI-compatible)
             ├── core/search_engine.py → SearchEngine → ddgs.text()
             └── core/rag_engine.py → RagEngine
-                      ├── ollama.embed() (EMBED_BACKEND=ollama, transitional → sentence-transformers)
+                      ├── SentenceTransformer (nomic-ai/nomic-embed-text-v1.5, local, 768 dims)
                       ├── chromadb.EphemeralClient (in-memory)
                       └── CrossEncoder (sentence-transformers)
 
@@ -150,9 +150,7 @@ On Mira startup, `backend_manager.ensure_backend_running()` launches mlx-lm auto
 | `backend` | `mlx-lm` | `mlx-lm` (default) or `ollama` |
 | `model` | `mlx-community/gemma-4-26b-a4b-it-4bit` | Model identifier |
 | `host` | `http://localhost:8080` | LLM server URL |
-| `embed_backend` | `ollama` | Embedding backend for RAG (transitional — see `docs/mlx-embeddings-spec.md`) |
-| `embed_model` | `nomic-embed-text` | Embedding model |
-| `embed_host` | `http://localhost:11434` | Embedding server URL |
+| `embed_model` | `nomic-ai/nomic-embed-text-v1.5` | HuggingFace embedding model for RAG (sentence-transformers) |
 | `context_window` | `65536` | Token context window |
 
 **RAG / search knobs in `core/config.py`** (no `mira.yaml` equivalent — edit directly):

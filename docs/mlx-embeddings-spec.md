@@ -1,6 +1,6 @@
 # Spec: Drop Ollama — Local sentence-transformers Embeddings
 
-## Status: PENDING
+## Status: DONE (implemented 2026-05-30, commit b92d062)
 
 ---
 
