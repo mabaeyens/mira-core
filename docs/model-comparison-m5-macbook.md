@@ -58,22 +58,23 @@ host: http://localhost:8080
 
 | Option | Sustained t/s | Warm TTFT | Memory | Quality (SWE) | Verdict |
 |--------|--------------|-----------|--------|---------------|---------|
-| **qwen3.6:35b-mlx** (Ollama) | **~43 t/s** | **~60–245ms** | ⚠️ 21GB | **58.7%** | **⭐ Best overall** |
-| gemma4:26b-mlx (Ollama) | ~39 t/s | ~970–1,200ms | ✅ 17GB | 42.3% | **Current Mira default** |
+| **gemma-4-26b-a4b-it-4bit (mlx-lm)** | **~36 t/s** | **250–505ms** | ✅ 17GB | 42.3% | **⭐ Current Mira default** |
+| **qwen3.6:35b-mlx** (Ollama) | **~43 t/s** | **~60–245ms** | ⚠️ 21GB | **58.7%** | Quality leader (Ollama; benched 2026-05-25) |
+| gemma4:26b-mlx (Ollama) | ~39 t/s | ~970–1,200ms | ✅ 17GB | 42.3% | Superseded by mlx-lm (2026-05-30) |
 | Qwen3.6-35B-A3B (llama.cpp) | ~29 t/s | ~1s | ⚠️ 23GB | 58.7% | Quality-first alternative |
-| Qwen3.6-35B-A3B (mlx-lm) | ~44 t/s | 28–62s ⚠️ | 16GB | 58.7% | Blocked — thinking uncontrollable |
+| Qwen3.6-35B-A3B (mlx-lm) | ~44 t/s | 28–62s ⚠️ | 16GB | 58.7% | Thinking blocked on qwen3.6; gemma4 works ✅ |
 | gemma4:26b Q4_K_M (Ollama) | ~39 t/s | ~290–420ms warm / 31s cold | ✅ 17GB | 42.3% | Superseded by MLX |
 | qwen3.6:latest Q4_K_M (Ollama) | ~1.5–2 t/s | 14s | ❌ 24GB | — | Avoid |
 | oMLX | — | — | ❌ OOM | — | Dead end — do not revisit |
 
-**Current Mira config**: `gemma4:26b-mlx` (set in `core/config.py`). Consider switching to `qwen3.6:35b-mlx` — faster t/s, faster warm TTFT, higher quality. Cold load is slower (4.5s vs 2.6s) and it uses 4GB more RAM.
+**Current Mira config**: mlx-lm 0.31.3 + `gemma-4-26b-a4b-it-4bit` (port 8080). Ollama remains available as an optional inference backend (switchable via the in-app model browser); `qwen3.6:35b-mlx` offers +38% quality at the cost of 1.8× slower wall time on agentic tasks.
 
 ### Backends Evaluated
 
 | Backend | Status | Notes |
 |---------|--------|-------|
-| Ollama 0.24.0 | ✅ In use | Full API, streaming, thinking control |
-| mlx-lm 0.31.3 | ⚠️ Blocked | Thinking uncontrollable — TTFT 11–62s |
+| Ollama 0.24.0 | 🔄 Optional fallback | Switchable via in-app model browser |
+| mlx-lm 0.31.3 | ✅ Default | Thinking suppressed via `--chat-template-args` |
 | llama.cpp b9260 | 🔧 Optional | Works but manual setup; no GPU sharing with Ollama |
 | oMLX v0.3.9 | ❌ Dead end | OOM crash on 32GB M5 |
 
@@ -181,7 +182,9 @@ All Qwen3.6 models are MoE (Mixture of Experts) — only ~3B parameters active p
 
 Cause: 24GB at Q4_K_M exhausts the Metal budget, forcing partial CPU offload. NVFP4 (35b-mlx, 21GB) stays fully on GPU.
 
-### mlx-lm 0.31.3 — blocked on thinking mode
+### mlx-lm 0.31.3 — thinking mode resolved (2026-05-30)
+
+> **Update 2026-05-30**: Resolved. `--chat-template-args '{"enable_thinking": false}'` suppresses thinking at the template level. mlx-lm is now the default Mira inference backend. The benchmark data below was captured before this fix — the TTFT figures with thinking active are no longer representative of production behavior.
 
 mlx-lm was tested as a direct Python alternative after oMLX crashed. Raw throughput is excellent but thinking mode cannot be disabled.
 
@@ -193,7 +196,7 @@ mlx-lm was tested as a direct Python alternative after oMLX crashed. Raw through
 
 All suppression methods tested and confirmed ineffective: `enable_thinking: false`, `thinking: false` top-level, system prompt, `/no_think` prefix, `<think></think>` prefix injection. Streaming is buffered — client waits through entire thinking phase, then receives full response at once.
 
-**Do not wire into Mira until `max_thinking_tokens` is exposed as an API parameter** (not yet in 0.31.3). Models remain cached at `~/.cache/huggingface/hub/`.
+Resolved and shipped as default. `--chat-template-args '{"enable_thinking": false}'` is passed at server startup. Models remain cached at `~/.cache/huggingface/hub/`.
 
 Detailed per-prompt results (budget = 4000 tokens):
 
@@ -260,11 +263,12 @@ The 27B model is a **dense** architecture (all 27B params active per token). Ban
 
 | Model | Server | Sustained t/s | TTFT (warm) | vs gemma4:26b-mlx |
 |-------|--------|--------------|-------------|-------------------|
-| **qwen3.6:35b-mlx** | Ollama 0.24.0 | **~43 t/s** | **~60–245ms** | **+11% faster, +38% quality** |
-| **gemma4:26b-mlx** | Ollama 0.24.0 | **~39 t/s** | **~970–1,200ms** | baseline (current default) |
+| **gemma-4-26b-a4b-it-4bit** | **mlx-lm 0.31.3** | **~36 t/s** | **250–505ms** | **⭐ Current default** |
+| **qwen3.6:35b-mlx** | Ollama 0.24.0 | **~43 t/s** | **~60–245ms** | **+11% faster, +38% quality; 1.8× slower wall time** |
+| **gemma4:26b-mlx** | Ollama 0.24.0 | **~39 t/s** | **~970–1,200ms** | baseline — Ollama backend |
 | gemma4:26b Q4_K_M | Ollama 0.24.0 | **~39 t/s** | ~290–420ms warm / 31s cold | −1% vs MLX |
-| Qwen3.6-35B-A3B-4bit | mlx-lm 0.31.3 | **~44 t/s** | 28–62s ⚠️ thinking | faster raw, worse UX |
-| gemma-4-26b-a4b-it-4bit | mlx-lm 0.31.3 | **~38 t/s** | 11–40s ⚠️ thinking | same raw, worse UX |
+| Qwen3.6-35B-A3B-4bit | mlx-lm 0.31.3 | **~44 t/s** | 28–62s ⚠️ thinking | thinking blocked on qwen3.6 |
+| gemma-4-26b-a4b-it-4bit | mlx-lm 0.31.3 | **~38 t/s** | 250–505ms ✅ | ✅ now default (thinking resolved) |
 | Qwen3.6-35B-A3B UD-Q4_K_XL | llama-server b9260 | **~29 t/s** | ~1s | 1.3× slower |
 | Qwen3.6-27B Q4_K_M (dense) | llama-server b9260 | ~6 t/s | ~1s | 6× slower |
 
