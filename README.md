@@ -2,7 +2,7 @@
 
 A local AI assistant with autonomous web search, file attachments (PDF/HTML/images/text), and RAG for large documents. Available as a CLI tool and a local web interface with streaming markdown responses.
 
-Runs on a local Ollama backend — no cloud APIs, no API keys.
+Runs on a local mlx-lm backend for inference — no cloud APIs, no API keys. Ollama is used only for RAG embeddings (nomic-embed-text) and will be phased out once sentence-transformers embeddings are wired in directly.
 
 ## Features
 
@@ -16,11 +16,11 @@ Runs on a local Ollama backend — no cloud APIs, no API keys.
 ## Prerequisites
 
 - **Python 3.12+** and **uv**
-- **Ollama** v0.24.0+ installed and running
-- **gemma4:26b-mlx**: `ollama pull gemma4:26b-mlx`
-- **nomic-embed-text** (RAG embeddings): `ollama pull nomic-embed-text`
+- **mlx-lm 0.31.3+**: `uv tool install mlx-lm` — inference engine (port 8080)
+- **Model**: `mlx-community/gemma-4-26b-a4b-it-4bit` (cached locally via mlx-lm on first run)
+- **Ollama** v0.24.0+ — only needed for RAG embeddings: `ollama pull nomic-embed-text`
 
-Mira starts Ollama automatically on launch — no manual `ollama serve` needed.
+mlx-lm is started automatically by the server (`backend_manager.py`). Ollama must be running separately if RAG is used.
 
 ## Setup
 
@@ -46,20 +46,7 @@ python server.py
 
 For remote access (iPad via Tailscale), the server also listens on HTTPS port **8443** — configure `SSL_CERTFILE` / `SSL_KEYFILE` in the plist (see [macOS LaunchAgent](#macos-launchagent-optional)) and connect to `https://<mac-hostname>:8443`.
 
-Mira starts Ollama automatically. If it is already running, Mira reuses the existing process.
-
-### Ollama env vars
-
-Add to `~/.zprofile` for optimal performance on Apple Silicon:
-
-| Variable | Value | Effect |
-|----------|-------|--------|
-| `OLLAMA_CONTEXT_LENGTH` | `65536` | 64k token context window; must match `context_window` in `mira.yaml` |
-| `OLLAMA_FLASH_ATTENTION` | `1` | Reduces KV cache memory ~40% |
-| `OLLAMA_NUM_PARALLEL` | `1` | Prevents doubling the KV cache (single-user app) |
-| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | Halves KV cache memory vs f16 default |
-
-Metal/GPU acceleration is on by default on macOS — no extra flag needed. See `docs/model-comparison-m5-macbook.md` for benchmarks and model alternatives.
+mlx-lm is started and managed automatically by the server. See `docs/model-comparison-m5-macbook.md` for benchmarks and model alternatives.
 
 ## macOS LaunchAgent (optional)
 
@@ -126,9 +113,9 @@ RAG documents persist in the session index across turns — no need to re-attach
 Copy `mira.yaml.example` to `mira.yaml` and edit. All fields are optional — omit any to keep the built-in default.
 
 ```yaml
-backend: ollama
-model: gemma4:26b-mlx
-host: http://localhost:11434
+backend: mlx-lm
+model: mlx-community/gemma-4-26b-a4b-it-4bit
+host: http://localhost:8080
 
 embed_backend: ollama
 embed_model: nomic-embed-text
@@ -139,12 +126,12 @@ context_window: 65536
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `backend` | `ollama` | Inference backend (`ollama` only) |
-| `model` | `gemma4:26b-mlx` | Model name as shown in Ollama |
-| `host` | `http://localhost:11434` | Backend host URL |
-| `embed_backend` | same as `backend` | Embedding backend for RAG |
+| `backend` | `mlx-lm` | Inference backend (`mlx-lm` or `ollama`) |
+| `model` | `mlx-community/gemma-4-26b-a4b-it-4bit` | Model identifier |
+| `host` | `http://localhost:8080` | Backend host URL |
+| `embed_backend` | `ollama` | Embedding backend for RAG |
 | `embed_model` | `nomic-embed-text` | Embedding model |
-| `embed_host` | same as `host` | Embedding host URL |
+| `embed_host` | `http://localhost:11434` | Embedding host URL |
 | `context_window` | `65536` | Token context window |
 
 Additional settings (not user-configurable via `mira.yaml` — edit `core/config.py` only if needed):
