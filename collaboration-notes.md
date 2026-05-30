@@ -36,7 +36,8 @@ Connection resilience is critical. Key files:
 ### Dependencies
 
 - FastAPI backend (`uv run python server.py`)
-- Ollama (local, port 11434) — `gemma4:26b-mlx` + `nomic-embed-text`
+- mlx-lm (local, port 8080) — `gemma-4-26b-a4b-it-4bit`
+- Ollama (local, port 11434) — `nomic-embed-text` (embed only)
 - ChromaDB (bundled with backend)
 
 ### Testing

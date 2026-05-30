@@ -2,6 +2,8 @@
 
 ## Done
 
+- [2026-05-30] mira-apps mlx-lm follow-up — model pill shows `modelDisplayName` (strips org prefix + `-it-*` suffix); thinking chip/toggle disabled and greyed when backend is `mlx-lm`; `backendLabel()` helper replaces duplicated "omlx/Ollama" ternaries; CLAUDE.md and collaboration-notes.md updated to reflect mlx-lm as primary engine.
+
 - [2026-05-30] Quantization audit — all mlx-community gemma-4-26b variants evaluated for 32GB M5. OptiQ-4bit (mixed-precision, 16.4 GB) benched Q1–Q13: all tasks pass but decode 20–25% slower than uniform 4-bit (26–28 t/s vs 35–36 t/s) due to memory bandwidth cost of 8-bit sensitive layers. 6-bit/8-bit: worse headroom, no benefit. nvfp4: NVIDIA format, skip. heretic: community fine-tune, skip. MTP: vision-path only in mlx-vlm, not available in text-only mlx-lm. **Verdict: stay on `mlx-community/gemma-4-26b-a4b-it-4bit` (uniform 4-bit, 14.5 GB).** Local paths documented in `docs/model-cache.md` (gitignored).
 - [2026-05-30] mlx-lm promoted to first-class backend — `backend_manager.py` gains `mlx-lm` preset, `start_mlx_lm()`/`stop_mlx_lm()`, and proper `is_backend_ready`/`ensure_backend_running`/`switch_to` branches. `orchestrator.py` `_make_oai_client` now takes explicit `api_key`; omlx passes its settings.json key, mlx-lm passes `"none"` (no auth). `server.py` hardcoded "oMLX backend" log message generalized. `mira.yaml` (local) switched to `backend: mlx-lm, model: mlx-community/gemma-4-26b-a4b-it-4bit`. Ollama login item disabled via `launchctl disable`. mlx-lm smoke-tested end-to-end through Mira: `backend_ready: true`, correct inference response.
 - [2026-05-30] omlx 0.3.12 full bench (Q1–Q13, both models) — no crashes (regression from 0.3.8/0.3.9 fixed). gemma4: viable, throughput ≈ mlx-lm (35–37 t/s), wall time 3–4× worse (no-cache required to avoid OOM on balanced memory tier). qwen3.6: not viable — 15–30× TTFT regression (5–6s vs 194–380ms warm) and 2–6× throughput loss vs mlx-lm; MoE handled less efficiently. Q13 behavioral diff: omlx gemma4 fired divergence guard (4× run_shell); mlx-lm gemma4 evaded via shell loop. omlx-ctl.md rewritten with setup, verdict, and memory notes. Verdict: mlx-lm with gemma4 remains preferred backend.
@@ -65,8 +67,8 @@
 - [ ] Divergence guard e2e bench — Q13 run 2026-05-30: guard fires correctly for qwen3.6 (7× run_shell, 2/2). Gemma4 evaded via shell-level loop (0/2). Q13 prompt needs refinement (see above) before gemma4 result is meaningful.
 
 ### Inference speed
-- [ ] mlx-lm thinking mode — `max_thinking_tokens` API param not yet exposed in mlx-lm 0.31.3; both Qwen3.6-35B-A3B-4bit and gemma-4-26b-a4b-it-4bit are cached locally at ~/.cache/huggingface/hub; `--chat-template-args '{"enable_thinking": false}'` is the correct suppression path (template-level)
-- [ ] Watch for quantized MLX gemma4:26b variant in Ollama registry — current `gemma4:26b` tag runs llama.cpp at ~38 tok/s; MLX path requires bf16 (52GB, won't fit 32GB RAM) and has a cold-prefill bug (#16051); revisit when a q4/q8 MLX tag appears
+- [ ] mlx-lm thinking mode — `max_thinking_tokens` API param not yet exposed in mlx-lm 0.31.3; thinking suppressed server-side via `--chat-template-args '{"enable_thinking": false}'`; UI toggle disabled while on mlx-lm. Re-enable when param is exposed.
+- [ ] Unsloth UD-MLX-4bit bench — `unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit` (15 GB) is cached locally; not yet benched vs uniform 4-bit. Low priority; only worth running if Q13 prompt refinement session is already open.
 
 ### Future / nice-to-have
 - [ ] Scanned PDF OCR — detect scanned PDFs (empty text layer) and run OCR (e.g. `tesseract`) before indexing

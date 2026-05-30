@@ -5,7 +5,7 @@ FastAPI backend for Mira. See `collaboration-notes.md` for session guidance and 
 ## Project Stack
 
 - **Framework:** FastAPI (Python 3.11+)
-- **LLM Engine:** Ollama (local inference, default gemma4:26b, 64k context)
+- **LLM Engine:** mlx-lm (local inference, gemma-4-26b-a4b-it-4bit, 64k context)
 - **Vector DB:** ChromaDB (ephemeral, for RAG)
 - **Server:** Port 8000 (HTTP) / 8443 (HTTPS)
 
