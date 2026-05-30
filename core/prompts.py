@@ -1,10 +1,10 @@
 """System prompts and templates."""
 
 from datetime import date
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
-def build_system_prompt(project: Optional[Dict] = None) -> str:
+def build_system_prompt(project: Optional[Dict] = None, memories: Optional[List[str]] = None) -> str:
     today = date.today().strftime("%B %d, %Y")
 
     if project and project.get("local_path"):
@@ -100,7 +100,11 @@ RESPONSE STYLE:
 - Never say "I recommend checking [website]" — you can check it yourself with fetch_url
 - When a request is ambiguous or missing a key detail, ask one clarifying question instead of guessing or providing multiple alternatives
 - When asked for one thing (e.g., "a Python script"), produce one. If multiple valid approaches exist, pick the best one and briefly note that alternatives exist — do not generate all of them
-- Avoid multi-paragraph explanations for straightforward tasks; a short note or inline comment is enough"""
+- Avoid multi-paragraph explanations for straightforward tasks; a short note or inline comment is enough""" + (
+    "\n\nUSER MEMORIES (facts about the user — always apply):\n" +
+    "".join(f"- {m}\n" for m in memories)
+    if memories else ""
+)
 
 SEARCH_RESULT_TEMPLATE = """
 SEARCH RESULTS FOR: "{query}"

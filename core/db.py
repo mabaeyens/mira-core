@@ -5,6 +5,7 @@ Schema
 projects      : id, name, local_path, github_repo, created_at, last_used
 conversations : id, title, created_at, updated_at, model_name, project_id
 messages      : id, conversation_id, role, content, created_at
+memories      : id, text, created_at
 
 Only 'user' and 'assistant' roles are stored — tool / search messages are
 ephemeral and re-generated on each turn.  Content is stored as plain text
@@ -72,6 +73,11 @@ def init_db() -> None:
                 role            TEXT    NOT NULL,
                 content         TEXT    NOT NULL,
                 created_at      INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS memories (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                text       TEXT    NOT NULL,
+                created_at INTEGER NOT NULL
             );
         """)
         # Migration: add project_id to existing conversations tables
@@ -231,5 +237,28 @@ def replace_messages(conv_id: str, messages: List[Dict]) -> None:
         conn.execute(
             "UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id)
         )
+
+
+# ── Memories ──────────────────────────────────────────────────────────────────
+
+def get_memories() -> List[Dict]:
+    rows = _conn().execute(
+        "SELECT id, text, created_at FROM memories ORDER BY created_at DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def add_memory(text: str) -> int:
+    now = int(time.time())
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO memories (text, created_at) VALUES (?, ?)", (text, now)
+        )
+        return cur.lastrowid
+
+
+def delete_memory(memory_id: int) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
 
 

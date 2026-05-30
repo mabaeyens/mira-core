@@ -515,6 +515,34 @@ async def delete_project(project_id: str):
     return {"status": "ok"}
 
 
+# ── Memory endpoints ──────────────────────────────────────────────────────────
+
+class MemoryRequest(BaseModel):
+    text: str
+
+
+@app.get("/memories")
+async def list_memories():
+    return {"memories": db.get_memories()}
+
+
+@app.post("/memories")
+async def add_memory(body: MemoryRequest):
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    if len(db.get_memories()) >= 30:
+        raise HTTPException(status_code=400, detail="memory limit reached (30 max)")
+    memory_id = db.add_memory(text)
+    return {"id": memory_id, "text": text, "created_at": int(__import__("time").time())}
+
+
+@app.delete("/memories/{memory_id}")
+async def delete_memory(memory_id: int):
+    db.delete_memory(memory_id)
+    return {"status": "ok"}
+
+
 # ── Conversation endpoints ────────────────────────────────────────────────────
 
 @app.get("/conversations")

@@ -174,7 +174,9 @@ class ChatOrchestrator:
     def set_project(self, project: Optional[Dict]) -> None:
         self.project = project
         if self.conversation_history and self.conversation_history[0]["role"] == "system":
-            self.conversation_history[0]["content"] = build_system_prompt(project=project)
+            from . import db
+            memories = [m["text"] for m in db.get_memories()]
+            self.conversation_history[0]["content"] = build_system_prompt(project=project, memories=memories)
         else:
             self.system_prompt_added = False
             self._add_system_prompt()
@@ -197,9 +199,11 @@ class ChatOrchestrator:
 
     def _add_system_prompt(self):
         if not self.system_prompt_added:
+            from . import db
+            memories = [m["text"] for m in db.get_memories()]
             self.conversation_history.append({
                 "role": "system",
-                "content": build_system_prompt(project=self.project)
+                "content": build_system_prompt(project=self.project, memories=memories)
             })
             self.system_prompt_added = True
 
