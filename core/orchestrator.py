@@ -80,12 +80,12 @@ def _read_omlx_api_key() -> str:
         return "none"
 
 
-def _make_oai_client(host: str) -> _openai.OpenAI:
+def _make_oai_client(host: str, api_key: str = "none") -> _openai.OpenAI:
     """Create an OpenAI-compatible client pointed at the given host."""
     base = host.rstrip("/")
     if not base.endswith("/v1"):
         base += "/v1"
-    return _openai.OpenAI(base_url=base, api_key=_read_omlx_api_key())
+    return _openai.OpenAI(base_url=base, api_key=api_key)
 
 
 _THINK_VERBS = re.compile(
@@ -146,7 +146,8 @@ class ChatOrchestrator:
             self._oai = None
         else:
             self._ollama = None
-            self._oai = _make_oai_client(OLLAMA_HOST)
+            api_key = _read_omlx_api_key() if self.backend == "omlx" else "none"
+            self._oai = _make_oai_client(OLLAMA_HOST, api_key=api_key)
 
         self.search_engine = SearchEngine()
         self.rag_engine = RagEngine()
@@ -190,7 +191,8 @@ class ChatOrchestrator:
             self._oai = None
         else:
             self._ollama = None
-            self._oai = _make_oai_client(host)
+            api_key = _read_omlx_api_key() if backend == "omlx" else "none"
+            self._oai = _make_oai_client(host, api_key=api_key)
         self.rag_engine.reinitialize_client(embed_backend, embed_host)
 
     def _add_system_prompt(self):

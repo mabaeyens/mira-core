@@ -21,7 +21,7 @@ def _get(key: str, default):
     return _cfg.get(key, default)
 
 # ── Backend ───────────────────────────────────────────────────────────────────
-# "ollama" uses the ollama Python client; "omlx" uses the OpenAI-compatible API.
+# "mlx-lm" and "omlx" use the OpenAI-compatible API; "ollama" uses the ollama Python client.
 BACKEND: str = _get("backend", "ollama")
 MODEL_NAME: str = _get("model", "gemma4:26b-mlx")
 OLLAMA_HOST: str = _get("host", os.getenv("OLLAMA_HOST", "http://localhost:11434"))

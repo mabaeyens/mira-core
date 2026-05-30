@@ -110,7 +110,7 @@ async def lifespan(app: FastAPI):
                 orchestrator.new_conversation(conv_id)
             logger.info(f"Initialized orchestrator — backend: {BACKEND}, model: {orchestrator.model}, conv: {orchestrator.conv_id}")
             if BACKEND != "ollama":
-                logger.info(f"oMLX backend — model {MODEL_NAME} managed by oMLX server at {OLLAMA_HOST}")
+                logger.info(f"{BACKEND} backend — model {MODEL_NAME} at {OLLAMA_HOST}")
             _ollama_ready = True
             # Auto-start the inference backend in a background thread so the app is
             # usable immediately (health returns 200) even while oMLX/Ollama loads.

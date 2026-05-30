@@ -10,6 +10,12 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+MLX_LM_CLI = "/Users/miguel/.local/bin/mlx_lm.server"
+MLX_LM_PORT = 8080
+MLX_LM_HOST = f"http://localhost:{MLX_LM_PORT}"
+MLX_LM_MODEL = "mlx-community/gemma-4-26b-a4b-it-4bit"
+MLX_LM_CONTEXT = 65536
+
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
 OMLX_PORT = 8080
 OMLX_HOST = f"http://localhost:{OMLX_PORT}"
@@ -21,6 +27,14 @@ OLLAMA_MODEL = "gemma4:26b"
 OLLAMA_CONTEXT = int(os.environ.get("OLLAMA_CONTEXT_LENGTH", 262144))
 
 PRESETS = {
+    "mlx-lm": {
+        "backend": "mlx-lm",
+        "model": MLX_LM_MODEL,
+        "host": MLX_LM_HOST,
+        "embed_backend": "ollama",
+        "embed_host": OLLAMA_HOST,
+        "context_window": MLX_LM_CONTEXT,
+    },
     "omlx": {
         "backend": "omlx",
         "model": OMLX_MODEL,
@@ -39,7 +53,40 @@ PRESETS = {
     },
 }
 
+_mlx_lm_proc = None
 _omlx_proc = None
+
+
+def start_mlx_lm() -> None:
+    global _mlx_lm_proc
+    _mlx_lm_proc = subprocess.Popen(
+        [
+            MLX_LM_CLI,
+            "--model", MLX_LM_MODEL,
+            "--host", "127.0.0.1",
+            "--port", str(MLX_LM_PORT),
+            "--max-tokens", "4096",
+            "--chat-template-args", '{"enable_thinking": false}',
+            "--prompt-cache-bytes", "3G",
+            "--decode-concurrency", "1",
+            "--prefill-step-size", "512",
+            "--trust-remote-code",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    _wait_for_ready(MLX_LM_HOST + "/v1/models", timeout=120)
+
+
+def stop_mlx_lm() -> None:
+    global _mlx_lm_proc
+    if _mlx_lm_proc and _mlx_lm_proc.poll() is None:
+        _mlx_lm_proc.terminate()
+        try:
+            _mlx_lm_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            _mlx_lm_proc.kill()
+        _mlx_lm_proc = None
 
 
 def _omlx_api_key() -> str:
@@ -78,18 +125,26 @@ def is_backend_ready(backend: str) -> bool:
     try:
         if backend == "omlx":
             _omlx_request("/v1/models")
-            return True
+        elif backend == "mlx-lm":
+            urllib.request.urlopen(MLX_LM_HOST + "/v1/models", timeout=2)
         else:
             urllib.request.urlopen(OLLAMA_HOST + "/api/version", timeout=2)
-            return True
+        return True
     except Exception:
         return False
 
 
 def ensure_backend_running(backend: str) -> None:
     """Start the backend if not already reachable. Safe to call on every startup."""
-    if backend == "omlx":
-        # If oMLX is already responding (our process or an external one), skip start.
+    if backend == "mlx-lm":
+        try:
+            urllib.request.urlopen(MLX_LM_HOST + "/v1/models", timeout=2)
+            logger.info("mlx-lm already running")
+            return
+        except Exception:
+            pass
+        start_mlx_lm()
+    elif backend == "omlx":
         try:
             _omlx_request("/v1/models")
             logger.info("oMLX already running")
@@ -148,12 +203,18 @@ def switch_to(target: str) -> dict:
     does not respond within its startup window.
     """
     if target not in PRESETS:
-        raise ValueError(f"Unknown backend {target!r}. Must be 'ollama' or 'omlx'.")
+        raise ValueError(f"Unknown backend {target!r}. Must be 'ollama', 'mlx-lm', or 'omlx'.")
     logger.info("Switching backend to %s", target)
-    if target == "omlx":
+    if target == "mlx-lm":
         stop_ollama()
+        stop_omlx()
+        start_mlx_lm()
+    elif target == "omlx":
+        stop_ollama()
+        stop_mlx_lm()
         start_omlx()
     else:
+        stop_mlx_lm()
         stop_omlx()
         start_ollama()
     logger.info("Backend switch to %s complete", target)
