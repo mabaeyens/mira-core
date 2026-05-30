@@ -73,4 +73,7 @@ tmp_workaround/
 bench/
 mira_bench_test.txt
 files.txt
+
+# Raw bench JSONL logs — summarised in docs/bench-results-*.md
+scripts/bench_raw_*.jsonl
 docs/model-cache.md
