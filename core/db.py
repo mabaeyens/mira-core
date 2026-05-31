@@ -85,6 +85,11 @@ def init_db() -> None:
             conn.execute("ALTER TABLE conversations ADD COLUMN project_id TEXT")
         except Exception:
             pass  # column already exists
+        # Migration: add thinking_content to existing messages tables
+        try:
+            conn.execute("ALTER TABLE messages ADD COLUMN thinking_content TEXT")
+        except Exception:
+            pass  # column already exists
 
 
 # ── Projects ──────────────────────────────────────────────────────────────────
@@ -201,9 +206,10 @@ def save_messages(conv_id: str, messages: List[Dict]) -> None:
     with _conn() as conn:
         for msg in messages:
             conn.execute(
-                "INSERT INTO messages (conversation_id, role, content, created_at)"
-                " VALUES (?, ?, ?, ?)",
-                (conv_id, msg["role"], str(msg.get("content", "")), now),
+                "INSERT INTO messages (conversation_id, role, content, thinking_content, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (conv_id, msg["role"], str(msg.get("content", "")),
+                 msg.get("thinking_content") or None, now),
             )
         conn.execute(
             "UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id)
@@ -211,14 +217,15 @@ def save_messages(conv_id: str, messages: List[Dict]) -> None:
 
 
 def load_messages(conv_id: str) -> List[Dict]:
-    """Return messages as [{role, content}] ordered by insertion."""
+    """Return messages as [{role, content, thinking_content}] ordered by insertion."""
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT role, content FROM messages"
+            "SELECT role, content, thinking_content FROM messages"
             " WHERE conversation_id = ? ORDER BY id",
             (conv_id,),
         ).fetchall()
-    return [{"role": r["role"], "content": r["content"]} for r in rows]
+    return [{"role": r["role"], "content": r["content"],
+             "thinking_content": r["thinking_content"]} for r in rows]
 
 
 def replace_messages(conv_id: str, messages: List[Dict]) -> None:
@@ -230,9 +237,10 @@ def replace_messages(conv_id: str, messages: List[Dict]) -> None:
         )
         for msg in messages:
             conn.execute(
-                "INSERT INTO messages (conversation_id, role, content, created_at)"
-                " VALUES (?, ?, ?, ?)",
-                (conv_id, msg["role"], str(msg.get("content", "")), now),
+                "INSERT INTO messages (conversation_id, role, content, thinking_content, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (conv_id, msg["role"], str(msg.get("content", "")),
+                 msg.get("thinking_content") or None, now),
             )
         conn.execute(
             "UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id)

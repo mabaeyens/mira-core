@@ -391,6 +391,7 @@ async def chat(
             snapshot["len"] = len(orchestrator.conversation_history)
             was_new_conv = orchestrator._is_new_conv
             done_content = None
+            thinking_content = None
 
             try:
                 for event in orchestrator.stream_chat(message, attachments=attachments or None, thinking_enabled=thinking_enabled):
@@ -398,12 +399,15 @@ async def chat(
                         break
                     if event.get("type") == "done":
                         done_content = event.get("content", "")
+                    elif event.get("type") == "thinking" and event.get("content"):
+                        thinking_content = (thinking_content or "") + event["content"]
                     loop.call_soon_threadsafe(queue.put_nowait, event)
 
                 if not cancel_event.is_set() and orchestrator.conv_id and done_content is not None:
                     db.save_messages(orchestrator.conv_id, [
                         {"role": "user",      "content": message},
-                        {"role": "assistant", "content": done_content},
+                        {"role": "assistant", "content": done_content,
+                         "thinking_content": thinking_content},
                     ])
 
                     if was_new_conv:

@@ -102,6 +102,20 @@ _CODE_SIGNAL = re.compile(
 _GEMMA_THINK_OPEN = "<|channel>thought\n"
 _GEMMA_THINK_CLOSE = "<channel|>"
 
+
+def _partial_marker_tail(buf: str, *markers: str) -> int:
+    """Length of the longest suffix of ``buf`` that is a proper prefix of any
+    marker. Such a tail might be the start of a marker that spans into the next
+    stream chunk, so it must be held back rather than emitted. Returns 0 when no
+    suffix could begin a marker."""
+    best = 0
+    for marker in markers:
+        for n in range(min(len(buf), len(marker) - 1), 0, -1):
+            if buf[-n:] == marker[:n]:
+                best = max(best, n)
+                break
+    return best
+
 # Short acknowledgements that are never complex regardless of other signals.
 _TRIVIAL = re.compile(
     r"^\s*(ok|okay|thanks|thank you|got it|sounds good|perfect|great|sure|yes|no|yep|nope|cool)\s*[.!]?\s*$",
@@ -507,10 +521,14 @@ class ChatOrchestrator:
                                 if in_thinking:
                                     close = think_buf.find("</think>")
                                     if close == -1:
-                                        # No closing tag yet — whole buffer is thinking content
-                                        _thinking_chars += len(think_buf)
-                                        yield {"type": "thinking", "content": think_buf}
-                                        think_buf = ""
+                                        # No closing tag yet — emit buffered thinking but
+                                        # hold back a tail that may be a split </think>.
+                                        hold = _partial_marker_tail(think_buf, "</think>")
+                                        emit = think_buf[:len(think_buf) - hold] if hold else think_buf
+                                        if emit:
+                                            _thinking_chars += len(emit)
+                                            yield {"type": "thinking", "content": emit}
+                                        think_buf = think_buf[len(think_buf) - hold:] if hold else ""
                                         break
                                     # Emit the thinking fragment before the closing tag
                                     thinking_fragment = think_buf[:close]
@@ -522,8 +540,11 @@ class ChatOrchestrator:
                                 else:
                                     open_tag = think_buf.find("<think>")
                                     if open_tag == -1:
-                                        gemma_buf += think_buf
-                                        think_buf = ""
+                                        # No open tag — route to Pass 2, but hold back a
+                                        # tail that may be a split <think>.
+                                        hold = _partial_marker_tail(think_buf, "<think>")
+                                        gemma_buf += think_buf[:len(think_buf) - hold] if hold else think_buf
+                                        think_buf = think_buf[len(think_buf) - hold:] if hold else ""
                                         break
                                     if open_tag > 0:
                                         gemma_buf += think_buf[:open_tag]
@@ -538,10 +559,14 @@ class ChatOrchestrator:
                                 if in_gemma_thinking:
                                     close = gemma_buf.find(_GEMMA_THINK_CLOSE)
                                     if close == -1:
-                                        # No closing tag yet — whole buffer is Gemma 4 thinking
-                                        _thinking_chars += len(gemma_buf)
-                                        yield {"type": "thinking", "content": gemma_buf}
-                                        gemma_buf = ""
+                                        # No closing tag yet — emit buffered thinking but
+                                        # hold back a tail that may be a split <channel|>.
+                                        hold = _partial_marker_tail(gemma_buf, _GEMMA_THINK_CLOSE)
+                                        emit = gemma_buf[:len(gemma_buf) - hold] if hold else gemma_buf
+                                        if emit:
+                                            _thinking_chars += len(emit)
+                                            yield {"type": "thinking", "content": emit}
+                                        gemma_buf = gemma_buf[len(gemma_buf) - hold:] if hold else ""
                                         break
                                     thinking_fragment = gemma_buf[:close]
                                     if thinking_fragment:
@@ -552,9 +577,14 @@ class ChatOrchestrator:
                                 else:
                                     open_tag = gemma_buf.find(_GEMMA_THINK_OPEN)
                                     if open_tag == -1:
-                                        yield {"type": "token", "content": gemma_buf}
-                                        full_content += gemma_buf
-                                        gemma_buf = ""
+                                        # No open tag — emit as visible tokens, but hold back
+                                        # a tail that may be a split <|channel>thought\n.
+                                        hold = _partial_marker_tail(gemma_buf, _GEMMA_THINK_OPEN)
+                                        emit = gemma_buf[:len(gemma_buf) - hold] if hold else gemma_buf
+                                        if emit:
+                                            yield {"type": "token", "content": emit}
+                                            full_content += emit
+                                        gemma_buf = gemma_buf[len(gemma_buf) - hold:] if hold else ""
                                         break
                                     if open_tag > 0:
                                         regular = gemma_buf[:open_tag]
@@ -582,12 +612,24 @@ class ChatOrchestrator:
                                 self.total_input_tokens += p
                             if isinstance(e, int):
                                 self.total_output_tokens += e
-                    # Flush any unclosed thinking blocks (malformed model output)
-                    if in_thinking and think_buf:
-                        yield {"type": "thinking", "content": think_buf}
+                    # Stream ended — drain any remaining buffered content, including
+                    # held-back partial markers that can no longer complete. Inside a
+                    # thinking block the remainder is thinking; otherwise it is a tag
+                    # that never materialised, so it surfaces as visible content.
+                    if think_buf:
+                        if in_thinking:
+                            _thinking_chars += len(think_buf)
+                            yield {"type": "thinking", "content": think_buf}
+                        else:
+                            gemma_buf += think_buf
                         think_buf = ""
-                    if in_gemma_thinking and gemma_buf:
-                        yield {"type": "thinking", "content": gemma_buf}
+                    if gemma_buf:
+                        if in_gemma_thinking:
+                            _thinking_chars += len(gemma_buf)
+                            yield {"type": "thinking", "content": gemma_buf}
+                        else:
+                            yield {"type": "token", "content": gemma_buf}
+                            full_content += gemma_buf
                         gemma_buf = ""
                     break
                 except Exception as e:
@@ -876,7 +918,12 @@ class ChatOrchestrator:
             )
         else:
             extra: dict = {}
-            if not thinking_enabled:
+            if self.backend == "mlx-lm":
+                # mlx_lm.server only honours thinking through the chat-template kwargs.
+                # A top-level `enable_thinking` is silently ignored, and Qwen3's template
+                # default is off — so thinking must be requested explicitly here, both ways.
+                extra["extra_body"] = {"chat_template_kwargs": {"enable_thinking": thinking_enabled}}
+            elif not thinking_enabled:
                 extra["extra_body"] = {"enable_thinking": False}
             return self._normalize_oai_stream(
                 self._oai.chat.completions.create(
@@ -926,9 +973,16 @@ class ChatOrchestrator:
                             acc_args[idx] += tc.function.arguments
 
             content = delta.content or ""
+            # mlx_lm.server (and other OpenAI-compatible servers) stream chain-of-thought
+            # in a separate `reasoning` field on the delta, not inline in content. The
+            # OpenAI SDK keeps non-standard fields on model_extra and also exposes them as
+            # attributes — read both to be robust across SDK versions.
+            reasoning = getattr(delta, "reasoning", None) \
+                or (getattr(delta, "model_extra", None) or {}).get("reasoning") \
+                or ""
             is_done = finish_reason is not None
 
-            msg = types.SimpleNamespace(content=content, tool_calls=None, thinking="")
+            msg = types.SimpleNamespace(content=content, tool_calls=None, thinking=reasoning)
             fake = types.SimpleNamespace(
                 message=msg, done=is_done, prompt_eval_count=0, eval_count=0
             )
