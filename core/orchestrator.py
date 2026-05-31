@@ -124,6 +124,14 @@ _TRIVIAL = re.compile(
     re.IGNORECASE,
 )
 
+# Queries/commands that should never trigger thinking regardless of other signals.
+_NEVER_THINK = re.compile(
+    r"^\s*(what\s+(time|day|date)|what'?s\s+the\s+(time|date|day))"
+    r"|^\s*(summarize|summary|list|show|open|read|run|fix|check|test|display)\s+\S+\s+in\s+\d+\s+\w+"
+    r"|^\s*(fix|run|read|open|show|check|test)\s+\S+\.\w+\s*$",
+    re.IGNORECASE,
+)
+
 # Strong reasoning intent — these imply the user wants the model to reason, regardless
 # of message length or code formatting (which mobile users rarely type). Matched on its
 # own, not scored, so short questions like "why is it O(n²)" trigger thinking.
@@ -132,6 +140,13 @@ _REASONING_INTENT = re.compile(
     r"design|architect|refactor|trade[- ]?off|difference between|pros and cons|"
     r"step[- ]by[- ]step|walk me through)\b"
     r"|\bhow (do|does|did|can|could|would|should|to|is|are|come)\b",
+    re.IGNORECASE,
+)
+
+# Analytical verbs that, combined with an attachment, justify the +2 bonus.
+_ANALYTICAL_WITH_ATTACHMENT = re.compile(
+    r"\b(explain|analyze|analyse|compare|debug|refactor|review|architect|understand|"
+    r"improve|evaluate|assess|summarize|describe|interpret)\b",
     re.IGNORECASE,
 )
 
@@ -152,13 +167,17 @@ def _should_think(message: str, has_attachments: bool = False) -> bool:
     """Return True if the message warrants extended reasoning."""
     if _TRIVIAL.match(message):
         return False
+    if _NEVER_THINK.match(message):
+        return False
     # Reasoning questions warrant thinking on their own — independent of length or
     # code formatting that mobile users won't type.
     if _REASONING_INTENT.search(message):
         return True
     score = 0
     if has_attachments:
-        score += 3
+        score += 1
+        if _ANALYTICAL_WITH_ATTACHMENT.search(message):
+            score += 2
     if len(message) > 500:
         score += 2
     elif len(message) > 150:
@@ -167,7 +186,7 @@ def _should_think(message: str, has_attachments: bool = False) -> bool:
         score += 2
     if _THINK_VERBS.search(message):
         score += 1
-    return score >= 3
+    return score >= 4
 
 
 class ChatOrchestrator:

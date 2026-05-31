@@ -128,16 +128,36 @@ def is_backend_ready(backend: str) -> bool:
         return False
 
 
+def _warmup_model(model: str) -> None:
+    payload = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": "Hi"}],
+        "max_tokens": 1,
+        "stream": False,
+    }).encode()
+    req = urllib.request.Request(
+        MLX_LM_HOST + "/v1/chat/completions",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        logger.info("mlx-lm: warming up model %s…", model)
+        urllib.request.urlopen(req, timeout=60)
+        logger.info("mlx-lm: model warm")
+    except Exception as exc:
+        logger.warning("mlx-lm warmup failed (non-fatal): %s", exc)
+
+
 def ensure_backend_running(backend: str) -> None:
     """Start the backend if not already reachable. Safe to call on every startup."""
     if backend == "mlx-lm":
         try:
             urllib.request.urlopen(MLX_LM_HOST + "/v1/models", timeout=2)
             logger.info("mlx-lm already running")
-            return
         except Exception:
-            pass
-        start_mlx_lm()
+            start_mlx_lm()
+        _warmup_model(MLX_LM_MODEL)
     elif backend == "omlx":
         try:
             _omlx_request("/v1/models")

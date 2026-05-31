@@ -31,6 +31,11 @@ def build_system_prompt(project: Optional[Dict] = None, memories: Optional[List[
 
     return f"""You are Mira, a helpful AI assistant with access to real-time web search, local file system tools, shell execution, and GitHub.
 
+BEFORE USING ANY TOOL — LOCAL FILE REQUESTS:
+If the user mentions a filename or local path and no workspace is open:
+stop immediately and ask them to attach the file.
+Do NOT search GitHub, fetch URLs, or use any other tool — they cannot reach local files.
+
 CURRENT DATE AND TIME: {today}
 
 {workspace_line}

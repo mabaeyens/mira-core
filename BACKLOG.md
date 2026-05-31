@@ -2,6 +2,10 @@
 
 ## Done (recent — see `git log` for full history)
 
+- [2026-05-31] mlx-lm model warmup — `_warmup_model()` added to `backend_manager.py`; called at end of `ensure_backend_running("mlx-lm")` whether server was already running or freshly started. Eliminates 29–34 s cold-start penalty for the first user request (model now pre-loaded in VRAM during background startup thread).
+- [2026-05-31] Backend benchmark — `scripts/benchmark.py` added: 9-cell matrix (3 prompts × 3 positions × reps), Ollama + mlx-lm, Haiku analysis via `claude` CLI. Key findings: mlx-lm warm TTFT 300–450 ms, Ollama cache saves 4–5× on warm prefix, Qwen3 thinking overhead negligible on mlx-lm (7 ms), expensive on Ollama (104% TTFT). Recommendation: default to mlx-lm + Qwen3.6-35B with thinking on.
+- [2026-05-31] Thinking heuristics — `_NEVER_THINK` pattern blocks thinking on trivial commands (time, date, "fix X.ext"); `_ANALYTICAL_WITH_ATTACHMENT` gates the attachment bonus to analytical verbs only; bare-attachment score bonus reduced (3 → 1+2); threshold raised (3 → 4). Eliminates thinking on "summarize this file in 3 words" and similar.
+- [2026-05-31] Local file prompt guard — system prompt now opens with a hard block: if user mentions a filename with no workspace open, ask to attach the file instead of searching GitHub/web.
 - [2026-05-30] Q13 prompt refinement + divergence guard validation — "call run_shell once per check, no shell loops or sleep" constraint added to Q13 prompt. Validated on both models (gemma4 2/2, qwen3.6 2/2). Guard is now reliably triggered.
 - [2026-05-30] mira-apps mlx-lm follow-up — model pill shows `modelDisplayName`; thinking chip/toggle disabled on mlx-lm backend; `backendLabel()` helper; CLAUDE.md and collaboration-notes.md updated to reflect mlx-lm as primary engine.
 - [2026-05-30] mlx-lm promoted to first-class backend — `backend_manager.py` gains `mlx-lm` preset and proper `is_backend_ready`/`ensure_backend_running`/`switch_to` branches. `mira.yaml` switched to `backend: mlx-lm`. Smoke-tested end-to-end.
@@ -9,7 +13,7 @@
 ## Pending
 
 ### Inference speed
-- [ ] mlx-lm thinking mode — `max_thinking_tokens` API param not yet exposed in mlx-lm 0.31.3; thinking suppressed server-side via `--chat-template-args '{"enable_thinking": false}'`; UI toggle disabled while on mlx-lm. Re-enable when param is exposed.
+- [ ] mlx-lm thinking mode — confirmed working via Qwen3's `enable_thinking` chat template flag (controlled per-request via `extra_body`). UI toggle on mlx-lm still disabled in mira-apps; re-enable now that it works.
 - [ ] Unsloth UD-MLX-4bit bench — `unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit` (15 GB) is cached locally; not yet benched vs uniform 4-bit. Low priority; only worth running if Q13 prompt refinement session is already open.
 
 ### Future / nice-to-have
@@ -32,4 +36,5 @@
 - omlx 0.3.12: reinstalled May 2026. Did not crash (0.3.8/0.3.9 regression fixed). No performance advantage over mlx-lm — gemma4 throughput identical but wall time 3–4× worse; qwen3.6 15–30× TTFT regression. Not recommended as Mira backend. See `docs/omlx-ctl.md`.
 - MLX community benchmark leaderboard (2026-05-30): gemma-4-26b-a4b-it 75.2% (#5 overall, strong on medium 82.3%); qwen3.6-35b-a3b local 52.5% (#10, weak on medium 46.4% and very hard 36%). Note: this contradicts SWE-bench results — different task distribution. Use both leaderboards together for full picture.
 - Agentic Critic LLM call considered and rejected — proposed plan called for a secondary model call after every tool observation to decide CONTINUE/FINISH; replaced with `task_done` tool + ReAct-style prompting (RULE 7); zero extra latency, same effect
+- Benchmark design (2026-05-31): Ollama tok/s values are char-count estimates (usage stats not returned) — unreliable, don't compare to mlx-lm. mlx-lm "cold" first-model TTFT (~30 s) is a one-time model-switch cost, not a KV miss — becomes irrelevant once `_warmup_model()` pre-loads on startup. Ollama/Qwen3 thinking mode with max_tokens=512 hits the generation window before emitting content for medium/long prompts (TTFT=null); use higher max_tokens or no_think for those lengths.
 - Router Agent considered and rejected — adds ~300ms overhead to every complex query (majority of Mira sessions); heuristic-based thinking toggle is the right lever at zero cost
