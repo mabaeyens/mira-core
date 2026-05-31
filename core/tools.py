@@ -40,6 +40,49 @@ FETCH_TOOL = {
     }
 }
 
+LIST_ATTACHMENTS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "list_attachments",
+        "description": "List all files attached to this conversation. Returns names, types, and sizes.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+}
+
+READ_ATTACHMENT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_attachment",
+        "description": (
+            "Read the text content of a file attached to this conversation. "
+            "Call list_attachments first if you are unsure of the exact name. "
+            "Supports optional offset and limit (in characters) for large files."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Attachment file name as returned by list_attachments",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Character offset to start reading from (default 0)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of characters to return (default: all)",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+}
+
 
 # ── Filesystem tools ──────────────────────────────────────────────────────────
 
@@ -472,6 +515,7 @@ TASK_DONE_TOOL = {
 
 TOOLS = [
     SEARCH_TOOL, FETCH_TOOL,
+    LIST_ATTACHMENTS_TOOL, READ_ATTACHMENT_TOOL,
     # Filesystem
     READ_FILE_TOOL, WRITE_FILE_TOOL, EDIT_FILE_TOOL, LIST_FILES_TOOL, SEARCH_FILES_TOOL,
     MOVE_FILE_TOOL, DELETE_FILE_TOOL,
@@ -493,3 +537,6 @@ _LOCAL_TOOLS = {
     "read_file", "write_file", "edit_file", "list_files", "search_files",
     "move_file", "delete_file", "run_shell",
 }
+
+# Read-only subset of _LOCAL_TOOLS exposed when a temp workspace exists (no project, attachments uploaded)
+_TEMP_WORKSPACE_TOOLS = {"read_file", "list_files", "search_files"}

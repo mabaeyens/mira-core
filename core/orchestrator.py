@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import tempfile
 import types
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -15,12 +17,12 @@ import openai as _openai
 from .config import (
     MODEL_NAME, BACKEND, OLLAMA_HOST,
     MAX_RETRIES, MAX_TOOL_STEPS, MAX_AGENT_STEPS, AGENT_DIVERGENCE_LIMIT,
-    MAX_TOOL_CALLS_PER_TURN, SAME_TOOL_REPEAT_LIMIT, VERBOSE_DEFAULT,
+    MAX_TOOL_CALLS_PER_TURN, SAME_TOOL_REPEAT_LIMIT, UNPRODUCTIVE_TOOL_REPEAT_LIMITS, VERBOSE_DEFAULT,
     RAG_MAX_CHUNKS, CONTEXT_WINDOW,
     COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT,
-    THINKING_MODE,
+    THINKING_MODE, TEMP_WORKSPACE_MAX_MB,
 )
-from .tools import TOOLS, _LOCAL_TOOLS
+from .tools import TOOLS, _LOCAL_TOOLS, _TEMP_WORKSPACE_TOOLS
 from .prompts import build_system_prompt, current_datetime_str, SEARCH_RESULT_TEMPLATE
 from .search_engine import SearchEngine
 from .rag_engine import RagEngine
@@ -196,6 +198,8 @@ class ChatOrchestrator:
         self.conv_id: Optional[str] = None
         self._is_new_conv: bool = False
         self.project: Optional[Dict] = None
+        self._temp_workspace: Optional[str] = None
+        self._attachment_registry: Dict[str, Dict] = {}
         self._add_system_prompt()
 
     @property
@@ -206,7 +210,22 @@ class ChatOrchestrator:
     def _active_tools(self) -> List[Dict]:
         if self.workspace_root:
             return TOOLS
+        if self._temp_workspace:
+            excluded = _LOCAL_TOOLS - _TEMP_WORKSPACE_TOOLS
+            return [t for t in TOOLS if t["function"]["name"] not in excluded]
         return [t for t in TOOLS if t["function"]["name"] not in _LOCAL_TOOLS]
+
+    def _get_or_create_temp_workspace(self) -> str:
+        if self._temp_workspace is None:
+            self._temp_workspace = tempfile.mkdtemp(prefix="mira_workspace_")
+            logger.info("Created temp workspace: %s", self._temp_workspace)
+        return self._temp_workspace
+
+    def _cleanup_temp_workspace(self) -> None:
+        if self._temp_workspace:
+            shutil.rmtree(self._temp_workspace, ignore_errors=True)
+            logger.info("Removed temp workspace: %s", self._temp_workspace)
+            self._temp_workspace = None
 
     def set_project(self, project: Optional[Dict]) -> None:
         self.project = project
@@ -383,12 +402,31 @@ class ChatOrchestrator:
         rag_indexed_this_turn = False
         if attachments:
             for att in attachments:
+                if att["type"] != "image":
+                    self._attachment_registry[att["name"]] = {
+                        "name": att["name"],
+                        "type": att["type"],
+                        "size": len((att.get("content") or "").encode()),
+                        "content": att.get("content") or "",
+                    }
+        if attachments:
+            for att in attachments:
                 if att["type"] == "rag" and att["content"]:
                     yield {"type": "rag_indexing", "name": att["name"]}
                     try:
                         n_chunks = self.rag_engine.index(att["name"], att["content"])
                         yield {"type": "rag_done", "name": att["name"], "chunks": n_chunks}
                         rag_indexed_this_turn = True
+                        if not self.workspace_root:
+                            ws = self._get_or_create_temp_workspace()
+                            ws_path = Path(ws) / att["name"]
+                            used_mb = sum(
+                                f.stat().st_size for f in Path(ws).rglob("*") if f.is_file()
+                            ) / 1_048_576
+                            file_mb = len(att["content"].encode()) / 1_048_576
+                            if used_mb + file_mb < TEMP_WORKSPACE_MAX_MB:
+                                ws_path.write_text(att["content"], encoding="utf-8")
+                                logger.info("Wrote attachment to temp workspace: %s", ws_path)
                         if self.rag_engine.chunk_count > RAG_MAX_CHUNKS:
                             yield {
                                 "type": "warning",
@@ -424,11 +462,26 @@ class ChatOrchestrator:
                 full_message = '\n\n'.join(text_parts) + '\n\n' + full_message
 
         if rag_chunks:
-            context = "\n\n".join(
-                f"[Source: {c['source']} | Score: {c['score']:.2f}]\n{c['text']}"
-                for c in rag_chunks
-            )
-            full_message = f"[Relevant document sections]\n{context}\n\n---\n\n{full_message}"
+            if rag_indexed_this_turn:
+                attached_names = ", ".join(
+                    f"`{att['name']}`" for att in (attachments or []) if att["type"] == "rag"
+                )
+                context = "\n\n".join(
+                    f"[File: {c['source']}]\n{c['text']}" for c in rag_chunks
+                )
+                framing = (
+                    f"The user attached these files: {attached_names}. "
+                    "Their content is provided below. "
+                    "Use `read_attachment(name)` to read them directly — "
+                    "do NOT use web or GitHub tools to open local files."
+                )
+                full_message = f"{framing}\n\n[Attached file content]\n{context}\n\n---\n\n{full_message}"
+            else:
+                context = "\n\n".join(
+                    f"[Source: {c['source']} | Score: {c['score']:.2f}]\n{c['text']}"
+                    for c in rag_chunks
+                )
+                full_message = f"[Relevant document sections]\n{context}\n\n---\n\n{full_message}"
 
         # Inject CURRENT TASK block for multi-step requests to anchor the goal
         if _MULTI_STEP_RE.search(user_message):
@@ -743,7 +796,10 @@ class ChatOrchestrator:
             if self._total_tool_calls > MAX_TOOL_CALLS_PER_TURN:
                 yield {"type": "error", "message": f"Stopped: exceeded {MAX_TOOL_CALLS_PER_TURN} tool calls in one turn."}
                 return
-            over_limit = [(n, c) for n, c in self._tool_name_counts.items() if c > SAME_TOOL_REPEAT_LIMIT]
+            over_limit = [
+                (n, c) for n, c in self._tool_name_counts.items()
+                if c > UNPRODUCTIVE_TOOL_REPEAT_LIMITS.get(n, SAME_TOOL_REPEAT_LIMIT)
+            ]
             if over_limit:
                 names_str = ", ".join(f"{n}×{c}" for n, c in over_limit)
                 yield {"type": "error", "message": f"Stopped: {names_str} — same tool called too many times in one turn."}
@@ -769,7 +825,8 @@ class ChatOrchestrator:
                 if name == "web_search":
                     yield {"type": "search_start", "query": args.get("query", "")}
                 elif name == "fetch_url":
-                    yield {"type": "fetch_start", "url": args.get("url", "")}
+                    if args.get("url", "").startswith(("http://", "https://")):
+                        yield {"type": "fetch_start", "url": args.get("url", "")}
                 else:
                     label_start, _ = _tool_ui_labels(name, args)
                     yield {"type": "tool_start", "tool": name, "label": label_start}
@@ -821,13 +878,14 @@ class ChatOrchestrator:
                 elif name == "fetch_url":
                     url = result.get("url", "")
                     content = result.get("content", "")
-                    yield {"type": "fetch_done", "url": url, "chars": len(content)}
+                    if url.startswith(("http://", "https://")):
+                        yield {"type": "fetch_done", "url": url, "chars": len(content)}
+                        fetch_results.append({
+                            "url": url,
+                            "chars": len(content),
+                            "preview": content[:300].rstrip() + ("…" if len(content) > 300 else ""),
+                        })
                     yield {"type": "agent_step", "step": step + 1, "tool": "fetch_url", "status": "success"}
-                    fetch_results.append({
-                        "url": url,
-                        "chars": len(content),
-                        "preview": content[:300].rstrip() + ("…" if len(content) > 300 else ""),
-                    })
                     self.conversation_history.append({
                         "role": "tool",
                         "tool_call_id": tc_id,
@@ -858,6 +916,30 @@ class ChatOrchestrator:
             return {"status": "error", "payload": None, "error_details": result["error"]}
         return {"status": "success", "payload": result}
 
+    def _handle_list_attachments(self) -> str:
+        if not self._attachment_registry:
+            return "No files attached to this conversation."
+        lines = [
+            f"- {info['name']} ({info['type']}, {info['size']:,} bytes)"
+            for info in self._attachment_registry.values()
+        ]
+        return "Attached files:\n" + "\n".join(lines)
+
+    def _handle_read_attachment(self, name: str, offset: int = 0, limit: Optional[int] = None) -> str:
+        info = self._attachment_registry.get(name)
+        if info is None:
+            available = ", ".join(self._attachment_registry.keys()) or "none"
+            return f"No attachment named '{name}'. Available: {available}"
+        content = info["content"]
+        if not content:
+            return f"Attachment '{name}' has no readable text content (type: {info['type']})."
+        chunk = content[offset: offset + limit] if limit is not None else content[offset:]
+        total = len(content)
+        if offset or limit is not None:
+            end = offset + len(chunk)
+            return f"[{name} — chars {offset}–{end} of {total}]\n{chunk}"
+        return f"[{name}]\n{chunk}"
+
     def _mark_task_done(self, summary: str) -> dict:
         self._task_done = True
         self._task_done_summary = summary
@@ -865,14 +947,16 @@ class ChatOrchestrator:
 
     def _dispatch_tool(self, name: str, args: dict) -> dict:
         dispatch = {
-            "read_file":    lambda a: fs_tools.read_file(a.get("path", ""), root=self.workspace_root),
+            "read_file":    lambda a: fs_tools.read_file(a.get("path", ""), root=self.workspace_root or self._temp_workspace),
             "write_file":   lambda a: fs_tools.write_file(a.get("path", ""), a.get("content", ""), root=self.workspace_root),
             "edit_file":    lambda a: fs_tools.edit_file(a.get("path", ""), a.get("old_str", ""), a.get("new_str", ""), root=self.workspace_root),
-            "list_files":   lambda a: fs_tools.list_files(a.get("path", "."), a.get("recursive", False), root=self.workspace_root),
-            "search_files": lambda a: fs_tools.search_files(a.get("pattern", ""), a.get("path", "."), a.get("case_sensitive", False), root=self.workspace_root),
+            "list_files":   lambda a: fs_tools.list_files(a.get("path", "."), a.get("recursive", False), root=self.workspace_root or self._temp_workspace),
+            "search_files": lambda a: fs_tools.search_files(a.get("pattern", ""), a.get("path", "."), a.get("case_sensitive", False), root=self.workspace_root or self._temp_workspace),
             "move_file":    lambda a: fs_tools.move_file(a.get("src", ""), a.get("dst", ""), root=self.workspace_root),
             "delete_file":  lambda a: fs_tools.delete_file(a.get("path", ""), a.get("confirm", False), root=self.workspace_root),
             "run_shell":    lambda a: shell_tools.run_shell(a.get("command", ""), a.get("cwd", "."), a.get("force", False), root=self.workspace_root, timeout=a.get("timeout", 30)),
+            "list_attachments": lambda a: self._handle_list_attachments(),
+            "read_attachment":  lambda a: self._handle_read_attachment(a.get("name", ""), a.get("offset", 0), a.get("limit")),
             "github_clone_repo":    lambda a: self._clone_and_register(a),
             "github_list_repos":    lambda a: github_tools.github_list_repos(a.get("repo_type", "owner")),
             "github_read_file":     lambda a: github_tools.github_read_file(a["repo"], a["path"], a.get("ref", "")),
@@ -1049,6 +1133,8 @@ class ChatOrchestrator:
         return min(100, round(self.last_prompt_tokens / self.context_window * 100))
 
     def reset_conversation(self):
+        self._cleanup_temp_workspace()
+        self._attachment_registry = {}
         self.conversation_history = []
         self.system_prompt_added = False
         self.total_input_tokens = 0

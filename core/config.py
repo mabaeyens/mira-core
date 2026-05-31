@@ -42,6 +42,8 @@ MAX_AGENT_STEPS = 15     # raised cap for agentic multi-step tasks
 AGENT_DIVERGENCE_LIMIT = 1  # identical tool+args repeats before injecting a redirect
 MAX_TOOL_CALLS_PER_TURN = 20  # hard total tool call cap across all steps in one turn
 SAME_TOOL_REPEAT_LIMIT = 15  # same tool name N times in one turn → bail (catches near-identical loops)
+# Tighter per-tool caps for tools that can't help with local-file hunts
+UNPRODUCTIVE_TOOL_REPEAT_LIMITS: dict = {"fetch_url": 3, "github_search_code": 3}
 MAX_RETRIES = 3          # API-level error retries per model call
 USE_NATIVE_SEARCH = False  # DDGS chosen for privacy (see docs/architecture.md)
 SEARCH_TIMEOUT = 30
@@ -64,6 +66,7 @@ RAG_MAX_CHUNKS = 10_000     # warn user to unload documents above this total
 # ── Workspace ─────────────────────────────────────────────────────────────────
 WORKSPACE_ROOT = os.getenv("WORKSPACE_ROOT", str(Path.home() / "workspace"))
 SHELL_TIMEOUT = 30  # seconds per shell command
+TEMP_WORKSPACE_MAX_MB = 100  # per-conversation attachment workspace size cap
 
 # ── Conversation persistence ──────────────────────────────────────────────────
 DB_PATH = Path.home() / ".local" / "share" / "mira" / "conversations.db"

@@ -19,6 +19,11 @@ def fetch_url(url: str) -> str:
     Returns the text content on success, or an error string starting with
     "Error:" that the model can report to the user.
     """
+    if not url.startswith(("http://", "https://")):
+        return (
+            "I can only fetch http(s) URLs. "
+            "To use a local file, attach it to the conversation instead."
+        )
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
