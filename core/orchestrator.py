@@ -122,6 +122,17 @@ _TRIVIAL = re.compile(
     re.IGNORECASE,
 )
 
+# Strong reasoning intent — these imply the user wants the model to reason, regardless
+# of message length or code formatting (which mobile users rarely type). Matched on its
+# own, not scored, so short questions like "why is it O(n²)" trigger thinking.
+_REASONING_INTENT = re.compile(
+    r"\b(why|explain|analyz|compare|contrast|debug|optimi[sz]e|prove|derive|"
+    r"design|architect|refactor|trade[- ]?off|difference between|pros and cons|"
+    r"step[- ]by[- ]step|walk me through)\b"
+    r"|\bhow (do|does|did|can|could|would|should|to|is|are|come)\b",
+    re.IGNORECASE,
+)
+
 
 _MULTI_STEP_RE = re.compile(
     r'\b(then\b|after that|and then|next,|finally,)\b',
@@ -139,6 +150,10 @@ def _should_think(message: str, has_attachments: bool = False) -> bool:
     """Return True if the message warrants extended reasoning."""
     if _TRIVIAL.match(message):
         return False
+    # Reasoning questions warrant thinking on their own — independent of length or
+    # code formatting that mobile users won't type.
+    if _REASONING_INTENT.search(message):
+        return True
     score = 0
     if has_attachments:
         score += 3
