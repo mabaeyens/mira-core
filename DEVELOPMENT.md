@@ -190,8 +190,42 @@ The green color palette (`#f0fdf4 / #86efac / #166534`) was reused from the exis
 
 ---
 
+## Phase 5 — mlx-lm as Primary Backend, Adaptive Thinking, and Performance
+
+> **Note (2026-05-31):** This phase covers the transition from Gemma 4 to Qwen3.6-35B-A3B-4bit as the default model, the full thinking mode implementation, and a suite of reliability improvements.
+
+### mlx-lm as default inference backend
+
+mlx-lm was promoted to the primary backend replacing Ollama for inference (see `docs/bench-results-2026-05-30.md`). The binary lives at `~/.local/bin/mlx_lm.server` and is auto-started by `backend_manager.ensure_backend_running()` on server startup. Ollama remains available as a switchable fallback.
+
+### Embedding migration (Ollama → sentence-transformers)
+
+RAG embeddings migrated from Ollama's `nomic-embed-text` to `sentence-transformers` running locally. The `nomic-ai/nomic-embed-text-v1.5` model (768 dims) is downloaded from HuggingFace on first use. Ollama is no longer required at runtime for any part of Mira.
+
+### Qwen3.6-35B-A3B-4bit as default model
+
+Qwen3.6-35B-A3B-4bit replaced Gemma 4 as the default model in `mira.yaml`. Key reasons: (1) 58.7% SWE-Bench vs 42.3% for Gemma 4; (2) adaptive thinking controllable per-request; (3) 52–55 t/s on mlx-lm vs 36 t/s for Gemma 4. Memory: ~18GB (16GB weights + KV). Benchmark confirms 307ms warm TTFT (short prompts), ≤14ms thinking overhead.
+
+### Thinking mode on mlx-lm
+
+Qwen3 supports per-request thinking control via `extra_body={"chat_template_kwargs": {"enable_thinking": True}}` — no server restart needed. Thinking tokens stream in the `reasoning` field of SSE delta chunks; the orchestrator emits them as `thinking` events and strips them from the final answer. The `_should_think()` heuristic was extended with: `_NEVER_THINK` (short-circuits for time/date queries and "fix file.ext" patterns), `_ANALYTICAL_WITH_ATTACHMENT` (analytical verbs gate the attachment bonus), and the threshold was raised from 3 to 4.
+
+### mlx-lm model warmup
+
+`_warmup_model(model)` was added to `backend_manager.py`. After `ensure_backend_running()` confirms the server is reachable (fresh start or already running), it sends a 1-token non-streaming completion to force the model into GPU VRAM. This eliminates the 29–34 s first-request penalty caused by mlx-lm loading a new model. Warmup runs in the background startup thread and is non-fatal on failure.
+
+### Latency benchmark (`scripts/benchmark.py`)
+
+A purpose-built benchmark script measures TTFT and throughput across a 9-cell matrix (3 prompts × 3 session positions: cold/warm/re-warm) on both Ollama and mlx-lm backends. Output: JSONL raw timings + Markdown report with Haiku analysis. Key findings: mlx-lm warm TTFT is flat at 300–450ms regardless of KV position (no measurable prefix caching benefit); Ollama benefits 4.6× from prefix caching on warm sessions; thinking overhead on mlx-lm is ≤14ms; on Ollama it adds 104% TTFT.
+
+### Temp workspace and attachment tools
+
+A temporary per-session workspace (`/tmp/mira_workspace_<uuid>/`) was added for the model to read and write files without requiring a project. `read_attachment(name)` lets the model access user-uploaded files by name. The system prompt includes a hard local-file guard: if the user mentions a filename with no workspace open, the model asks for an attachment instead of searching GitHub or fetching URLs.
+
+---
+
 ## Known limitations
 
 - **Scanned PDFs**: No OCR. The user must provide a text-based PDF or attach individual pages as images.
-- **Image reasoning quality**: Depends entirely on Gemma 4's multimodal capabilities.
+- **Image reasoning quality**: Depends entirely on the active model's multimodal capabilities.
 - **RAG index not persisted**: The in-memory index is lost on server restart. Documents must be re-attached each session. A persistent option (ChromaDB `PersistentClient`) is a potential future addition.

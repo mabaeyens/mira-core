@@ -36,7 +36,7 @@ static/index.html    — single-page web UI (vanilla HTML/CSS/JS + marked.js)
 
 | Event | Payload | Meaning |
 |-------|---------|---------|
-| `thinking` | `content` (optional) | Model is processing; thinking text arrives in `content` (Ollama backend only — disabled on mlx-lm) |
+| `thinking` | `content` (optional) | Model is processing; thinking text arrives in `content` (Ollama: `chunk.message.thinking`; mlx-lm/Qwen3: `delta.reasoning` field) |
 | `token` | `content` | Answer token (buffered by CLI, streamed by web) |
 | `search_start` | `query` | Web search beginning |
 | `search_done` | `query, count, results` | Search complete; `results` is `[{title, url}]` (snippet stripped before SSE) |
@@ -54,7 +54,7 @@ static/index.html    — single-page web UI (vanilla HTML/CSS/JS + marked.js)
 | `compress` | `message` | Context window compressed — emitted after `done` when `context_pct` exceeded threshold |
 | `heartbeat` | — | Keepalive — emitted periodically during long tool calls to prevent connection timeout |
 
-**Thinking toggle:** `stream_chat()` accepts `thinking_enabled: bool = True`. On the **Ollama backend**, passes `think=thinking_enabled`; Gemma4 yields thinking text in `chunk.message.thinking`. On **mlx-lm**, thinking is suppressed server-side via `--chat-template-args '{"enable_thinking": false}'` (template-level); `max_thinking_tokens` is not yet exposed as an API param in 0.31.3, so the UI toggle is disabled while on mlx-lm. The server form field `thinking_enabled` (default `true`) flows from the app's thinking toggle button in the input bar.
+**Thinking toggle:** `stream_chat()` accepts `thinking_enabled: bool = True`. The orchestrator decides whether to think via `_should_think(message, has_attachments)` — a scoring heuristic that also checks `_NEVER_THINK` (trivial commands: time/date queries, "fix file.ext" patterns) and `_REASONING_INTENT` (strong signals that always trigger thinking). On **Ollama**, passes `think=thinking_enabled`; Gemma4 yields thinking text in `chunk.message.thinking`. On **mlx-lm with Qwen3**, thinking is controlled per-request via `extra_body={"chat_template_kwargs": {"enable_thinking": True/False}}`; the `reasoning` field in SSE delta chunks carries thinking tokens and is emitted as `thinking` events. Warm thinking overhead on mlx-lm is ≤14 ms (noise). The server form field `thinking_enabled` (default `true`) flows from the app's thinking toggle.
 
 **Mockable boundary:** `_call_llm()` is the single point tests mock — returns an iterable of stream chunks with `.message.content`, `.message.tool_calls`, `.done`.
 
@@ -139,7 +139,9 @@ Ollama offers a free-tier web search API, but signup requires a phone number and
 
 ## Backend startup
 
-On Mira startup, `backend_manager.ensure_backend_running()` launches mlx-lm automatically if not already running (binary at `~/.local/bin/mlx_lm.server`, port 8080). The app's `/health` endpoint returns `backend_ready: false` until the inference server is reachable with the configured model, and the iOS/macOS chat view shows a banner with a "Start" button during that time. Ollama (port 11434) must be started manually when RAG embeddings are needed — it is not auto-started.
+On Mira startup, `backend_manager.ensure_backend_running()` launches mlx-lm automatically if not already running (binary at `~/.local/bin/mlx_lm.server`, port 8080). The app's `/health` endpoint returns `backend_ready: false` until the inference server is reachable with the configured model, and the iOS/macOS chat view shows a banner with a "Start" button during that time. Ollama (port 11434) is optional — no longer required for RAG embeddings (sentence-transformers runs locally); start manually only when using Ollama as an inference fallback.
+
+After the server is confirmed reachable, `_warmup_model(MLX_LM_MODEL)` sends a 1-token completion request (non-streaming) to force the model into GPU memory. This eliminates the 29–34 s first-request penalty that occurs when mlx-lm must load a new model into VRAM. The warmup runs in the background startup thread — both on fresh start and when the server was already running.
 
 ## Configuration reference
 
@@ -148,7 +150,7 @@ On Mira startup, `backend_manager.ensure_backend_running()` launches mlx-lm auto
 | Field | Default | Notes |
 |-------|---------|-------|
 | `backend` | `mlx-lm` | `mlx-lm` (default) or `ollama` |
-| `model` | `mlx-community/gemma-4-26b-a4b-it-4bit` | Model identifier |
+| `model` | `mlx-community/Qwen3.6-35B-A3B-4bit` | Model identifier |
 | `host` | `http://localhost:8080` | LLM server URL |
 | `embed_model` | `nomic-ai/nomic-embed-text-v1.5` | HuggingFace embedding model for RAG (sentence-transformers) |
 | `context_window` | `65536` | Token context window |
@@ -162,8 +164,9 @@ Behaviours that are intentional and must not be removed:
 
 - **Gemma4 (mlx-lm):** emits `tool_calls` in an intermediate chunk (`done=False`) — handled by `accumulated_tool_calls` in `orchestrator.py`.
 - **Gemma4:** occasionally emits LaTeX (e.g. `$\rightarrow$`) — `preprocessLatex()` in `index.html` converts to Unicode.
-- **Gemma4 (Ollama) thinking:** when `think=True`, Ollama yields thinking text in `chunk.message.thinking` (separate from `chunk.message.content`). The streaming loop checks this field and emits `thinking` events. Not applicable on mlx-lm — thinking is disabled at the template level.
-- **mlx-lm thinking suppression:** server started with `--chat-template-args '{"enable_thinking": false}'`. The `max_thinking_tokens` API parameter is not yet exposed in mlx-lm 0.31.3; re-enable the UI toggle when it is.
+- **Gemma4 (Ollama) thinking:** when `think=True`, Ollama yields thinking text in `chunk.message.thinking` (separate from `chunk.message.content`). The streaming loop checks this field and emits `thinking` events.
+- **Qwen3.6 (mlx-lm) thinking:** controlled per-request via `extra_body={"chat_template_kwargs": {"enable_thinking": True/False}}`; thinking tokens stream in the `reasoning` field of SSE delta chunks; the orchestrator emits them as `thinking` events and strips thinking markers before emitting the final content. Overhead on mlx-lm is ≤14 ms warm — negligible.
+- **`_NEVER_THINK` / `_ANALYTICAL_WITH_ATTACHMENT`:** `_should_think()` uses a scoring heuristic (threshold 4). `_NEVER_THINK` short-circuits to False for time/date queries and "fix file.ext" patterns. Bare attachments score +1; analytical verbs (explain, analyze, review, debug, refactor…) combined with an attachment add a further +2.
 
 ## Test patterns
 

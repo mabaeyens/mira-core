@@ -39,8 +39,9 @@ graph TD
     end
 
     subgraph infra["Local Infrastructure"]
-        MLX["mlx-lm (port 8080)\ngemma-4-26b-a4b-it-4bit"]
-        OLLAMA["Ollama (port 11434)\nnomic-embed-text\n(RAG embed, transitional)"]
+        MLX["mlx-lm (port 8080)\nQwen3.6-35B-A3B-4bit"]
+        ST["SentenceTransformer\nnomic-embed-text-v1.5\n(local, 768 dims)"]
+        OLLAMA["Ollama (port 11434)\n(optional inference fallback)"]
         DDGS["DuckDuckGo\n(ddgs library)"]
         SQLITE[("SQLite\n~/.local/share/mira/")]
     end
@@ -48,7 +49,7 @@ graph TD
     API -->|"REST\nHTTP/HTTPS"| SRV
     SSE -->|"SSE stream\nPOST /chat"| SRV
     ORCH -->|"chat + tool calling"| MLX
-    RAG -->|"embeddings"| OLLAMA
+    RAG -->|"embeddings"| ST
     SEARCH -->|"web queries"| DDGS
     DB --> SQLITE
 ```
@@ -60,7 +61,7 @@ sequenceDiagram
     participant Client as iOS/macOS/Web Client
     participant Server as server.py
     participant Orch as ChatOrchestrator
-    participant Ollama as mlx-lm (gemma4)
+    participant Ollama as mlx-lm (Qwen3.6-35B)
     participant Tools as Tools (search/files/shell)
 
     Client->>Server: POST /chat (multipart: message + files)
@@ -134,12 +135,12 @@ flowchart LR
     subgraph ingest["Indexing (on attach)"]
         FILE["Attachment\n(PDF/HTML/text)"] --> FH["file_handler\nextract text"]
         FH --> CHUNK["Chunker\n400 words, 40 overlap"]
-        CHUNK --> EMBED["Ollama nomic-embed-text\n768 dims\n(transitional — see mlx-embeddings-spec.md)"]
+        CHUNK --> EMBED["SentenceTransformer\nnomic-embed-text-v1.5\n768 dims\n(local, no Ollama needed)"]
         EMBED --> CHROMA[("ChromaDB\nEphemeralClient\n(in-memory)")]
     end
 
     subgraph query["Retrieval (each turn)"]
-        Q["User message"] --> QE["Embed query\n(Ollama nomic-embed-text)"]
+        Q["User message"] --> QE["Embed query\n(SentenceTransformer\nnomic-embed-text-v1.5)"]
         QE --> RET["Cosine similarity\ntop-10 candidates"]
         CHROMA --> RET
         RET --> RERANK["CrossEncoder\nms-marco-MiniLM-L-6-v2"]
