@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 MLX_LM_CLI = "/Users/miguel/.local/bin/mlx_lm.server"
 MLX_LM_PORT = 8080
 MLX_LM_HOST = f"http://localhost:{MLX_LM_PORT}"
-MLX_LM_MODEL = "mlx-community/gemma-4-26b-a4b-it-4bit"
+MLX_LM_MODEL = "mlx-community/Qwen3.6-35B-A3B-4bit"
 MLX_LM_CONTEXT = 65536
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"

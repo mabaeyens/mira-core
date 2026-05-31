@@ -93,7 +93,15 @@ _THINK_VERBS = re.compile(
     r"analyze|review|optimize|architect|plan|compare|difference|tradeoff)\b",
     re.IGNORECASE,
 )
-_CODE_SIGNAL = re.compile(r"```|def |class |import |error:|traceback", re.IGNORECASE)
+_CODE_SIGNAL = re.compile(
+    r"```|def |class |import |error:|traceback"
+    r"|\b\w+\.(swift|py|js|ts|kt|java|go|rs|rb|cpp|c|h|vue|tsx|jsx)\b",
+    re.IGNORECASE,
+)
+# Gemma 4 thinking token boundaries (mlx-lm raw stream format)
+_GEMMA_THINK_OPEN = "<|channel>thought\n"
+_GEMMA_THINK_CLOSE = "<channel|>"
+
 # Short acknowledgements that are never complex regardless of other signals.
 _TRIVIAL = re.compile(
     r"^\s*(ok|okay|thanks|thank you|got it|sounds good|perfect|great|sure|yes|no|yep|nope|cool)\s*[.!]?\s*$",
@@ -466,9 +474,12 @@ class ChatOrchestrator:
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
                     accumulated_tool_calls = None
-                    # Buffer for <think> tag stripping
+                    # Buffer for <think> tag stripping (Qwen3)
                     think_buf = ""
                     in_thinking = False
+                    # Buffer for Gemma 4 thinking format stripping
+                    gemma_buf = ""
+                    in_gemma_thinking = False
 
                     for chunk in self._call_llm(
                         self.conversation_history,
@@ -490,30 +501,69 @@ class ChatOrchestrator:
                         raw_token = chunk.message.content or ""
                         if raw_token:
                             think_buf += raw_token
-                            # Process buffered content, stripping <think>...</think>
+                            # Pass 1 — strip Qwen3 <think>...</think> blocks, emit as thinking events.
+                            # Non-thinking content is routed to gemma_buf for Pass 2.
                             while think_buf:
                                 if in_thinking:
                                     close = think_buf.find("</think>")
                                     if close == -1:
-                                        think_buf = ""  # all thinking, consume
+                                        # No closing tag yet — whole buffer is thinking content
+                                        _thinking_chars += len(think_buf)
+                                        yield {"type": "thinking", "content": think_buf}
+                                        think_buf = ""
                                         break
+                                    # Emit the thinking fragment before the closing tag
+                                    thinking_fragment = think_buf[:close]
+                                    if thinking_fragment:
+                                        _thinking_chars += len(thinking_fragment)
+                                        yield {"type": "thinking", "content": thinking_fragment}
                                     in_thinking = False
                                     think_buf = think_buf[close + len("</think>"):]
                                 else:
                                     open_tag = think_buf.find("<think>")
                                     if open_tag == -1:
-                                        yield {"type": "token", "content": think_buf}
-                                        full_content += think_buf
+                                        gemma_buf += think_buf
                                         think_buf = ""
                                         break
                                     if open_tag > 0:
-                                        regular = think_buf[:open_tag]
-                                        yield {"type": "token", "content": regular}
-                                        full_content += regular
+                                        gemma_buf += think_buf[:open_tag]
                                         think_buf = think_buf[open_tag:]
                                     else:
                                         in_thinking = True
                                         think_buf = think_buf[len("<think>"):]
+
+                            # Pass 2 — strip Gemma 4 <|channel>thought\n...<channel|> blocks.
+                            # Non-thinking content is yielded as token events.
+                            while gemma_buf:
+                                if in_gemma_thinking:
+                                    close = gemma_buf.find(_GEMMA_THINK_CLOSE)
+                                    if close == -1:
+                                        # No closing tag yet — whole buffer is Gemma 4 thinking
+                                        _thinking_chars += len(gemma_buf)
+                                        yield {"type": "thinking", "content": gemma_buf}
+                                        gemma_buf = ""
+                                        break
+                                    thinking_fragment = gemma_buf[:close]
+                                    if thinking_fragment:
+                                        _thinking_chars += len(thinking_fragment)
+                                        yield {"type": "thinking", "content": thinking_fragment}
+                                    in_gemma_thinking = False
+                                    gemma_buf = gemma_buf[close + len(_GEMMA_THINK_CLOSE):]
+                                else:
+                                    open_tag = gemma_buf.find(_GEMMA_THINK_OPEN)
+                                    if open_tag == -1:
+                                        yield {"type": "token", "content": gemma_buf}
+                                        full_content += gemma_buf
+                                        gemma_buf = ""
+                                        break
+                                    if open_tag > 0:
+                                        regular = gemma_buf[:open_tag]
+                                        yield {"type": "token", "content": regular}
+                                        full_content += regular
+                                        gemma_buf = gemma_buf[open_tag:]
+                                    else:
+                                        in_gemma_thinking = True
+                                        gemma_buf = gemma_buf[len(_GEMMA_THINK_OPEN):]
 
                         if chunk.done:
                             final_message = chunk.message
@@ -532,6 +582,13 @@ class ChatOrchestrator:
                                 self.total_input_tokens += p
                             if isinstance(e, int):
                                 self.total_output_tokens += e
+                    # Flush any unclosed thinking blocks (malformed model output)
+                    if in_thinking and think_buf:
+                        yield {"type": "thinking", "content": think_buf}
+                        think_buf = ""
+                    if in_gemma_thinking and gemma_buf:
+                        yield {"type": "thinking", "content": gemma_buf}
+                        gemma_buf = ""
                     break
                 except Exception as e:
                     if full_content:
