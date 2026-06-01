@@ -16,8 +16,8 @@ import openai as _openai
 
 from .config import (
     MODEL_NAME, BACKEND, OLLAMA_HOST,
-    MAX_RETRIES, MAX_TOOL_STEPS, MAX_AGENT_STEPS, AGENT_DIVERGENCE_LIMIT,
-    MAX_TOOL_CALLS_PER_TURN, SAME_TOOL_REPEAT_LIMIT, UNPRODUCTIVE_TOOL_REPEAT_LIMITS, VERBOSE_DEFAULT,
+    MAX_RETRIES, MAX_AGENT_STEPS, AGENT_DIVERGENCE_LIMIT,
+    MAX_TOOL_CALLS_PER_TURN, SAME_TOOL_REPEAT_LIMIT, UNPRODUCTIVE_TOOL_REPEAT_LIMITS, TOOL_SOFT_LIMIT, VERBOSE_DEFAULT,
     RAG_MAX_CHUNKS, CONTEXT_WINDOW,
     COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT,
     THINKING_MODE, TEMP_WORKSPACE_MAX_MB,
@@ -811,17 +811,30 @@ class ChatOrchestrator:
                     diverged = False
                 prepared.append((tc_id, name, args, diverged))
 
-            # Hard caps: bail before executing if limits are exceeded
+            # Hard cap: bail before executing if the absolute turn limit is exceeded.
             if self._total_tool_calls > MAX_TOOL_CALLS_PER_TURN:
-                yield {"type": "error", "message": f"Stopped: exceeded {MAX_TOOL_CALLS_PER_TURN} tool calls in one turn."}
+                yield from self._soft_pause_checkin(f"{self._total_tool_calls} total tool calls")
                 return
+
+            # Per-tool hard cap (SAME_TOOL_REPEAT_LIMIT / UNPRODUCTIVE limits).
             over_limit = [
                 (n, c) for n, c in self._tool_name_counts.items()
                 if c > UNPRODUCTIVE_TOOL_REPEAT_LIMITS.get(n, SAME_TOOL_REPEAT_LIMIT)
             ]
             if over_limit:
                 names_str = ", ".join(f"{n}×{c}" for n, c in over_limit)
-                yield {"type": "error", "message": f"Stopped: {names_str} — same tool called too many times in one turn."}
+                yield from self._soft_pause_checkin(names_str)
+                return
+
+            # Soft check-in: when any single tool reaches TOOL_SOFT_LIMIT, ask the
+            # user before continuing instead of running straight to the hard cap.
+            soft_hit = [
+                (n, c) for n, c in self._tool_name_counts.items()
+                if c == TOOL_SOFT_LIMIT
+            ]
+            if soft_hit:
+                names_str = ", ".join(f"{n}×{c}" for n, c in soft_hit)
+                yield from self._soft_pause_checkin(names_str)
                 return
 
             # task_done short-circuits the whole batch immediately
@@ -925,7 +938,7 @@ class ChatOrchestrator:
                         "content": json.dumps(observation),
                     })
 
-        yield {"type": "error", "message": f"Reached {MAX_AGENT_STEPS} tool calls without a final answer."}
+        yield from self._soft_pause_checkin(f"{MAX_AGENT_STEPS} agent steps")
 
     # ── Tool dispatch ─────────────────────────────────────────────────────────
 
@@ -934,6 +947,37 @@ class ChatOrchestrator:
         if isinstance(result, dict) and "error" in result:
             return {"status": "error", "payload": None, "error_details": result["error"]}
         return {"status": "success", "payload": result}
+
+    def _soft_pause_checkin(self, reason: str):
+        """
+        Instead of hard-stopping when a tool limit is reached, inject a forced
+        prompt so the model summarises its findings and asks the user whether to
+        continue.  Yields token events followed by a done event — identical to a
+        normal turn completion, so the server saves the response and the client
+        renders it as a regular assistant message.
+        """
+        forced_note = (
+            f"You have reached a tool-use limit ({reason}). "
+            "Summarise what you have found so far, then ask the user whether they "
+            "would like you to continue and, if so, how many more steps to take. "
+            "Be concise. Do not call any tools."
+        )
+        tmp_messages = self.conversation_history + [{"role": "user", "content": forced_note}]
+        full_text = ""
+        try:
+            for chunk in self._call_llm(tmp_messages, tools=None, thinking_enabled=False):
+                token = chunk.message.content or ""
+                if token:
+                    full_text += token
+                    yield {"type": "token", "content": token}
+        except Exception as e:
+            logger.warning("soft_pause_checkin LLM call failed: %s", e)
+            full_text = (
+                f"I've reached the tool-use limit ({reason}). "
+                "Would you like me to continue? If so, let me know how many more steps to take."
+            )
+            yield {"type": "token", "content": full_text}
+        yield {"type": "done", "content": full_text}
 
     def _handle_list_attachments(self) -> str:
         if not self._attachment_registry:

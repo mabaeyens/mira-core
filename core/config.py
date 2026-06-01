@@ -37,13 +37,12 @@ THINKING_MODE: str = _get("thinking_mode", "adaptive")  # adaptive | always | ne
 
 # ── Search ────────────────────────────────────────────────────────────────────
 MAX_SEARCH_RESULTS = 5
-MAX_TOOL_STEPS = 10      # max tool calls per user turn before giving up
 MAX_AGENT_STEPS = 15     # raised cap for agentic multi-step tasks
 AGENT_DIVERGENCE_LIMIT = 1  # identical tool+args repeats before injecting a redirect
 MAX_TOOL_CALLS_PER_TURN = 20  # hard total tool call cap across all steps in one turn
 SAME_TOOL_REPEAT_LIMIT = 15  # same tool name N times in one turn → bail (catches near-identical loops)
-# Tighter per-tool caps for tools that can't help with local-file hunts
-UNPRODUCTIVE_TOOL_REPEAT_LIMITS: dict = {"fetch_url": 3, "github_search_code": 3}
+TOOL_SOFT_LIMIT = 10     # per-tool calls before pausing to check in with the user
+UNPRODUCTIVE_TOOL_REPEAT_LIMITS: dict = {}  # no per-tool hard caps; soft limit handles research use cases
 MAX_RETRIES = 3          # API-level error retries per model call
 USE_NATIVE_SEARCH = False  # DDGS chosen for privacy (see docs/architecture.md)
 SEARCH_TIMEOUT = 30
