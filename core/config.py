@@ -72,5 +72,5 @@ TEMP_WORKSPACE_MAX_MB = 100  # per-conversation attachment workspace size cap
 DB_PATH = Path.home() / ".local" / "share" / "mira" / "conversations.db"
 RAG_DIR = DB_PATH.parent / "chroma_db"
 MAX_CONVERSATIONS = 1000
-COMPRESS_THRESHOLD = 70    # context_pct % at which summarize-and-compress fires
-COMPRESS_KEEP_RECENT = 6   # number of recent messages kept verbatim
+COMPRESS_THRESHOLD: int = _get("compress_threshold", 70)   # context_pct % at which summarize-and-compress fires
+COMPRESS_KEEP_RECENT: int = max(2, _get("compress_keep_recent", 6))  # number of recent messages kept verbatim (min 2)

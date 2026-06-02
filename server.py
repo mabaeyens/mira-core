@@ -26,7 +26,7 @@ logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
 import core.db as db
 import core.file_handler as file_handler
-from core.config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD, MODEL_NAME, BACKEND, OLLAMA_HOST, CONTEXT_WINDOW
+from core.config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT, MODEL_NAME, BACKEND, OLLAMA_HOST, CONTEXT_WINDOW
 from core.orchestrator import ChatOrchestrator
 from core import backend_manager as _bm
 
@@ -186,6 +186,8 @@ async def info():
         "backend": _rt["backend"],
         "host": _rt["host"],
         "context_window": _rt["context_window"],
+        "compress_threshold": COMPRESS_THRESHOLD,
+        "compress_keep_recent": COMPRESS_KEEP_RECENT,
         "hardware": hardware,
     }
     return result
