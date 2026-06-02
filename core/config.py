@@ -34,6 +34,7 @@ CONTEXT_WINDOW: int = _get("context_window", 65536)
 
 # ── Thinking mode ─────────────────────────────────────────────────────────────
 THINKING_MODE: str = _get("thinking_mode", "adaptive")  # adaptive | always | never
+MAX_THINKING_TOKENS: int = _get("max_thinking_tokens", 8192)  # 0 = uncapped; minimum useful value ~512
 
 # ── Search ────────────────────────────────────────────────────────────────────
 MAX_SEARCH_RESULTS = 5

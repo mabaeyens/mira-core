@@ -20,7 +20,7 @@ from .config import (
     MAX_TOOL_CALLS_PER_TURN, SAME_TOOL_REPEAT_LIMIT, UNPRODUCTIVE_TOOL_REPEAT_LIMITS, TOOL_SOFT_LIMIT, VERBOSE_DEFAULT,
     RAG_MAX_CHUNKS, CONTEXT_WINDOW,
     COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT,
-    THINKING_MODE, TEMP_WORKSPACE_MAX_MB,
+    THINKING_MODE, MAX_THINKING_TOKENS, TEMP_WORKSPACE_MAX_MB,
 )
 from .tools import TOOLS, _LOCAL_TOOLS, _TEMP_WORKSPACE_TOOLS
 from .prompts import build_system_prompt, current_datetime_str, SEARCH_RESULT_TEMPLATE
@@ -1084,7 +1084,10 @@ class ChatOrchestrator:
                 # mlx_lm.server and dflash serve only honour thinking through the chat-template
                 # kwargs. A top-level `enable_thinking` is silently ignored, and Qwen3's template
                 # default is off — so thinking must be requested explicitly here, both ways.
-                extra["extra_body"] = {"chat_template_kwargs": {"enable_thinking": thinking_enabled}}
+                ckwargs: dict = {"enable_thinking": thinking_enabled}
+                if thinking_enabled and MAX_THINKING_TOKENS > 0:
+                    ckwargs["thinking_budget"] = MAX_THINKING_TOKENS
+                extra["extra_body"] = {"chat_template_kwargs": ckwargs}
             elif not thinking_enabled:
                 extra["extra_body"] = {"enable_thinking": False}
             return self._normalize_oai_stream(
