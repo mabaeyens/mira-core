@@ -106,7 +106,7 @@ def start_dflash(model: str = DFLASH_MODEL) -> None:
             "--draft-model", DFLASH_DRAFT_MODEL,
             "--host", "127.0.0.1",
             "--port", str(DFLASH_PORT),
-            "--max-tokens", "4096",
+            "--max-tokens", "16384",
             "--chat-template-args", '{"enable_thinking": false}',
             "--prefix-cache",
             "--prefill-step-size", "512",
