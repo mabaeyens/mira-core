@@ -77,3 +77,6 @@ files.txt
 # Raw bench JSONL logs — summarised in docs/bench-results-*.md
 scripts/bench_raw_*.jsonl
 docs/model-cache.md
+
+# dflash diagnostics output
+.artifacts/

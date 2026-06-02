@@ -89,3 +89,59 @@ Gemma4 gets the largest relative gain. Prefill also improves slightly (+11%) —
 DFlash clears the 1.3× threshold on all three configurations. Acceptance rate holds at ~78% across all models and modes — well above the 75% floor where speculative decoding becomes net-positive.
 
 **Recommendation:** DFlash is worth integrating into Mira for both models. The draft model adds minimal memory overhead (~1-2 GB peak) and the speedup is real and consistent. Gemma4 benefits most. The operational path is `dflash serve` as a drop-in replacement for `mlx-lm`. Thinking mode on Qwen3.6 works and gets better gains — no caveats needed.
+
+
+---
+
+## Benchmark Results — 2026-06-02
+
+### Timing
+
+| Q | Difficulty | Category | qwen3.6-dflash-pinned:qwen3.6-dflash-pinned TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 1 | easy | baseline | 7451ms | 8.4s | 2.2 |
+| 2 | easy | code-no-tools | 5367ms | 9.9s | 52.5 |
+| 3 | medium | reasoning | 5366ms | 34.8s | 44.1 |
+| 4 | medium | long-output | 29608ms | 86.2s | 69.7 |
+| 5 | medium | thinking-toggle | 8096ms | 34.5s | 39.0 |
+| 6 | hard | agentic-single-tool | 10878ms | 12.1s | 56.0 |
+| 7 | hard | agentic-multi-step | ERR: LLM stream closed without a completion signal. | — | — |
+| 8 | hard | agentic-read-reason | 9886ms | 68.4s | 21.8 |
+| 9 | expert | agentic-task-done | 10953ms | 13.1s | 44.4 |
+| 11 | hard | agentic-write-file | 12076ms | 14.1s | 58.3 |
+| 12 | hard | agentic-edit-file | 13458ms | 15.3s | 88.0 |
+| 13 | expert | agentic-divergence-guard | 11742ms | 21.3s | 48.1 |
+| 10 | expert | multi-turn-long-context | 627ms | 33.2s | 75.5 |
+
+### Agentic results
+
+| Q | Category | Expected calls | qwen3.6-dflash-pinned calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | run_shell | YES |
+| 7 | agentic-multi-step | 2 | ERR | — |
+| 8 | agentic-read-reason | 1 | read_file | YES |
+| 9 | agentic-task-done | 3 | run_shell | YES |
+| 11 | agentic-write-file | 2 | write_file, read_file | YES |
+| 12 | agentic-edit-file | 3 | write_file, edit_file, read_file | YES |
+| 13 | agentic-divergence-guard | 3 | run_shell, run_shell, run_shell, run_shell | YES |
+| 10 | multi-turn-long-context | 0 | none | no |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | qwen3.6-dflash-pinned score |
+|---|-----------|---------|---|
+| 1 | easy | baseline | — |
+| 2 | easy | code-no-tools | — |
+| 3 | medium | reasoning | — |
+| 4 | medium | long-output | — |
+| 5 | medium | thinking-toggle | — |
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | — |
+| 8 | hard | agentic-read-reason | — |
+| 9 | expert | agentic-task-done | — |
+| 11 | hard | agentic-write-file | — |
+| 12 | hard | agentic-edit-file | — |
+| 13 | expert | agentic-divergence-guard | — |
+| 10 | expert | multi-turn-long-context | — |
