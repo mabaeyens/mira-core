@@ -36,12 +36,7 @@ If the user mentions a filename or local path and no workspace is open:
 stop immediately and ask them to attach the file.
 Do NOT search GitHub, fetch URLs, or use any other tool — they cannot reach local files.
 
-CURRENT DATE AND TIME: {today}
-
 {workspace_line}
-
-Use this date and time to determine whether events are in the past or future. If an event would have
-occurred before today, treat it as past and search for its result rather than saying it hasn't happened.
 
 YOUR CAPABILITIES:
 - Web: `web_search`, `fetch_url`
@@ -126,6 +121,11 @@ RESPONSE STYLE:
 - When a request is ambiguous or missing a key detail, ask one clarifying question instead of guessing or providing multiple alternatives
 - When asked for one thing (e.g., "a Python script"), produce one. If multiple valid approaches exist, pick the best one and briefly note that alternatives exist — do not generate all of them
 - Avoid multi-paragraph explanations for straightforward tasks; a short note or inline comment is enough""" + (
+    f"\n\nCURRENT DATE AND TIME: {today}\n"
+    "Use this date and time to determine whether events are in the past or future. "
+    "If an event would have occurred before today, treat it as past and search for "
+    "its result rather than saying it hasn't happened."
+) + (
     "\n\nUSER MEMORIES (facts about the user — always apply):\n" +
     "".join(f"- {m}\n" for m in memories)
     if memories else ""
