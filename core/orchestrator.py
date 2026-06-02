@@ -1080,9 +1080,9 @@ class ChatOrchestrator:
             )
         else:
             extra: dict = {}
-            if self.backend == "mlx-lm":
-                # mlx_lm.server only honours thinking through the chat-template kwargs.
-                # A top-level `enable_thinking` is silently ignored, and Qwen3's template
+            if self.backend in ("mlx-lm", "dflash"):
+                # mlx_lm.server and dflash serve only honour thinking through the chat-template
+                # kwargs. A top-level `enable_thinking` is silently ignored, and Qwen3's template
                 # default is off — so thinking must be requested explicitly here, both ways.
                 extra["extra_body"] = {"chat_template_kwargs": {"enable_thinking": thinking_enabled}}
             elif not thinking_enabled:
@@ -1135,12 +1135,14 @@ class ChatOrchestrator:
                             acc_args[idx] += tc.function.arguments
 
             content = delta.content or ""
-            # mlx_lm.server (and other OpenAI-compatible servers) stream chain-of-thought
-            # in a separate `reasoning` field on the delta, not inline in content. The
-            # OpenAI SDK keeps non-standard fields on model_extra and also exposes them as
-            # attributes — read both to be robust across SDK versions.
+            # mlx_lm.server and dflash serve stream chain-of-thought in a separate field on
+            # the delta. The field name may be `reasoning` or `reasoning_content` depending
+            # on the server version. The OpenAI SDK keeps non-standard fields on model_extra
+            # and also exposes them as attributes — read both to be robust.
+            _extra = getattr(delta, "model_extra", None) or {}
             reasoning = getattr(delta, "reasoning", None) \
-                or (getattr(delta, "model_extra", None) or {}).get("reasoning") \
+                or _extra.get("reasoning") \
+                or _extra.get("reasoning_content") \
                 or ""
             is_done = finish_reason is not None
 

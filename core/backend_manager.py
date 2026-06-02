@@ -16,6 +16,12 @@ MLX_LM_HOST = f"http://localhost:{MLX_LM_PORT}"
 MLX_LM_MODEL = "mlx-community/Qwen3.6-35B-A3B-4bit"
 MLX_LM_CONTEXT = 65536
 
+DFLASH_CLI = "/Users/miguel/Documents/Projects/mira-core/.venv/bin/dflash"
+DFLASH_PORT = 8080
+DFLASH_HOST = f"http://localhost:{DFLASH_PORT}"
+DFLASH_MODEL = "mlx-community/Qwen3.6-35B-A3B-4bit"
+DFLASH_CONTEXT = 65536
+
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
 OMLX_PORT = 8080
 OMLX_HOST = f"http://localhost:{OMLX_PORT}"
@@ -33,6 +39,12 @@ PRESETS = {
         "host": MLX_LM_HOST,
         "context_window": MLX_LM_CONTEXT,
     },
+    "dflash": {
+        "backend": "dflash",
+        "model": DFLASH_MODEL,
+        "host": DFLASH_HOST,
+        "context_window": DFLASH_CONTEXT,
+    },
     "omlx": {
         "backend": "omlx",
         "model": OMLX_MODEL,
@@ -48,6 +60,7 @@ PRESETS = {
 }
 
 _mlx_lm_proc = None
+_dflash_proc = None
 _omlx_proc = None
 
 
@@ -81,6 +94,36 @@ def stop_mlx_lm() -> None:
         except subprocess.TimeoutExpired:
             _mlx_lm_proc.kill()
         _mlx_lm_proc = None
+
+
+def start_dflash(model: str = DFLASH_MODEL) -> None:
+    global _dflash_proc
+    _dflash_proc = subprocess.Popen(
+        [
+            DFLASH_CLI, "serve",
+            "--model", model,
+            "--host", "127.0.0.1",
+            "--port", str(DFLASH_PORT),
+            "--max-tokens", "4096",
+            "--chat-template-args", '{"enable_thinking": false}',
+            "--prefix-cache",
+            "--prefill-step-size", "512",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    _wait_for_ready(DFLASH_HOST + "/v1/models", timeout=120)
+
+
+def stop_dflash() -> None:
+    global _dflash_proc
+    if _dflash_proc and _dflash_proc.poll() is None:
+        _dflash_proc.terminate()
+        try:
+            _dflash_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            _dflash_proc.kill()
+        _dflash_proc = None
 
 
 def _omlx_api_key() -> str:
@@ -121,6 +164,8 @@ def is_backend_ready(backend: str) -> bool:
             _omlx_request("/v1/models")
         elif backend == "mlx-lm":
             urllib.request.urlopen(MLX_LM_HOST + "/v1/models", timeout=2)
+        elif backend == "dflash":
+            urllib.request.urlopen(DFLASH_HOST + "/v1/models", timeout=2)
         else:
             urllib.request.urlopen(OLLAMA_HOST + "/api/version", timeout=2)
         return True
@@ -128,7 +173,7 @@ def is_backend_ready(backend: str) -> bool:
         return False
 
 
-def _warmup_model(model: str) -> None:
+def _warmup_model(model: str, host: str = MLX_LM_HOST) -> None:
     payload = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": "Hi"}],
@@ -136,22 +181,29 @@ def _warmup_model(model: str) -> None:
         "stream": False,
     }).encode()
     req = urllib.request.Request(
-        MLX_LM_HOST + "/v1/chat/completions",
+        host + "/v1/chat/completions",
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
     try:
-        logger.info("mlx-lm: warming up model %s…", model)
+        logger.info("warming up model %s…", model)
         urllib.request.urlopen(req, timeout=60)
-        logger.info("mlx-lm: model warm")
+        logger.info("model warm")
     except Exception as exc:
-        logger.warning("mlx-lm warmup failed (non-fatal): %s", exc)
+        logger.warning("warmup failed (non-fatal): %s", exc)
 
 
 def ensure_backend_running(backend: str) -> None:
     """Start the backend if not already reachable. Safe to call on every startup."""
-    if backend == "mlx-lm":
+    if backend == "dflash":
+        try:
+            urllib.request.urlopen(DFLASH_HOST + "/v1/models", timeout=2)
+            logger.info("dflash already running")
+        except Exception:
+            start_dflash()
+        _warmup_model(DFLASH_MODEL, host=DFLASH_HOST)
+    elif backend == "mlx-lm":
         try:
             urllib.request.urlopen(MLX_LM_HOST + "/v1/models", timeout=2)
             logger.info("mlx-lm already running")
@@ -217,18 +269,26 @@ def switch_to(target: str) -> dict:
     does not respond within its startup window.
     """
     if target not in PRESETS:
-        raise ValueError(f"Unknown backend {target!r}. Must be 'ollama', 'mlx-lm', or 'omlx'.")
+        raise ValueError(f"Unknown backend {target!r}. Must be one of: {list(PRESETS)}")
     logger.info("Switching backend to %s", target)
-    if target == "mlx-lm":
+    if target == "dflash":
         stop_ollama()
         stop_omlx()
+        stop_mlx_lm()
+        start_dflash()
+    elif target == "mlx-lm":
+        stop_ollama()
+        stop_omlx()
+        stop_dflash()
         start_mlx_lm()
     elif target == "omlx":
         stop_ollama()
         stop_mlx_lm()
+        stop_dflash()
         start_omlx()
     else:
         stop_mlx_lm()
+        stop_dflash()
         stop_omlx()
         start_ollama()
     logger.info("Backend switch to %s complete", target)
@@ -245,16 +305,24 @@ def switch_to_model(backend: str, model_id: str) -> dict:
     if backend not in PRESETS:
         raise ValueError(f"Unknown backend {backend!r}.")
     logger.info("Switching to model %s on %s", model_id, backend)
-    if backend == "mlx-lm":
+    if backend == "dflash":
         stop_ollama()
         stop_omlx()
+        stop_mlx_lm()
+        start_dflash(model_id)
+    elif backend == "mlx-lm":
+        stop_ollama()
+        stop_omlx()
+        stop_dflash()
         start_mlx_lm(model_id)
     elif backend == "omlx":
         stop_ollama()
         stop_mlx_lm()
+        stop_dflash()
         start_omlx()
     else:
         stop_mlx_lm()
+        stop_dflash()
         stop_omlx()
         start_ollama()
     preset = dict(PRESETS[backend])
