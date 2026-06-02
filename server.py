@@ -206,8 +206,8 @@ async def switch_backend(request: Request, _=Depends(_ready)):
     global _ollama_ready
     body = await request.json()
     target = body.get("backend", "")
-    if target not in ("ollama", "omlx"):
-        raise HTTPException(status_code=400, detail="backend must be 'ollama' or 'omlx'")
+    if target not in ("ollama", "omlx", "mlx-lm", "dflash"):
+        raise HTTPException(status_code=400, detail="backend must be 'ollama', 'omlx', 'mlx-lm', or 'dflash'")
     if target == _rt["backend"]:
         return {"status": "ok", "backend": target, "message": "already active"}
     _ollama_ready = False
@@ -245,8 +245,8 @@ async def switch_model(request: Request, _=Depends(_ready)):
     body = await request.json()
     backend = body.get("backend", "")
     model_id = body.get("model_id", "")
-    if backend not in ("ollama", "mlx-lm", "omlx"):
-        raise HTTPException(status_code=400, detail="backend must be 'ollama', 'mlx-lm', or 'omlx'")
+    if backend not in ("ollama", "mlx-lm", "omlx", "dflash"):
+        raise HTTPException(status_code=400, detail="backend must be 'ollama', 'mlx-lm', 'omlx', or 'dflash'")
     if not model_id:
         raise HTTPException(status_code=400, detail="model_id is required")
     if backend == _rt["backend"] and model_id == _rt["model"]:
