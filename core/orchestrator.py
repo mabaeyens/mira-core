@@ -768,6 +768,15 @@ class ChatOrchestrator:
         self._task_done_summary = summary
         return {"done": True}
 
+    def _search_conversations(self, query: str, limit: int = 10) -> dict:
+        from . import db
+        if not query.strip():
+            return {"results": [], "message": "No query provided."}
+        results = db.search_conversations(query, limit=min(int(limit), 50))
+        if not results:
+            return {"results": [], "message": f"No conversations found matching '{query}'."}
+        return {"results": results, "count": len(results)}
+
     def _dispatch_tool(self, name: str, args: dict) -> dict:
         dispatch = {
             "read_file":    lambda a: fs_tools.read_file(a.get("path", ""), root=self.workspace_root or self._temp_workspace),
@@ -795,6 +804,7 @@ class ChatOrchestrator:
             "github_merge_pr":      lambda a: github_tools.github_merge_pr(a["repo"], a["pr_number"], a.get("merge_method", "merge"), a.get("confirm", False)),
             "github_delete_file":   lambda a: github_tools.github_delete_file(a["repo"], a["path"], a["message"], a.get("branch", ""), a.get("confirm", False)),
             "github_delete_branch": lambda a: github_tools.github_delete_branch(a["repo"], a["branch"], a.get("confirm", False)),
+            "search_conversations":  lambda a: self._search_conversations(a.get("query", ""), a.get("limit", 10)),
             "task_done":            lambda a: self._mark_task_done(a.get("summary", "Task complete.")),
         }
         fn = dispatch.get(name)

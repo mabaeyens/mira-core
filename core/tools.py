@@ -492,6 +492,33 @@ GITHUB_DELETE_BRANCH_TOOL = {
     },
 }
 
+SEARCH_CONVERSATIONS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_conversations",
+        "description": (
+            "Search past conversations by content. Returns matching conversations with title, "
+            "date, and a snippet of the matching message. Use this to recall what was discussed "
+            "about a topic in a previous session."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Keywords or phrase to search for in conversation history.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of conversations to return (default 10, max 50).",
+                    "default": 10,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
 TASK_DONE_TOOL = {
     "type": "function",
     "function": {
@@ -528,6 +555,8 @@ TOOLS = [
     GITHUB_LIST_ISSUES_TOOL, GITHUB_CREATE_ISSUE_TOOL, GITHUB_LIST_PRS_TOOL,
     GITHUB_SEARCH_CODE_TOOL, GITHUB_CREATE_PR_TOOL, GITHUB_MERGE_PR_TOOL,
     GITHUB_DELETE_FILE_TOOL, GITHUB_DELETE_BRANCH_TOOL,
+    # Memory / search
+    SEARCH_CONVERSATIONS_TOOL,
     # Agentic
     TASK_DONE_TOOL,
 ]

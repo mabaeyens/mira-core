@@ -90,6 +90,18 @@ def init_db() -> None:
             conn.execute("ALTER TABLE messages ADD COLUMN thinking_content TEXT")
         except Exception:
             pass  # column already exists
+        # FTS5 index for conversation search
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
+            USING fts5(content, conversation_id UNINDEXED)
+        """)
+        # One-time backfill for pre-existing messages (when FTS table is newly created)
+        fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+        if fts_count == 0:
+            conn.execute(
+                "INSERT INTO messages_fts (content, conversation_id)"
+                " SELECT content, conversation_id FROM messages"
+            )
 
 
 # ── Projects ──────────────────────────────────────────────────────────────────
@@ -205,11 +217,16 @@ def save_messages(conv_id: str, messages: List[Dict]) -> None:
     now = int(time.time())
     with _conn() as conn:
         for msg in messages:
+            content = str(msg.get("content", ""))
             conn.execute(
                 "INSERT INTO messages (conversation_id, role, content, thinking_content, created_at)"
                 " VALUES (?, ?, ?, ?, ?)",
-                (conv_id, msg["role"], str(msg.get("content", "")),
+                (conv_id, msg["role"], content,
                  msg.get("thinking_content") or None, now),
+            )
+            conn.execute(
+                "INSERT INTO messages_fts (content, conversation_id) VALUES (?, ?)",
+                (content, conv_id),
             )
         conn.execute(
             "UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id)
@@ -232,15 +249,19 @@ def replace_messages(conv_id: str, messages: List[Dict]) -> None:
     """Replace all messages for a conversation (used after summarize-and-compress)."""
     now = int(time.time())
     with _conn() as conn:
-        conn.execute(
-            "DELETE FROM messages WHERE conversation_id = ?", (conv_id,)
-        )
+        conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conv_id,))
+        conn.execute("DELETE FROM messages_fts WHERE conversation_id = ?", (conv_id,))
         for msg in messages:
+            content = str(msg.get("content", ""))
             conn.execute(
                 "INSERT INTO messages (conversation_id, role, content, thinking_content, created_at)"
                 " VALUES (?, ?, ?, ?, ?)",
-                (conv_id, msg["role"], str(msg.get("content", "")),
+                (conv_id, msg["role"], content,
                  msg.get("thinking_content") or None, now),
+            )
+            conn.execute(
+                "INSERT INTO messages_fts (content, conversation_id) VALUES (?, ?)",
+                (content, conv_id),
             )
         conn.execute(
             "UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id)
@@ -268,5 +289,45 @@ def add_memory(text: str) -> int:
 def delete_memory(memory_id: int) -> None:
     with _conn() as conn:
         conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+
+
+# ── Search ────────────────────────────────────────────────────────────────────
+
+def search_conversations(query: str, limit: int = 10) -> List[Dict]:
+    """Full-text search over message content. Returns matching conversations ordered by recency."""
+    if not query.strip():
+        return []
+    safe_q = '"{}"'.format(query.strip().replace('"', '""'))
+    with _conn() as conn:
+        try:
+            rows = conn.execute(
+                """
+                SELECT c.id AS conversation_id, c.title, c.created_at, c.updated_at,
+                       substr(f.content, 1, 200) AS snippet
+                FROM messages_fts f
+                JOIN conversations c ON c.id = f.conversation_id
+                WHERE f MATCH ?
+                GROUP BY c.id
+                ORDER BY c.updated_at DESC
+                LIMIT ?
+                """,
+                (safe_q, limit),
+            ).fetchall()
+        except Exception:
+            # FTS unavailable or query syntax error — fall back to LIKE
+            rows = conn.execute(
+                """
+                SELECT c.id AS conversation_id, c.title, c.created_at, c.updated_at,
+                       substr(m.content, 1, 200) AS snippet
+                FROM messages m
+                JOIN conversations c ON c.id = m.conversation_id
+                WHERE m.content LIKE ?
+                GROUP BY c.id
+                ORDER BY c.updated_at DESC
+                LIMIT ?
+                """,
+                (f"%{query.strip()}%", limit),
+            ).fetchall()
+    return [dict(r) for r in rows]
 
 

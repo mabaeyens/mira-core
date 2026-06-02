@@ -561,6 +561,14 @@ async def delete_memory(memory_id: int):
 
 # ── Conversation endpoints ────────────────────────────────────────────────────
 
+@app.get("/conversations/search")
+async def search_conversations(q: str = "", limit: int = 10):
+    if not q.strip():
+        return {"results": []}
+    results = db.search_conversations(q.strip(), limit=min(limit, 50))
+    return {"results": results}
+
+
 @app.get("/conversations")
 async def list_conversations():
     return {"conversations": db.list_conversations()}
