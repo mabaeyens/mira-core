@@ -20,6 +20,7 @@ DFLASH_CLI = "/Users/miguel/Documents/Projects/mira-core/.venv/bin/dflash"
 DFLASH_PORT = 8080
 DFLASH_HOST = f"http://localhost:{DFLASH_PORT}"
 DFLASH_MODEL = "mlx-community/Qwen3.6-35B-A3B-4bit"
+DFLASH_DRAFT_MODEL = "z-lab/Qwen3.6-35B-A3B-DFlash"  # validated pair from dflash-mlx README
 DFLASH_CONTEXT = 65536
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
@@ -102,6 +103,7 @@ def start_dflash(model: str = DFLASH_MODEL) -> None:
         [
             DFLASH_CLI, "serve",
             "--model", model,
+            "--draft-model", DFLASH_DRAFT_MODEL,
             "--host", "127.0.0.1",
             "--port", str(DFLASH_PORT),
             "--max-tokens", "4096",
