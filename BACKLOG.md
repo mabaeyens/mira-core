@@ -12,12 +12,11 @@
 
 ## Pending
 
-### Inference speed
-- [ ] mlx-lm thinking mode — confirmed working via Qwen3's `enable_thinking` chat template flag (controlled per-request via `extra_body`). UI toggle on mlx-lm still disabled in mira-apps; re-enable now that it works.
-- [ ] Unsloth UD-MLX-4bit bench — `unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit` (15 GB) is cached locally; not yet benched vs uniform 4-bit. Low priority; only worth running if Q13 prompt refinement session is already open.
-
-### Future / nice-to-have
-- [ ] Scanned PDF OCR — detect scanned PDFs (empty text layer) and run OCR (e.g. `tesseract`) before indexing
+### Deferred
+- [ ] Unsloth UD-MLX-4bit bench — `unsloth/gemma-4-26b-a4b-it-UD-MLX-4bit` (15 GB) cached locally; bench vs uniform 4-bit. Only worth running in a dedicated bench session.
+- [ ] Scanned PDF OCR — detect scanned PDFs (empty text layer), run OCR (e.g. `tesseract`) before indexing.
+- [ ] Server-side auth token check — add `verify_token` FastAPI dependency to `/chat`; reads `MIRA_TOKEN` env var; no-op if unset (backwards compatible). Client already sends `Bearer` token. ~15 lines in `server.py`.
+- [ ] HTTPS on LAN via profile flow — self-signed CA on startup, `.mobileconfig` endpoint, QR code sheet in mira-apps connection settings. Tailscale HTTPS already works; this covers direct LAN only.
 
 ## Notes
 

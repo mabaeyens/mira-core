@@ -137,6 +137,24 @@ def stop_dflash() -> None:
         _dflash_proc = None
 
 
+def restart_dflash_if_dead(model: str = DFLASH_MODEL) -> None:
+    """Restart dflash if the process has exited or the HTTP endpoint is unreachable.
+
+    Called before each LLM request so OOM crashes are recovered transparently.
+    """
+    global _dflash_proc
+    process_dead = _dflash_proc is None or _dflash_proc.poll() is not None
+    if not process_dead:
+        try:
+            urllib.request.urlopen(DFLASH_HOST + "/v1/models", timeout=2)
+            return  # alive and reachable
+        except Exception:
+            process_dead = True
+    logger.warning("dflash process dead or unreachable — restarting with model %s", model)
+    _dflash_proc = None
+    start_dflash(model)
+
+
 def _omlx_api_key() -> str:
     try:
         cfg = json.loads((Path.home() / ".omlx" / "settings.json").read_text())

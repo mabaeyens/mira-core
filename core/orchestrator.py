@@ -29,6 +29,7 @@ from .rag_engine import RagEngine
 from . import url_fetcher
 from . import fs_tools
 from . import shell_tools
+from .backend_manager import restart_dflash_if_dead
 from . import github_tools
 
 logger = logging.getLogger(__name__)
@@ -1079,6 +1080,8 @@ class ChatOrchestrator:
                 tools=tools, stream=True, think=thinking_enabled,
             )
         else:
+            if self.backend == "dflash":
+                restart_dflash_if_dead(self.model)
             extra: dict = {}
             if self.backend in ("mlx-lm", "dflash"):
                 # mlx_lm.server and dflash serve only honour thinking through the chat-template
