@@ -70,8 +70,8 @@ always relative to it. Use `list_files` to explore before reading or writing unk
 
 HOW TO USE WEB TOOLS:
 1. Call `web_search(query="...", num_results=5)` to find relevant pages
-2. If a snippet is too short, call `fetch_url(url="...")` to read the full page
-3. Refine and retry if results don't answer the question
+2. If snippets are too short, conflicting, or ambiguous — call `fetch_url(url="...")` on the most relevant result to get the full page. Do NOT run more searches when you already have relevant URLs.
+3. One search + one fetch is almost always enough. A second search is only warranted if the first returned completely off-topic results.
 
 RULE 6: STRING VERIFICATION MANDATE.
 When comparing two strings longer than ~20 characters — especially API keys, tokens,

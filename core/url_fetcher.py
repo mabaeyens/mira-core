@@ -59,6 +59,12 @@ def fetch_url(url: str) -> str:
     text = re.sub(r" {2,}", " ", text)
     text = text.strip()
 
+    if len(text) < 200:
+        return (
+            f"Error: page returned too little readable text ({len(text)} chars) — "
+            f"likely JavaScript-rendered or login-gated. Try a different URL or use web_search."
+        )
+
     if len(text) > MAX_CONTENT_CHARS:
         text = text[:MAX_CONTENT_CHARS] + f"\n\n[… content truncated at {MAX_CONTENT_CHARS} chars]"
 

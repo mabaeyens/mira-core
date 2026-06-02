@@ -1,6 +1,7 @@
 """Search engine module with Ollama native and DuckDuckGo fallback."""
 
 import logging
+import re
 from typing import List, Dict, Optional
 from .config import MAX_SEARCH_RESULTS, SEARCH_TIMEOUT, USE_NATIVE_SEARCH
 
@@ -68,6 +69,11 @@ class SearchEngine:
         logger.warning("No search results found.")
         return []
     
+    @staticmethod
+    def _clean_snippet(text: str) -> str:
+        """Normalize whitespace in a snippet — fixes concatenated words from HTML stripping."""
+        return re.sub(r'\s+', ' ', text).strip()
+
     def _format_ollama_results(self, results: List) -> List[Dict]:
         """Format Ollama native search results."""
         formatted = []
@@ -75,10 +81,10 @@ class SearchEngine:
             formatted.append({
                 "title": r.get("title", "No title"),
                 "url": r.get("url", ""),
-                "snippet": r.get("content", r.get("snippet", ""))
+                "snippet": self._clean_snippet(r.get("content", r.get("snippet", "")))
             })
         return formatted
-    
+
     def _format_ddgs_results(self, results: List) -> List[Dict]:
         """Format DuckDuckGo search results."""
         formatted = []
@@ -86,7 +92,7 @@ class SearchEngine:
             formatted.append({
                 "title": r.get("title", "No title"),
                 "url": r.get("href", r.get("link", "")),
-                "snippet": r.get("body", r.get("snippet", ""))
+                "snippet": self._clean_snippet(r.get("body", r.get("snippet", "")))
             })
         return formatted
     
