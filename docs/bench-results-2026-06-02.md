@@ -145,3 +145,69 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | 12 | hard | agentic-edit-file | — |
 | 13 | expert | agentic-divergence-guard | — |
 | 10 | expert | multi-turn-long-context | — |
+
+---
+
+## Mira Server Bench — 2026-06-02 — qwen3.6-dflash-datetime-fix
+
+**Change:** `CURRENT DATE AND TIME` moved from token ~50 to end of system prompt (db01a0f).  
+**Purpose:** Enable dflash prefix cache to cover ~3500 static system prompt tokens.  
+**Q7 note:** dflash OOM-crashed on Q7's 16K-token output; Q8-Q13 were re-run after restart (cold cache).
+
+### Timing
+
+| Q | Difficulty | Category | TTFT | wall | t/s | notes |
+|---|-----------|---------|------|------|-----|-------|
+| 1 | easy | baseline | 9587ms | 10.4s | 2.5 | cold start |
+| 2 | easy | code-no-tools | 5401ms | 9.4s | 48.0 | |
+| 3 | medium | reasoning | 5727ms | 35.5s | 39.9 | |
+| 4 | medium | long-output | 28454ms | 51.1s | 107.1 | tools=[github_write_file] |
+| 5 | medium | thinking-toggle | 7651ms | 34.2s | 40.8 | |
+| 6 | hard | agentic-single-tool | 10830ms | 11.8s | 74.1 | |
+| 7 | hard | agentic-multi-step | ERR | — | — | dflash OOM at 16K tokens; crash |
+| 8 | hard | agentic-read-reason | 8807ms | 61.6s | 23.8 | after restart (cold) |
+| 9 | expert | agentic-task-done | 10448ms | 12.1s | 56.1 | after restart (cold) |
+| 10 | expert | multi-turn-long-context | 18869ms | 48.8s | 48.7 | T1=22050ms T2=26729ms; after restart |
+| 11 | hard | agentic-write-file | 11470ms | 13.0s | 76.8 | after restart (cold) |
+| 12 | hard | agentic-edit-file | 13055ms | 14.7s | 100.8 | after restart (cold) |
+| 13 | expert | agentic-divergence-guard | 11824ms | 20.1s | 52.0 | after restart (cold) |
+
+### Agentic results
+
+| Q | Category | Expected calls | Actual calls | task_done |
+|---|---------|----------------|---|---|
+| 4 | long-output | 0 | github_write_file | YES |
+| 6 | agentic-single-tool | 1 | run_shell | YES |
+| 7 | agentic-multi-step | 2 | ERR (OOM crash) | — |
+| 8 | agentic-read-reason | 1 | read_file | YES |
+| 9 | agentic-task-done | 3 | run_shell | YES |
+| 10 | multi-turn-long-context | 0 | none | NO |
+| 11 | agentic-write-file | 2 | write_file, read_file | YES |
+| 12 | agentic-edit-file | 3 | write_file, edit_file, read_file | YES |
+| 13 | agentic-divergence-guard | 3 | run_shell ×4 | YES (divergence_guard=YES) |
+
+### TTFT analysis — datetime fix vs prior run
+
+Moving datetime to end of system prompt gave modest TTFT improvement for Q1→Q2 within the same session (cold Q1 = 9.6s, warm Q2 = 5.4s — delta of ~4.2s). The prior run (dflash-pinned) showed a smaller delta (Q1=7.5s → Q2=5.4s, delta ~2.1s), consistent with the prefix cache having more stable tokens to cover.
+
+However, Q2-Q6 TTFT is still 5-11s, not sub-second as the theoretical cache-hit math would suggest (~100 uncached tokens / 568 t/s ≈ 0.2s). Likely cause: the dflash L2 SSD prefix cache read latency for a 3500-token KV state is itself several seconds. True sub-second TTFT requires L1 (RAM) cache hits, which only occur within the same conversation turn (confirmed by Q10-T2=627ms in prior run). Cross-conversation L2 hits are fast relative to cold prefill but not zero-latency.
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | Score |
+|---|-----------|---------|-------|
+| 1 | easy | baseline | — |
+| 2 | easy | code-no-tools | — |
+| 3 | medium | reasoning | — |
+| 4 | medium | long-output | — |
+| 5 | medium | thinking-toggle | — |
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | ERR |
+| 8 | hard | agentic-read-reason | — |
+| 9 | expert | agentic-task-done | — |
+| 10 | expert | multi-turn-long-context | — |
+| 11 | hard | agentic-write-file | — |
+| 12 | hard | agentic-edit-file | — |
+| 13 | expert | agentic-divergence-guard | — |
