@@ -211,3 +211,78 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | 11 | hard | agentic-write-file | — |
 | 12 | hard | agentic-edit-file | — |
 | 13 | expert | agentic-divergence-guard | — |
+
+---
+
+## Mira Server Bench — 2026-06-02 — gemma4-26b-dflash
+
+**Model:** `mlx-community/gemma-4-26b-a4b-it-4bit` + draft `z-lab/gemma-4-26B-A4B-it-DFlash`  
+**Q8 note:** dflash Metal OOM at 24,217-token input (system prompt + full orchestrator.py from tool call). 32GB limit. Q9-Q13 re-run after restart (cold cache).  
+**Q13 note:** divergence_guard fired after 9 run_shell calls (vs expected 3); model kept issuing new shell variants before the 3-identical-args window triggered.
+
+### Timing
+
+| Q | Difficulty | Category | TTFT | wall | t/s | notes |
+|---|-----------|---------|------|------|-----|-------|
+| 1 | easy | baseline | 4686ms | 6.4s | 1.2 | cold start |
+| 2 | easy | code-no-tools | 4229ms | 9.9s | 39.6 | |
+| 3 | medium | reasoning | 4353ms | 32.0s | 28.9 | |
+| 4 | medium | long-output | 4648ms | 22.1s | 37.0 | no tool call (Qwen3.6 incorrectly used github_write_file) |
+| 5 | medium | thinking-toggle | 26684ms | 53.1s | 88.5 | no thinking mode; verbose inline reasoning |
+| 6 | hard | agentic-single-tool | 9191ms | 10.4s | 61.5 | |
+| 7 | hard | agentic-multi-step | 15576ms | 138.7s | 34.3 | used run_shell (not read_file); passed |
+| 8 | hard | agentic-read-reason | Metal OOM | — | — | 24K token context; 32GB limit |
+| 9 | expert | agentic-task-done | 9329ms | 19.0s | 19.3 | after restart (cold) |
+| 10 | expert | multi-turn-long-context | 16448ms | 54.9s | 264.6 | T1=35191ms T2=19703ms; after restart |
+| 11 | hard | agentic-write-file | — | 24.1s | — | after restart (cold) |
+| 12 | hard | agentic-edit-file | — | 22.9s | — | after restart (cold) |
+| 13 | expert | agentic-divergence-guard | 9878ms | 43.5s | — | 9 calls before guard fired; after restart |
+
+### Agentic results
+
+| Q | Category | Expected calls | Actual calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | run_shell | YES |
+| 7 | agentic-multi-step | 2 | run_shell | YES |
+| 8 | agentic-read-reason | 1 | Metal OOM | — |
+| 9 | agentic-task-done | 3 | run_shell ×2 | YES |
+| 10 | multi-turn-long-context | 0 | none | NO |
+| 11 | agentic-write-file | 2 | run_shell, read_file | YES |
+| 12 | agentic-edit-file | 3 | run_shell, write_file, edit_file, read_file | YES |
+| 13 | agentic-divergence-guard | 3 | run_shell ×9 | divergence_guard=YES |
+
+### vs Qwen3.6-dflash comparison
+
+| Metric | Qwen3.6-35B-A3B | Gemma4-26B |
+|--------|----------------|------------|
+| Cold TTFT (Q1) | 9587ms | **4686ms** |
+| Typical TTFT (Q2-Q6 warm) | 5-11s | **4-10s** |
+| Prefill speed (dflash log) | 568 t/s | **795 t/s** |
+| Peak decode (Q10) | 48.7 t/s | **264.6 t/s** |
+| Q4 tool use | github_write_file (wrong) | **direct generation (correct)** |
+| Q5 thinking-toggle | 40.8 t/s, 34.2s wall | 88.5 t/s, 53.1s wall (verbose) |
+| Q7 multi-step | **FAIL** (16K OOM) | **PASS** (run_shell) |
+| Q8 large-context | **PASS** | FAIL (24K Metal OOM) |
+| Q13 divergence guard | fires at 4 calls | fires at 9 calls (weaker follow) |
+| Acceptance rate (speed bench) | 78% | 78% |
+| Decode t/s (speed bench) | 77.0 | 66.6 |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | Score |
+|---|-----------|---------|-------|
+| 1 | easy | baseline | — |
+| 2 | easy | code-no-tools | — |
+| 3 | medium | reasoning | — |
+| 4 | medium | long-output | — |
+| 5 | medium | thinking-toggle | — |
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | — |
+| 8 | hard | agentic-read-reason | OOM |
+| 9 | expert | agentic-task-done | — |
+| 10 | expert | multi-turn-long-context | — |
+| 11 | hard | agentic-write-file | — |
+| 12 | hard | agentic-edit-file | — |
+| 13 | expert | agentic-divergence-guard | — |

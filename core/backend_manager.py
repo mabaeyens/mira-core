@@ -20,8 +20,13 @@ DFLASH_CLI = "/Users/miguel/Documents/Projects/mira-core/.venv/bin/dflash"
 DFLASH_PORT = 8080
 DFLASH_HOST = f"http://localhost:{DFLASH_PORT}"
 DFLASH_MODEL = "mlx-community/Qwen3.6-35B-A3B-4bit"
-DFLASH_DRAFT_MODEL = "z-lab/Qwen3.6-35B-A3B-DFlash"  # validated pair from dflash-mlx README
 DFLASH_CONTEXT = 65536
+
+# Validated target → draft pairings from the dflash-mlx README
+DFLASH_DRAFT_MODELS = {
+    "mlx-community/Qwen3.6-35B-A3B-4bit": "z-lab/Qwen3.6-35B-A3B-DFlash",
+    "mlx-community/gemma-4-26b-a4b-it-4bit": "z-lab/gemma-4-26B-A4B-it-DFlash",
+}
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
 OMLX_PORT = 8080
@@ -99,18 +104,22 @@ def stop_mlx_lm() -> None:
 
 def start_dflash(model: str = DFLASH_MODEL) -> None:
     global _dflash_proc
+    draft_model = DFLASH_DRAFT_MODELS.get(model, DFLASH_DRAFT_MODELS[DFLASH_MODEL])
+    args = [
+        DFLASH_CLI, "serve",
+        "--model", model,
+        "--draft-model", draft_model,
+        "--host", "127.0.0.1",
+        "--port", str(DFLASH_PORT),
+        "--max-tokens", "16384",
+        "--prefix-cache",
+        "--prefill-step-size", "512",
+    ]
+    # Qwen3 requires thinking mode disabled via chat template args
+    if "Qwen3" in model or "qwen3" in model.lower():
+        args += ["--chat-template-args", '{"enable_thinking": false}']
     _dflash_proc = subprocess.Popen(
-        [
-            DFLASH_CLI, "serve",
-            "--model", model,
-            "--draft-model", DFLASH_DRAFT_MODEL,
-            "--host", "127.0.0.1",
-            "--port", str(DFLASH_PORT),
-            "--max-tokens", "16384",
-            "--chat-template-args", '{"enable_thinking": false}',
-            "--prefix-cache",
-            "--prefill-step-size", "512",
-        ],
+        args,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
