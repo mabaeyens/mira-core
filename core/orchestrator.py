@@ -572,173 +572,16 @@ class ChatOrchestrator:
 
             full_content = ""
             final_message = None
-
-            for attempt in range(1, MAX_RETRIES + 1):
-                try:
-                    accumulated_tool_calls = None
-                    # Buffer for <think> tag stripping (Qwen3)
-                    think_buf = ""
-                    in_thinking = False
-                    # Buffer for Gemma 4 thinking format stripping
-                    gemma_buf = ""
-                    in_gemma_thinking = False
-
-                    for chunk in self._call_llm(
-                        self.conversation_history,
-                        tools=self._active_tools,
-                        thinking_enabled=thinking_enabled,
-                    ):
-                        if chunk.message.tool_calls:
-                            accumulated_tool_calls = chunk.message.tool_calls
-                            logger.info("chunk HAS tool_calls: done=%s tool_calls=%s", chunk.done, chunk.message.tool_calls)
-
-                        # Ollama yields thinking content in chunk.message.thinking when
-                        # think=True; emit it as a thinking event so the UI can show it
-                        # collapsed, then continue to the normal content path.
-                        thinking_token = getattr(chunk.message, "thinking", None) or ""
-                        if thinking_token:
-                            _thinking_chars += len(thinking_token)
-                            yield {"type": "thinking", "content": thinking_token}
-
-                        raw_token = chunk.message.content or ""
-                        if raw_token:
-                            think_buf += raw_token
-                            # Pass 1 — strip Qwen3 <think>...</think> blocks, emit as thinking events.
-                            # Non-thinking content is routed to gemma_buf for Pass 2.
-                            while think_buf:
-                                if in_thinking:
-                                    close = think_buf.find("</think>")
-                                    if close == -1:
-                                        # No closing tag yet — emit buffered thinking but
-                                        # hold back a tail that may be a split </think>.
-                                        hold = _partial_marker_tail(think_buf, "</think>")
-                                        emit = think_buf[:len(think_buf) - hold] if hold else think_buf
-                                        if emit:
-                                            _thinking_chars += len(emit)
-                                            yield {"type": "thinking", "content": emit}
-                                        think_buf = think_buf[len(think_buf) - hold:] if hold else ""
-                                        break
-                                    # Emit the thinking fragment before the closing tag
-                                    thinking_fragment = think_buf[:close]
-                                    if thinking_fragment:
-                                        _thinking_chars += len(thinking_fragment)
-                                        yield {"type": "thinking", "content": thinking_fragment}
-                                    in_thinking = False
-                                    think_buf = think_buf[close + len("</think>"):]
-                                else:
-                                    open_tag = think_buf.find("<think>")
-                                    if open_tag == -1:
-                                        # No open tag — route to Pass 2, but hold back a
-                                        # tail that may be a split <think>.
-                                        hold = _partial_marker_tail(think_buf, "<think>")
-                                        gemma_buf += think_buf[:len(think_buf) - hold] if hold else think_buf
-                                        think_buf = think_buf[len(think_buf) - hold:] if hold else ""
-                                        break
-                                    if open_tag > 0:
-                                        gemma_buf += think_buf[:open_tag]
-                                        think_buf = think_buf[open_tag:]
-                                    else:
-                                        in_thinking = True
-                                        think_buf = think_buf[len("<think>"):]
-
-                            # Pass 2 — strip Gemma 4 <|channel>thought\n...<channel|> blocks.
-                            # Non-thinking content is yielded as token events.
-                            while gemma_buf:
-                                if in_gemma_thinking:
-                                    close = gemma_buf.find(_GEMMA_THINK_CLOSE)
-                                    if close == -1:
-                                        # No closing tag yet — emit buffered thinking but
-                                        # hold back a tail that may be a split <channel|>.
-                                        hold = _partial_marker_tail(gemma_buf, _GEMMA_THINK_CLOSE)
-                                        emit = gemma_buf[:len(gemma_buf) - hold] if hold else gemma_buf
-                                        if emit:
-                                            _thinking_chars += len(emit)
-                                            yield {"type": "thinking", "content": emit}
-                                        gemma_buf = gemma_buf[len(gemma_buf) - hold:] if hold else ""
-                                        break
-                                    thinking_fragment = gemma_buf[:close]
-                                    if thinking_fragment:
-                                        _thinking_chars += len(thinking_fragment)
-                                        yield {"type": "thinking", "content": thinking_fragment}
-                                    in_gemma_thinking = False
-                                    gemma_buf = gemma_buf[close + len(_GEMMA_THINK_CLOSE):]
-                                else:
-                                    open_tag = gemma_buf.find(_GEMMA_THINK_OPEN)
-                                    if open_tag == -1:
-                                        # No open tag — emit as visible tokens, but hold back
-                                        # a tail that may be a split <|channel>thought\n.
-                                        hold = _partial_marker_tail(gemma_buf, _GEMMA_THINK_OPEN)
-                                        emit = gemma_buf[:len(gemma_buf) - hold] if hold else gemma_buf
-                                        if emit:
-                                            yield {"type": "token", "content": emit}
-                                            full_content += emit
-                                        gemma_buf = gemma_buf[len(gemma_buf) - hold:] if hold else ""
-                                        break
-                                    if open_tag > 0:
-                                        regular = gemma_buf[:open_tag]
-                                        yield {"type": "token", "content": regular}
-                                        full_content += regular
-                                        gemma_buf = gemma_buf[open_tag:]
-                                    else:
-                                        in_gemma_thinking = True
-                                        gemma_buf = gemma_buf[len(_GEMMA_THINK_OPEN):]
-
-                        if chunk.done:
-                            final_message = chunk.message
-                            if not final_message.tool_calls and accumulated_tool_calls:
-                                # Gemma4 quirk: tool_calls arrive in intermediate chunks
-                                if hasattr(final_message, 'model_copy'):
-                                    final_message = final_message.model_copy(
-                                        update={"tool_calls": accumulated_tool_calls}
-                                    )
-                                else:
-                                    final_message.tool_calls = accumulated_tool_calls
-                            p = getattr(chunk, 'prompt_eval_count', None)
-                            e = getattr(chunk, 'eval_count', None)
-                            if isinstance(p, int):
-                                self.last_prompt_tokens = p
-                                self.total_input_tokens += p
-                            if isinstance(e, int):
-                                self.total_output_tokens += e
-                    # Stream ended — drain any remaining buffered content, including
-                    # held-back partial markers that can no longer complete. Inside a
-                    # thinking block the remainder is thinking; otherwise it is a tag
-                    # that never materialised, so it surfaces as visible content.
-                    if think_buf:
-                        if in_thinking:
-                            _thinking_chars += len(think_buf)
-                            yield {"type": "thinking", "content": think_buf}
-                        else:
-                            gemma_buf += think_buf
-                        think_buf = ""
-                    if gemma_buf:
-                        if in_gemma_thinking:
-                            _thinking_chars += len(gemma_buf)
-                            yield {"type": "thinking", "content": gemma_buf}
-                        else:
-                            yield {"type": "token", "content": gemma_buf}
-                            full_content += gemma_buf
-                        gemma_buf = ""
-                    break
-                except Exception as e:
-                    if full_content:
-                        yield {"type": "error", "message": str(e)}
-                        return
-                    if attempt == MAX_RETRIES:
-                        yield {"type": "error", "message": str(e)}
-                        return
-                    logger.warning("LLM API error (attempt %d/%d): %s", attempt, MAX_RETRIES, e)
-
-            if final_message is None:
-                yield {"type": "error", "message": "LLM stream closed without a completion signal."}
-                return
-
-            logger.info(
-                "LLM response — content_len=%d tool_calls=%s thinking_len=%d",
-                len(final_message.content or ""),
-                bool(final_message.tool_calls),
-                len(getattr(final_message, 'thinking', None) or ""),
-            )
+            for event in self._stream_llm_with_thinking(thinking_enabled):
+                if event["type"] == "llm_done":
+                    full_content = event["full_content"]
+                    final_message = event["final_message"]
+                    _thinking_chars += event["thinking_chars"]
+                elif event["type"] == "error":
+                    yield event
+                    return
+                else:
+                    yield event
 
             tool_calls = final_message.tool_calls
 
@@ -853,91 +696,7 @@ class ChatOrchestrator:
                 yield {"type": "done", "content": self._task_done_summary, "task_done": True}
                 return
 
-            # Emit start events for all tools upfront before parallel execution
-            for tc_id, name, args, diverged in prepared:
-                if name == "web_search":
-                    yield {"type": "search_start", "query": args.get("query", "")}
-                elif name == "fetch_url":
-                    if args.get("url", "").startswith(("http://", "https://")):
-                        yield {"type": "fetch_start", "url": args.get("url", "")}
-                else:
-                    label_start, _ = _tool_ui_labels(name, args)
-                    yield {"type": "tool_start", "tool": name, "label": label_start}
-
-            # Execute all tool calls in parallel
-            def _run_tool(tc_id, name, args, diverged):
-                if diverged:
-                    return {"error": "Same tool+args repeated too many times. Try a different approach."}
-                if name == "web_search":
-                    query = args.get("query", "")
-                    try:
-                        results = self.search_engine.search(query)
-                    except Exception as e:
-                        logger.error("Search failed: %s", e)
-                        results = []
-                    return {"_web_search": True, "query": query, "results": results}
-                if name == "fetch_url":
-                    url = args.get("url", "")
-                    content = url_fetcher.fetch_url(url)
-                    return {"_fetch_url": True, "url": url, "content": content}
-                return self._dispatch_tool(name, args)
-
-            with ThreadPoolExecutor(max_workers=min(len(prepared), 4)) as pool:
-                futures = {
-                    pool.submit(_run_tool, tc_id, name, args, diverged): i
-                    for i, (tc_id, name, args, diverged) in enumerate(prepared)
-                }
-                results_by_idx: dict = {}
-                for fut in as_completed(futures):
-                    results_by_idx[futures[fut]] = fut.result()
-
-            # Emit results and append to history in original order
-            for i, (tc_id, name, args, diverged) in enumerate(prepared):
-                result = results_by_idx[i]
-                if name == "web_search":
-                    query = result.get("query", "")
-                    web_results = result.get("results", [])
-                    yield {"type": "search_done", "query": query, "count": len(web_results), "results": web_results}
-                    yield {"type": "agent_step", "step": step + 1, "tool": "web_search", "status": "success" if web_results else "error"}
-                    self.conversation_history.append({
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "name": name,
-                        "content": SEARCH_RESULT_TEMPLATE.format(
-                            query=query,
-                            results_text=self.search_engine.format_tool_result(web_results)
-                        ),
-                    })
-                elif name == "fetch_url":
-                    url = result.get("url", "")
-                    content = result.get("content", "")
-                    if url.startswith(("http://", "https://")):
-                        yield {"type": "fetch_done", "url": url, "chars": len(content)}
-                        fetch_results.append({
-                            "url": url,
-                            "chars": len(content),
-                            "preview": content[:300].rstrip() + ("…" if len(content) > 300 else ""),
-                        })
-                    yield {"type": "agent_step", "step": step + 1, "tool": "fetch_url", "status": "success"}
-                    self.conversation_history.append({
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "name": name,
-                        "content": content,
-                    })
-                else:
-                    _, label_done_fn = _tool_ui_labels(name, args)
-                    observation = self._wrap_observation(name, result)
-                    yield {"type": "tool_done", "tool": name, "label": label_done_fn(result)}
-                    if diverged:
-                        yield {"type": "divergence_guard", "tool": name, "step": step + 1}
-                    yield {"type": "agent_step", "step": step + 1, "tool": name, "status": observation["status"]}
-                    self.conversation_history.append({
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "name": name,
-                        "content": json.dumps(observation),
-                    })
+            yield from self._execute_tools(prepared, step, fetch_results)
 
         yield from self._soft_pause_checkin(f"{MAX_AGENT_STEPS} agent steps")
 
@@ -1061,6 +820,251 @@ class ChatOrchestrator:
         return result
 
     # ── LLM backend ──────────────────────────────────────────────────────────
+
+    def _stream_llm_with_thinking(self, thinking_enabled: bool):
+        """Call the LLM, strip thinking tags, yield typed events.
+
+        Final event: {"type": "llm_done", "full_content": str, "final_message": obj, "thinking_chars": int}
+        On failure:  {"type": "error", "message": str} — caller should forward and return.
+        """
+        full_content = ""
+        final_message = None
+        thinking_chars = 0
+
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                accumulated_tool_calls = None
+                think_buf = ""
+                in_thinking = False
+                gemma_buf = ""
+                in_gemma_thinking = False
+
+                for chunk in self._call_llm(
+                    self.conversation_history,
+                    tools=self._active_tools,
+                    thinking_enabled=thinking_enabled,
+                ):
+                    if chunk.message.tool_calls:
+                        accumulated_tool_calls = chunk.message.tool_calls
+                        logger.info("chunk HAS tool_calls: done=%s tool_calls=%s", chunk.done, chunk.message.tool_calls)
+
+                    thinking_token = getattr(chunk.message, "thinking", None) or ""
+                    if thinking_token:
+                        thinking_chars += len(thinking_token)
+                        yield {"type": "thinking", "content": thinking_token}
+
+                    raw_token = chunk.message.content or ""
+                    if raw_token:
+                        think_buf += raw_token
+                        # Pass 1 — strip Qwen3 <think>...</think> blocks.
+                        while think_buf:
+                            if in_thinking:
+                                close = think_buf.find("</think>")
+                                if close == -1:
+                                    hold = _partial_marker_tail(think_buf, "</think>")
+                                    emit = think_buf[:len(think_buf) - hold] if hold else think_buf
+                                    if emit:
+                                        thinking_chars += len(emit)
+                                        yield {"type": "thinking", "content": emit}
+                                    think_buf = think_buf[len(think_buf) - hold:] if hold else ""
+                                    break
+                                thinking_fragment = think_buf[:close]
+                                if thinking_fragment:
+                                    thinking_chars += len(thinking_fragment)
+                                    yield {"type": "thinking", "content": thinking_fragment}
+                                in_thinking = False
+                                think_buf = think_buf[close + len("</think>"):]
+                            else:
+                                open_tag = think_buf.find("<think>")
+                                if open_tag == -1:
+                                    hold = _partial_marker_tail(think_buf, "<think>")
+                                    gemma_buf += think_buf[:len(think_buf) - hold] if hold else think_buf
+                                    think_buf = think_buf[len(think_buf) - hold:] if hold else ""
+                                    break
+                                if open_tag > 0:
+                                    gemma_buf += think_buf[:open_tag]
+                                    think_buf = think_buf[open_tag:]
+                                else:
+                                    in_thinking = True
+                                    think_buf = think_buf[len("<think>"):]
+
+                        # Pass 2 — strip Gemma 4 <|channel>thought\n...<channel|> blocks.
+                        while gemma_buf:
+                            if in_gemma_thinking:
+                                close = gemma_buf.find(_GEMMA_THINK_CLOSE)
+                                if close == -1:
+                                    hold = _partial_marker_tail(gemma_buf, _GEMMA_THINK_CLOSE)
+                                    emit = gemma_buf[:len(gemma_buf) - hold] if hold else gemma_buf
+                                    if emit:
+                                        thinking_chars += len(emit)
+                                        yield {"type": "thinking", "content": emit}
+                                    gemma_buf = gemma_buf[len(gemma_buf) - hold:] if hold else ""
+                                    break
+                                thinking_fragment = gemma_buf[:close]
+                                if thinking_fragment:
+                                    thinking_chars += len(thinking_fragment)
+                                    yield {"type": "thinking", "content": thinking_fragment}
+                                in_gemma_thinking = False
+                                gemma_buf = gemma_buf[close + len(_GEMMA_THINK_CLOSE):]
+                            else:
+                                open_tag = gemma_buf.find(_GEMMA_THINK_OPEN)
+                                if open_tag == -1:
+                                    hold = _partial_marker_tail(gemma_buf, _GEMMA_THINK_OPEN)
+                                    emit = gemma_buf[:len(gemma_buf) - hold] if hold else gemma_buf
+                                    if emit:
+                                        yield {"type": "token", "content": emit}
+                                        full_content += emit
+                                    gemma_buf = gemma_buf[len(gemma_buf) - hold:] if hold else ""
+                                    break
+                                if open_tag > 0:
+                                    regular = gemma_buf[:open_tag]
+                                    yield {"type": "token", "content": regular}
+                                    full_content += regular
+                                    gemma_buf = gemma_buf[open_tag:]
+                                else:
+                                    in_gemma_thinking = True
+                                    gemma_buf = gemma_buf[len(_GEMMA_THINK_OPEN):]
+
+                    if chunk.done:
+                        final_message = chunk.message
+                        if not final_message.tool_calls and accumulated_tool_calls:
+                            # Gemma4 quirk: tool_calls arrive in intermediate chunks
+                            if hasattr(final_message, 'model_copy'):
+                                final_message = final_message.model_copy(
+                                    update={"tool_calls": accumulated_tool_calls}
+                                )
+                            else:
+                                final_message.tool_calls = accumulated_tool_calls
+                        p = getattr(chunk, 'prompt_eval_count', None)
+                        e = getattr(chunk, 'eval_count', None)
+                        if isinstance(p, int):
+                            self.last_prompt_tokens = p
+                            self.total_input_tokens += p
+                        if isinstance(e, int):
+                            self.total_output_tokens += e
+
+                # Drain remaining buffered content.
+                if think_buf:
+                    if in_thinking:
+                        thinking_chars += len(think_buf)
+                        yield {"type": "thinking", "content": think_buf}
+                    else:
+                        gemma_buf += think_buf
+                    think_buf = ""
+                if gemma_buf:
+                    if in_gemma_thinking:
+                        thinking_chars += len(gemma_buf)
+                        yield {"type": "thinking", "content": gemma_buf}
+                    else:
+                        yield {"type": "token", "content": gemma_buf}
+                        full_content += gemma_buf
+                    gemma_buf = ""
+                break
+            except Exception as e:
+                if full_content:
+                    yield {"type": "error", "message": str(e)}
+                    return
+                if attempt == MAX_RETRIES:
+                    yield {"type": "error", "message": str(e)}
+                    return
+                logger.warning("LLM API error (attempt %d/%d): %s", attempt, MAX_RETRIES, e)
+
+        if final_message is None:
+            yield {"type": "error", "message": "LLM stream closed without a completion signal."}
+            return
+
+        logger.info(
+            "LLM response — content_len=%d tool_calls=%s thinking_len=%d",
+            len(final_message.content or ""),
+            bool(final_message.tool_calls),
+            len(getattr(final_message, 'thinking', None) or ""),
+        )
+        yield {"type": "llm_done", "full_content": full_content, "final_message": final_message, "thinking_chars": thinking_chars}
+
+    def _execute_tools(self, prepared: list, step: int, fetch_results: list):
+        """Emit start events, run tools in parallel, emit result events, update history."""
+        for tc_id, name, args, diverged in prepared:
+            if name == "web_search":
+                yield {"type": "search_start", "query": args.get("query", "")}
+            elif name == "fetch_url":
+                if args.get("url", "").startswith(("http://", "https://")):
+                    yield {"type": "fetch_start", "url": args.get("url", "")}
+            else:
+                label_start, _ = _tool_ui_labels(name, args)
+                yield {"type": "tool_start", "tool": name, "label": label_start}
+
+        def _run_tool(tc_id, name, args, diverged):
+            if diverged:
+                return {"error": "Same tool+args repeated too many times. Try a different approach."}
+            if name == "web_search":
+                query = args.get("query", "")
+                try:
+                    results = self.search_engine.search(query)
+                except Exception as e:
+                    logger.error("Search failed: %s", e)
+                    results = []
+                return {"_web_search": True, "query": query, "results": results}
+            if name == "fetch_url":
+                url = args.get("url", "")
+                content = url_fetcher.fetch_url(url)
+                return {"_fetch_url": True, "url": url, "content": content}
+            return self._dispatch_tool(name, args)
+
+        with ThreadPoolExecutor(max_workers=min(len(prepared), 4)) as pool:
+            futures = {
+                pool.submit(_run_tool, tc_id, name, args, diverged): i
+                for i, (tc_id, name, args, diverged) in enumerate(prepared)
+            }
+            results_by_idx: dict = {}
+            for fut in as_completed(futures):
+                results_by_idx[futures[fut]] = fut.result()
+
+        for i, (tc_id, name, args, diverged) in enumerate(prepared):
+            result = results_by_idx[i]
+            if name == "web_search":
+                query = result.get("query", "")
+                web_results = result.get("results", [])
+                yield {"type": "search_done", "query": query, "count": len(web_results), "results": web_results}
+                yield {"type": "agent_step", "step": step + 1, "tool": "web_search", "status": "success" if web_results else "error"}
+                self.conversation_history.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "name": name,
+                    "content": SEARCH_RESULT_TEMPLATE.format(
+                        query=query,
+                        results_text=self.search_engine.format_tool_result(web_results)
+                    ),
+                })
+            elif name == "fetch_url":
+                url = result.get("url", "")
+                content = result.get("content", "")
+                if url.startswith(("http://", "https://")):
+                    yield {"type": "fetch_done", "url": url, "chars": len(content)}
+                    fetch_results.append({
+                        "url": url,
+                        "chars": len(content),
+                        "preview": content[:300].rstrip() + ("…" if len(content) > 300 else ""),
+                    })
+                yield {"type": "agent_step", "step": step + 1, "tool": "fetch_url", "status": "success"}
+                self.conversation_history.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "name": name,
+                    "content": content,
+                })
+            else:
+                _, label_done_fn = _tool_ui_labels(name, args)
+                observation = self._wrap_observation(name, result)
+                yield {"type": "tool_done", "tool": name, "label": label_done_fn(result)}
+                if diverged:
+                    yield {"type": "divergence_guard", "tool": name, "step": step + 1}
+                yield {"type": "agent_step", "step": step + 1, "tool": name, "status": observation["status"]}
+                self.conversation_history.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "name": name,
+                    "content": json.dumps(observation),
+                })
 
     def _call_llm(
         self,
