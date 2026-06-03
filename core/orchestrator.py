@@ -768,6 +768,34 @@ class ChatOrchestrator:
         self._task_done_summary = summary
         return {"done": True}
 
+    def _schedule_reminder(self, text: str, when: str) -> dict:
+        from . import db
+        import dateparser
+        from dateutil import parser as dateutil_parser
+        import datetime
+        if not text.strip():
+            return {"error": "Reminder text cannot be empty."}
+        if not when.strip():
+            return {"error": "Please specify when to deliver the reminder."}
+        dt = dateparser.parse(when, settings={"PREFER_DATES_FROM": "future", "RETURN_AS_TIMEZONE_AWARE": True})
+        if dt is None:
+            # Fall back to dateutil for ISO 8601 and absolute dates
+            try:
+                now = datetime.datetime.now().astimezone()
+                dt = dateutil_parser.parse(when, default=now, fuzzy=True)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=now.tzinfo)
+            except Exception:
+                return {"error": f"Could not parse '{when}' as a date/time. Try 'tomorrow at 9am', 'in 2 hours', or '2026-06-04T09:00'."}
+        scheduled_at = int(dt.timestamp())
+        reminder_id = db.add_reminder(text.strip(), scheduled_at)
+        return {
+            "id": reminder_id,
+            "text": text.strip(),
+            "scheduled_at": scheduled_at,
+            "scheduled_for": dt.strftime("%A, %B %-d at %-I:%M %p"),
+        }
+
     def _search_conversations(self, query: str, limit: int = 10) -> dict:
         from . import db
         if not query.strip():
@@ -804,6 +832,7 @@ class ChatOrchestrator:
             "github_merge_pr":      lambda a: github_tools.github_merge_pr(a["repo"], a["pr_number"], a.get("merge_method", "merge"), a.get("confirm", False)),
             "github_delete_file":   lambda a: github_tools.github_delete_file(a["repo"], a["path"], a["message"], a.get("branch", ""), a.get("confirm", False)),
             "github_delete_branch": lambda a: github_tools.github_delete_branch(a["repo"], a["branch"], a.get("confirm", False)),
+            "schedule_reminder":     lambda a: self._schedule_reminder(a.get("text", ""), a.get("when", "")),
             "search_conversations":  lambda a: self._search_conversations(a.get("query", ""), a.get("limit", 10)),
             "task_done":            lambda a: self._mark_task_done(a.get("summary", "Task complete.")),
         }

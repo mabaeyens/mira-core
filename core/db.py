@@ -79,6 +79,13 @@ def init_db() -> None:
                 text       TEXT    NOT NULL,
                 created_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS reminders (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                text         TEXT    NOT NULL,
+                scheduled_at INTEGER NOT NULL,
+                fired        INTEGER NOT NULL DEFAULT 0,
+                created_at   INTEGER NOT NULL
+            );
         """)
         # Migration: add project_id to existing conversations tables
         try:
@@ -329,5 +336,45 @@ def search_conversations(query: str, limit: int = 10) -> List[Dict]:
                 (f"%{query.strip()}%", limit),
             ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Reminders ─────────────────────────────────────────────────────────────────
+
+def add_reminder(text: str, scheduled_at: int) -> int:
+    now = int(time.time())
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO reminders (text, scheduled_at, fired, created_at) VALUES (?, ?, 0, ?)",
+            (text, scheduled_at, now),
+        )
+        return cur.lastrowid
+
+
+def get_pending_reminders() -> List[Dict]:
+    now = int(time.time())
+    rows = _conn().execute(
+        "SELECT id, text, scheduled_at, created_at FROM reminders"
+        " WHERE fired = 0 AND scheduled_at <= ? ORDER BY scheduled_at",
+        (now,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_reminders() -> List[Dict]:
+    rows = _conn().execute(
+        "SELECT id, text, scheduled_at, fired, created_at FROM reminders"
+        " WHERE fired = 0 ORDER BY scheduled_at"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_reminder_fired(reminder_id: int) -> None:
+    with _conn() as conn:
+        conn.execute("UPDATE reminders SET fired = 1 WHERE id = ?", (reminder_id,))
+
+
+def delete_reminder(reminder_id: int) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
 
 

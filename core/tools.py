@@ -492,6 +492,32 @@ GITHUB_DELETE_BRANCH_TOOL = {
     },
 }
 
+SCHEDULE_REMINDER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "schedule_reminder",
+        "description": (
+            "Schedule a reminder to be delivered as a macOS notification at a specified time. "
+            "Use this when the user asks to be reminded about something later. "
+            "Accepts natural language times ('tomorrow at 9am', 'in 2 hours') or ISO 8601."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "The reminder message to deliver.",
+                },
+                "when": {
+                    "type": "string",
+                    "description": "When to deliver the reminder. Natural language ('tomorrow at 9am', 'in 2 hours') or ISO 8601 datetime.",
+                },
+            },
+            "required": ["text", "when"],
+        },
+    },
+}
+
 SEARCH_CONVERSATIONS_TOOL = {
     "type": "function",
     "function": {
@@ -556,6 +582,7 @@ TOOLS = [
     GITHUB_SEARCH_CODE_TOOL, GITHUB_CREATE_PR_TOOL, GITHUB_MERGE_PR_TOOL,
     GITHUB_DELETE_FILE_TOOL, GITHUB_DELETE_BRANCH_TOOL,
     # Memory / search
+    SCHEDULE_REMINDER_TOOL,
     SEARCH_CONVERSATIONS_TOOL,
     # Agentic
     TASK_DONE_TOOL,

@@ -135,6 +135,8 @@ async def lifespan(app: FastAPI):
                 args=(BACKEND,),
                 daemon=True,
             ).start()
+            from core import scheduler as _scheduler
+            _scheduler.start()
 
     yield
 
@@ -558,6 +560,19 @@ async def add_memory(body: MemoryRequest):
 @app.delete("/memories/{memory_id}")
 async def delete_memory(memory_id: int):
     db.delete_memory(memory_id)
+    return {"status": "ok"}
+
+
+# ── Reminders endpoints ───────────────────────────────────────────────────────
+
+@app.get("/reminders")
+async def list_reminders():
+    return {"reminders": db.list_reminders()}
+
+
+@app.delete("/reminders/{reminder_id}")
+async def delete_reminder(reminder_id: int):
+    db.delete_reminder(reminder_id)
     return {"status": "ok"}
 
 
