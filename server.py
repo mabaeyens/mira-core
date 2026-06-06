@@ -354,6 +354,7 @@ async def chat(
                 project = db.get_project(conv["project_id"]) if conv.get("project_id") else None
                 orchestrator.load_conversation(conversation_id, project=project)
             else:
+                db.create_conversation(orchestrator.model, conv_id=conversation_id)
                 orchestrator.new_conversation(conversation_id)
 
     attachments = []

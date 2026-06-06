@@ -161,9 +161,9 @@ def touch_project(project_id: str) -> None:
 
 # ── Conversations ─────────────────────────────────────────────────────────────
 
-def create_conversation(model_name: str, project_id: Optional[str] = None) -> str:
+def create_conversation(model_name: str, project_id: Optional[str] = None, conv_id: Optional[str] = None) -> str:
     """Insert a new conversation row and evict old ones in a single transaction."""
-    conv_id = uuid.uuid4().hex
+    conv_id = conv_id or uuid.uuid4().hex
     now = int(time.time())
     with _conn() as conn:
         conn.execute(
