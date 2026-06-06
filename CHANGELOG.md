@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.1.0 — June 2026
+## v0.8.0 — June 2026
 
 First tagged release. Captures the backend overhaul from Ollama to mlx-lm and the dFlash
 speculative decoding work, plus a series of search, RAG, and reliability improvements.
