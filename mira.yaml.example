@@ -24,6 +24,12 @@ context_window: 65536
 # adaptive: enables thinking for complex/reasoning requests, skips for simple ones
 thinking_mode: adaptive
 
+# ── Search ───────────────────────────────────────────────────────────────────
+# Brave Search API key (optional). When set, Brave is used before DuckDuckGo.
+# Get a key at https://api.search.brave.com — Free tier: 2,000 queries/month.
+# Can also be set via the BRAVE_API_KEY environment variable.
+brave_api_key: "your-brave-search-api-key-here"
+
 # ── Performance Tips ─────────────────────────────────────────────────────────
 # For best performance with Ollama on MacBook Pro M5, add to ~/.zprofile:
 #   export OLLAMA_CONTEXT_LENGTH=65536
