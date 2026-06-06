@@ -37,8 +37,13 @@ def _dir_size_gb(path: Path) -> float:
         return 0.0
 
 
+# Keywords that identify non-chat utility models (rerankers, embedders).
+# These stay on disk but are hidden from the model selector.
+_NON_CHAT = {"reranker", "embed", "nomic"}
+
+
 def list_mlx_models() -> list[ModelEntry]:
-    """Scan the HuggingFace cache for mlx-community models."""
+    """Scan the HuggingFace cache for mlx-community chat models."""
     cache = _hf_cache_dir()
     if not cache.exists():
         return []
@@ -53,6 +58,8 @@ def list_mlx_models() -> list[ModelEntry]:
             continue
         # Reconstruct the repo id
         model_id = name[len("models--"):].replace("--", "/", 1)
+        if any(kw in model_id.lower() for kw in _NON_CHAT):
+            continue
         size_gb = _dir_size_gb(d / "blobs") if (d / "blobs").exists() else _dir_size_gb(d)
         entries.append(ModelEntry(
             model_id=model_id,
