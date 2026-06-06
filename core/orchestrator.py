@@ -22,7 +22,7 @@ from .config import (
     COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT,
     THINKING_MODE, MAX_THINKING_TOKENS, TEMP_WORKSPACE_MAX_MB,
 )
-from .tools import TOOLS, _LOCAL_TOOLS, _TEMP_WORKSPACE_TOOLS
+from .tools import TOOLS, GITHUB_TOOLS, _LOCAL_TOOLS, _TEMP_WORKSPACE_TOOLS
 from .prompts import build_system_prompt, current_datetime_str, SEARCH_RESULT_TEMPLATE
 from .search_engine import SearchEngine
 from .rag_engine import RagEngine
@@ -220,6 +220,7 @@ class ChatOrchestrator:
         self.project: Optional[Dict] = None
         self._temp_workspace: Optional[str] = None
         self._attachment_registry: Dict[str, Dict] = {}
+        self._github_tools_enabled: bool = False
         self._add_system_prompt()
 
     @property
@@ -229,11 +230,15 @@ class ChatOrchestrator:
     @property
     def _active_tools(self) -> List[Dict]:
         if self.workspace_root:
-            return TOOLS
-        if self._temp_workspace:
+            base = TOOLS
+        elif self._temp_workspace:
             excluded = _LOCAL_TOOLS - _TEMP_WORKSPACE_TOOLS
-            return [t for t in TOOLS if t["function"]["name"] not in excluded]
-        return [t for t in TOOLS if t["function"]["name"] not in _LOCAL_TOOLS]
+            base = [t for t in TOOLS if t["function"]["name"] not in excluded]
+        else:
+            base = [t for t in TOOLS if t["function"]["name"] not in _LOCAL_TOOLS]
+        if self._github_tools_enabled:
+            base = base + GITHUB_TOOLS
+        return base
 
     def _get_or_create_temp_workspace(self) -> str:
         if self._temp_workspace is None:
@@ -390,7 +395,8 @@ class ChatOrchestrator:
         self,
         user_message: str,
         attachments=None,
-        thinking_enabled: bool = True,
+        thinking_enabled: Optional[bool] = None,
+        github_tools_enabled: bool = False,
     ) -> Iterator[Dict]:
         """
         Process a user message and yield events for consumers (CLI, web).
@@ -398,6 +404,7 @@ class ChatOrchestrator:
         Event types: thinking, token, search_start/done, fetch_start/done/context,
         rag_indexing/done/context, stats, warning, done, error.
         """
+        self._github_tools_enabled = github_tools_enabled
         if attachments:
             for att in attachments:
                 if att.get("warning"):
@@ -411,12 +418,16 @@ class ChatOrchestrator:
                 self.conversation_history[0]["content"],
             )
 
-        # Adaptive thinking: heuristic decides, but client "force on" always wins
+        # Adaptive thinking: heuristic decides when client sends no preference;
+        # explicit True/False from the client is always respected as-is.
         if self.thinking_mode == "adaptive":
-            thinking_enabled = thinking_enabled or _should_think(user_message, has_attachments=bool(attachments))
+            if thinking_enabled is None:
+                thinking_enabled = _should_think(user_message, has_attachments=bool(attachments))
         elif self.thinking_mode == "always":
             thinking_enabled = True
         elif self.thinking_mode == "never":
+            thinking_enabled = False
+        if thinking_enabled is None:
             thinking_enabled = False
 
         rag_indexed_this_turn = False
@@ -1139,7 +1150,7 @@ class ChatOrchestrator:
             return self._normalize_oai_stream(
                 self._oai.chat.completions.create(
                     model=self.model,
-                    messages=messages,
+                    messages=_normalize_messages_for_oai(messages),
                     tools=tools or None,
                     stream=True,
                     stream_options={"include_usage": True},
@@ -1299,6 +1310,26 @@ def _normalize_messages_for_ollama(messages: List[Dict]) -> List[Dict]:
                 tc["function"] = fn
                 tcs.append(tc)
             msg["tool_calls"] = tcs
+        result.append(msg)
+    return result
+
+
+def _normalize_messages_for_oai(messages: List[Dict]) -> List[Dict]:
+    """Convert history messages to OpenAI-compat multimodal format.
+    User messages with an 'images' key are rewritten so that content becomes
+    a list of content parts: [{type:text,...}, {type:image_url,...}, ...]."""
+    result = []
+    for msg in messages:
+        if msg.get("role") == "user" and msg.get("images"):
+            msg = dict(msg)
+            images = msg.pop("images")
+            parts: List[Dict] = [{"type": "text", "text": msg["content"]}]
+            for b64 in images:
+                parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                })
+            msg["content"] = parts
         result.append(msg)
     return result
 

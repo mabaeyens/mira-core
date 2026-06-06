@@ -1,9 +1,10 @@
-"""Search engine module with Ollama native and DuckDuckGo fallback."""
+"""Search engine module with Ollama native, Brave, and DuckDuckGo fallback."""
 
 import logging
 import re
 from typing import List, Dict, Optional
-from .config import MAX_SEARCH_RESULTS, SEARCH_TIMEOUT, USE_NATIVE_SEARCH
+import httpx
+from .config import MAX_SEARCH_RESULTS, SEARCH_TIMEOUT, USE_NATIVE_SEARCH, BRAVE_API_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +25,14 @@ except ImportError:
 
 class SearchEngine:
     """Handles web search with fallback mechanisms."""
-    
+
     def __init__(self, use_native: bool = USE_NATIVE_SEARCH):
         self.use_native = use_native and OLLAMA_NATIVE_AVAILABLE
+        self.brave_key = BRAVE_API_KEY
         self.ddgs = DDGS() if DDGS_AVAILABLE else None
-        
-        if not self.use_native and not self.ddgs:
-            raise RuntimeError("No search engine available. Install ddgs.")
+
+        if not self.use_native and not self.brave_key and not self.ddgs:
+            raise RuntimeError("No search engine available. Install ddgs or set BRAVE_API_KEY.")
     
     def search(self, query: str, max_results: int = MAX_SEARCH_RESULTS) -> List[Dict]:
         """
@@ -54,6 +56,23 @@ class SearchEngine:
                     return self._format_ollama_results(results)
             except Exception as e:
                 logger.warning("Ollama native search failed: %s. Falling back to DuckDuckGo.", e)
+
+        # Try Brave Search if API key is configured
+        if self.brave_key:
+            try:
+                resp = httpx.get(
+                    "https://api.search.brave.com/res/v1/web/search",
+                    params={"q": query, "count": max_results},
+                    headers={"Accept": "application/json", "X-Subscription-Token": self.brave_key},
+                    timeout=SEARCH_TIMEOUT,
+                )
+                resp.raise_for_status()
+                results = self._format_brave_results(resp.json())
+                if results:
+                    logger.info("Found %d results via Brave Search", len(results))
+                    return results
+            except Exception as e:
+                logger.warning("Brave search failed: %s. Falling back to DuckDuckGo.", e)
 
         # Fallback to DuckDuckGo
         if self.ddgs:
@@ -82,6 +101,18 @@ class SearchEngine:
                 "title": r.get("title", "No title"),
                 "url": r.get("url", ""),
                 "snippet": self._clean_snippet(r.get("content", r.get("snippet", "")))
+            })
+        return formatted
+
+    @staticmethod
+    def _format_brave_results(data: dict) -> List[Dict]:
+        """Format Brave Search API results."""
+        formatted = []
+        for r in data.get("web", {}).get("results", []):
+            formatted.append({
+                "title": r.get("title", "No title"),
+                "url": r.get("url", ""),
+                "snippet": SearchEngine._clean_snippet(r.get("description", "")),
             })
         return formatted
 

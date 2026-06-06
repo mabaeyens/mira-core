@@ -1,14 +1,23 @@
 """File content extraction for PDFs, HTML, images, and plain text."""
 
 import base64
+import io
 import logging
 import re
 from pathlib import Path
 from typing import Dict, Optional
 
+from PIL import Image
+
 logger = logging.getLogger(__name__)
 
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}
+HEIC_EXTENSIONS = {'.heic', '.heif'}
+
+# Maximum longest dimension for images sent to the model.
+# Mobile camera photos (12–48 MP) are resized to stay under this limit.
+_IMAGE_MAX_PX = 1024
+_IMAGE_JPEG_QUALITY = 85
 TEXT_EXTENSIONS = {
     '.txt', '.md', '.py', '.js', '.ts', '.jsx', '.tsx', '.css', '.json',
     '.yaml', '.yml', '.toml', '.xml', '.csv', '.sh', '.bash', '.zsh',
@@ -62,6 +71,16 @@ def load_file_bytes(name: str, data: bytes) -> Dict:
         return _extract_pdf(name, data)
     elif ext in ('.html', '.htm'):
         return _extract_html(name, data.decode('utf-8', errors='replace'))
+    elif ext in HEIC_EXTENSIONS:
+        return {
+            "type": "text",
+            "name": name,
+            "content": "",
+            "warning": (
+                f"'{name}' is in HEIC/HEIF format, which is not supported. "
+                "Please share the image as JPEG or PNG instead."
+            ),
+        }
     elif ext in IMAGE_EXTENSIONS:
         return _make_image(name, data)
     else:
@@ -110,11 +129,27 @@ def load_file_bytes(name: str, data: bytes) -> Dict:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_image(name: str, data: bytes) -> Dict:
+    warning = None
+    try:
+        img = Image.open(io.BytesIO(data))
+        w, h = img.size
+        if max(w, h) > _IMAGE_MAX_PX:
+            scale = _IMAGE_MAX_PX / max(w, h)
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            buf = io.BytesIO()
+            fmt = "JPEG" if img.mode in ("RGB", "L") else "PNG"
+            if fmt == "JPEG" and img.mode != "RGB":
+                img = img.convert("RGB")
+            img.save(buf, format=fmt, quality=_IMAGE_JPEG_QUALITY)
+            data = buf.getvalue()
+            logger.debug("Resized image '%s' from %dx%d to %dx%d", name, w, h, img.width, img.height)
+    except Exception as e:
+        logger.warning("Could not resize image '%s': %s", name, e)
     return {
         "type": "image",
         "name": name,
         "content": base64.b64encode(data).decode('utf-8'),
-        "warning": None,
+        "warning": warning,
     }
 
 

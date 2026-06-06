@@ -1234,6 +1234,7 @@
 
   async function switchConversation(convId, updateList = true) {
     currentConvId = convId;
+    localStorage.setItem('mira_conv_id', convId);
     // Load message history from DB and render
     const resp = await fetch(`/conversations/${convId}/messages`);
     const data = await resp.json();
@@ -1430,8 +1431,9 @@
     verboseChk.checked      = s.verbose;
     updateStats(s.input_tokens || 0, s.output_tokens || 0, s.context_pct || 0);
     if (s.home_dir) folderCurPath = s.home_dir;
-    if (s.conv_id) {
-      currentConvId = s.conv_id;
+    const savedConvId = localStorage.getItem('mira_conv_id') || s.conv_id;
+    if (savedConvId) {
+      currentConvId = savedConvId;
       loadConvList();
     }
   }).catch(() => {});

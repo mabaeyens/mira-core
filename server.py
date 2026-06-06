@@ -333,7 +333,8 @@ async def chat(
     conversation_id: str = Form(default=""),
     files: List[UploadFile] = File(default=[]),
     paths: List[str] = Form(default=[]),
-    thinking_enabled: bool = Form(default=False),
+    thinking_enabled: Optional[bool] = Form(default=None),
+    github_tools_enabled: bool = Form(default=False),
     _: None = Depends(_ready),
 ):
     """SSE endpoint — streams typed events from stream_chat() to the browser."""
@@ -398,7 +399,7 @@ async def chat(
             thinking_content = None
 
             try:
-                for event in orchestrator.stream_chat(message, attachments=attachments or None, thinking_enabled=thinking_enabled):
+                for event in orchestrator.stream_chat(message, attachments=attachments or None, thinking_enabled=thinking_enabled, github_tools_enabled=github_tools_enabled):
                     if cancel_event.is_set():
                         break
                     if event.get("type") == "done":

@@ -47,6 +47,7 @@ UNPRODUCTIVE_TOOL_REPEAT_LIMITS: dict = {}  # no per-tool hard caps; soft limit 
 MAX_RETRIES = 3          # API-level error retries per model call
 USE_NATIVE_SEARCH = False  # DDGS chosen for privacy (see docs/architecture.md)
 SEARCH_TIMEOUT = 30
+BRAVE_API_KEY: str = _get("brave_api_key", os.getenv("BRAVE_API_KEY", ""))
 
 # ── Display ───────────────────────────────────────────────────────────────────
 VERBOSE_DEFAULT = False

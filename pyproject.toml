@@ -21,6 +21,8 @@ dependencies = [
     "openai>=2.37.0",
     "pyyaml>=6.0.3",
     "einops>=0.8.2",
+    "dateparser>=1.4.0",
+    "pillow>=10.0.0,<12.0.0",
 ]
 
 [dependency-groups]
