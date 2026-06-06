@@ -8,6 +8,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from core.config import DFLASH_DIAGNOSTICS, PREFILL_STEP_SIZE
+
 logger = logging.getLogger(__name__)
 
 MLX_LM_CLI = "/Users/miguel/.local/bin/mlx_lm.server"
@@ -82,7 +84,7 @@ def start_mlx_lm(model: str = MLX_LM_MODEL) -> None:
             "--chat-template-args", '{"enable_thinking": false}',
             "--prompt-cache-bytes", "3G",
             "--decode-concurrency", "1",
-            "--prefill-step-size", "512",
+            "--prefill-step-size", str(PREFILL_STEP_SIZE),
             "--trust-remote-code",
         ],
         stdout=subprocess.DEVNULL,
@@ -113,11 +115,13 @@ def start_dflash(model: str = DFLASH_MODEL) -> None:
         "--port", str(DFLASH_PORT),
         "--max-tokens", "16384",
         "--prefix-cache",
-        "--prefill-step-size", "512",
+        "--prefill-step-size", str(PREFILL_STEP_SIZE),
     ]
     # Qwen3 requires thinking mode disabled via chat template args
     if "Qwen3" in model or "qwen3" in model.lower():
         args += ["--chat-template-args", '{"enable_thinking": false}']
+    if DFLASH_DIAGNOSTICS != "off":
+        args += ["--diagnostics", DFLASH_DIAGNOSTICS]
     _dflash_proc = subprocess.Popen(
         args,
         stdout=subprocess.DEVNULL,

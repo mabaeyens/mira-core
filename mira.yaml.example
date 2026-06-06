@@ -30,6 +30,18 @@ thinking_mode: adaptive
 # Can also be set via the BRAVE_API_KEY environment variable.
 brave_api_key: "your-brave-search-api-key-here"
 
+# ── Inference tuning ─────────────────────────────────────────────────────────
+# prefill_step_size: tokens processed per prefill chunk (dflash + mlx-lm).
+# Larger values reduce API round-trip overhead for long prompts.
+# Valid powers of 2: 256 | 512 | 1024 | 2048 (2048 is experimental on 32GB RAM).
+prefill_step_size: 1024
+
+# dflash_diagnostics: write per-request structured logs to .artifacts/dflash/diagnostics/.
+# Enables measuring real draft acceptance rate and verify block distribution under load.
+# Values: off | basic (request/cache logs) | full (+memory waterfall). Default: off.
+# Clear .artifacts/dflash/diagnostics/ after each bench session to avoid accumulation.
+dflash_diagnostics: off
+
 # ── Performance Tips ─────────────────────────────────────────────────────────
 # For best performance with Ollama on MacBook Pro M5, add to ~/.zprofile:
 #   export OLLAMA_CONTEXT_LENGTH=65536

@@ -75,3 +75,5 @@ RAG_DIR = DB_PATH.parent / "chroma_db"
 MAX_CONVERSATIONS = 1000
 COMPRESS_THRESHOLD: int = _get("compress_threshold", 70)   # context_pct % at which summarize-and-compress fires
 COMPRESS_KEEP_RECENT: int = max(2, _get("compress_keep_recent", 6))  # number of recent messages kept verbatim (min 2)
+PREFILL_STEP_SIZE: int = _get("prefill_step_size", 1024)  # tokens per prefill chunk; must be power of 2 (256/512/1024/2048)
+DFLASH_DIAGNOSTICS: str = _get("dflash_diagnostics", "off")  # off | basic | full; basic=request/cache logs, full=+memory waterfall
