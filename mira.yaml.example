@@ -15,6 +15,12 @@ host: http://localhost:11434 # Ollama default port
 # ── Embedding model (for RAG) ─────────────────────────────────────────────────
 embed_model: nomic-ai/nomic-embed-text-v1.5   # HuggingFace model; downloaded once and cached locally
 
+# ── RAG reranker ──────────────────────────────────────────────────────────────
+# reranker_backend: qwen3 (default) uses Qwen3-Reranker-0.6B-4bit via mlx (~0.35 GB RAM,
+# scores 0–1). crossencoder uses ms-marco-MiniLM-L-6-v2 via sentence-transformers (CPU).
+reranker_backend: qwen3
+reranker_model: mlx-community/Qwen3-Reranker-0.6B-4bit
+
 # ── Context window ────────────────────────────────────────────────────────────
 # gemma4:26b: 65536 tokens (64K) - optimal for M5 with 32GB RAM
 # Qwen3.6-35B-A3B: 262144 tokens (256K) - requires >32GB RAM for best performance

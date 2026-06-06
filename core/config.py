@@ -57,6 +57,8 @@ ERROR_PREFIX = "❌ "
 
 # ── RAG ───────────────────────────────────────────────────────────────────────
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"   # downloaded on first use (~100 MB)
+RERANKER_BACKEND: str = _get("reranker_backend", "qwen3")   # qwen3 | crossencoder
+RERANKER_MODEL: str = _get("reranker_model", "mlx-community/Qwen3-Reranker-0.6B-4bit")
 RAG_CHUNK_SIZE = 400        # words per chunk
 RAG_CHUNK_OVERLAP = 40      # word overlap between adjacent chunks
 RAG_RETRIEVE_K = 10         # candidates retrieved before reranking
