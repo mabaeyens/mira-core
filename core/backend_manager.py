@@ -34,7 +34,7 @@ OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
 OMLX_PORT = 8080
 OMLX_HOST = f"http://localhost:{OMLX_PORT}"
 OMLX_MODEL = "Qwen3.6-35B-A3B"
-OMLX_CONTEXT = 262144
+OMLX_CONTEXT = 131072
 
 OLLAMA_HOST = "http://localhost:11434"
 OLLAMA_MODEL = "gemma4:26b"

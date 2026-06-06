@@ -3,14 +3,13 @@
 # All fields are optional; omit any to keep the built-in default.
 
 # ── LLM backend ──────────────────────────────────────────────────────────────
-# For MacBook Pro M5 with 32GB RAM:
-#   - Use Ollama backend (oMLX requires >32GB RAM for MLX backend)
-#   - gemma4:26b is ~11-23x faster than qwen3.6:latest on M5 hardware
-#   - qwen3.6:35b-a3b is available but much slower on this hardware
-backend: ollama              # ollama | omlx
-model: gemma4:26b          # Default for Ollama; oMLX model: Qwen3.6-35B-A3B
-                                # For Qwen3 on Ollama, use: qwen3.6:35b-a3b or qwen3.6:27b
-host: http://localhost:11434 # Ollama default port
+# Recommended: dflash (speculative decoding, 64K context, stable sessions)
+# Alternatives:
+#   - omlx: 4–10× faster first-token; OOM above ~18K KV on 32GB; restart between heavy sessions
+#   - ollama: fallback; gemma4:26b is fast but quality is lower than Qwen3.6
+backend: dflash              # dflash | omlx | ollama
+model: mlx-community/Qwen3.6-35B-A3B-4bit
+host: http://localhost:8080  # dflash and omlx default port
 
 # ── Embedding model (for RAG) ─────────────────────────────────────────────────
 embed_model: nomic-ai/nomic-embed-text-v1.5   # HuggingFace model; downloaded once and cached locally
