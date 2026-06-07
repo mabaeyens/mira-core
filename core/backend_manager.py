@@ -207,9 +207,13 @@ def is_backend_ready(backend: str) -> bool:
 
 
 def _warmup_model(model: str, host: str = MLX_LM_HOST) -> None:
+    from core.prompts import build_system_prompt
     payload = json.dumps({
         "model": model,
-        "messages": [{"role": "user", "content": "Hi"}],
+        "messages": [
+            {"role": "system", "content": build_system_prompt()},
+            {"role": "user", "content": "Hi"},
+        ],
         "max_tokens": 1,
         "stream": False,
     }).encode()
