@@ -26,6 +26,10 @@ BACKEND: str = _get("backend", "ollama")
 MODEL_NAME: str = _get("model", "gemma4:26b-mlx")
 OLLAMA_HOST: str = _get("host", os.getenv("OLLAMA_HOST", "http://localhost:11434"))
 
+# Named backend presets exposed via GET /backends and shown in the app model picker.
+# If empty (no `backends:` in mira.yaml), backend_manager falls back to its PRESETS dict.
+BACKENDS: list = _get("backends", [])
+
 # ── Embedding backend (for RAG) ───────────────────────────────────────────────
 EMBED_MODEL: str = _get("embed_model", "nomic-ai/nomic-embed-text-v1.5")
 

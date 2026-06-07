@@ -205,6 +205,13 @@ async def get_backend(_=Depends(_ready)):
     }
 
 
+@app.get("/backends")
+async def list_backends(_=Depends(_ready)):
+    """Return configured backend presets (from mira.yaml `backends:` list) with active flag."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _bm.get_backends, _rt["backend"], _rt["model"])
+
+
 @app.post("/backend")
 async def switch_backend(request: Request, _=Depends(_ready)):
     global _ollama_ready

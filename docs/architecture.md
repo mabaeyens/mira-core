@@ -113,6 +113,7 @@ This is transparent to clients — the next turn proceeds normally with a shorte
 | `GET` | `/info` | Model name, backend, host, context_window, hardware |
 | `GET` | `/backend` | Current backend/model/host/context_window |
 | `POST` | `/backend` | Switch inference backend (`{"backend": "ollama"}`); blocks until ready |
+| `GET` | `/backends` | Named backend presets from `mira.yaml` `backends:` list, with `active` flag; populates app model picker |
 | `GET` | `/rag/documents` | List indexed RAG documents |
 | `DELETE` | `/rag/documents/{name}` | Remove a RAG document |
 
@@ -126,7 +127,7 @@ The native clients (mira-apps) connect to this server over HTTP/HTTPS. Key integ
 - **Cancel:** iOS/macOS send `POST /cancel` then discard the stream; the server rolls back history.
 - **File uploads:** Sent as multipart form-data, same schema as the web UI.
 - **`title` and `compress` events** arrive after `done`; clients must keep the SSE connection open until the server closes it (signalled by the absence of further events, not by a sentinel).
-- **Model switcher:** toolbar label button opens `ModelPickerView` sheet. Tapping an inactive model shows a confirmation step (warns about 30–60 s pause), then calls `POST /backend`. `ChatViewModel.switchBackend(to:)` drives `switchStatusMessage` through timed stages ("Stopping…", "Starting…", "Loading weights…", "Almost ready…") which `ModelPickerView` displays during the switch.
+- **Model switcher:** toolbar label button opens `ModelPickerView` sheet. The picker fetches `GET /backends` on load — a list of named presets defined in `mira.yaml` — so adding a new model+backend combo requires only a server config edit, no app update. Tapping an inactive preset shows a confirmation step (warns about 30–60 s pause), then calls `POST /models/switch`. `ChatViewModel.switchModel(backend:modelId:)` drives `switchStatusMessage` through timed stages ("Stopping…", "Starting…", "Loading weights…", "Almost ready…") which `ModelPickerView` displays during the switch.
 - **Thinking toggle:** brain icon in `InputBar` toggles `thinkingEnabled`; passed as `thinking_enabled` form field to `POST /chat`. Works on both backends.
 
 See `mira-apps/OllamaSearch/Shared/Networking/` for client implementation.

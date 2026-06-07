@@ -11,6 +11,27 @@ backend: omlx                # omlx | dflash | ollama
 model: Qwen3.6-35B-A3B       # omlx model name (dflash: mlx-community/Qwen3.6-35B-A3B-4bit)
 host: http://localhost:8080  # omlx and dflash default port
 
+# ── Model picker presets ──────────────────────────────────────────────────────
+# Named backend+model combinations shown in the iOS/macOS model picker.
+# Edit freely — the app reads this list on every picker open (no app update needed).
+# Omit this section to fall back to the built-in preset list.
+backends:
+  - id: omlx-qwen3
+    label: "Qwen3.6 35B"
+    backend: omlx
+    model: Qwen3.6-35B-A3B
+    context_window: 131072
+  - id: dflash-qwen3
+    label: "Qwen3.6 35B (dFlash)"
+    backend: dflash
+    model: mlx-community/Qwen3.6-35B-A3B-4bit
+    context_window: 65536
+  - id: ollama-gemma4
+    label: "Gemma 4 26B"
+    backend: ollama
+    model: gemma4:26b
+    context_window: 65536
+
 # ── Embedding model (for RAG) ─────────────────────────────────────────────────
 embed_model: nomic-ai/nomic-embed-text-v1.5   # HuggingFace model; downloaded once and cached locally
 

@@ -380,6 +380,38 @@ def list_models() -> dict:
     return {"mlx_lm": mlx, "ollama": oll}
 
 
+def _default_backends() -> list:
+    """Generate a preset list from the hardcoded PRESETS dict (fallback when mira.yaml has no `backends:`)."""
+    label_map = {
+        "omlx": "Qwen3.6 35B (omlx)",
+        "dflash": "Qwen3.6 35B (dFlash)",
+        "mlx-lm": "Qwen3.6 35B (mlx-lm)",
+        "ollama": "Gemma 4 26B (ollama)",
+    }
+    return [
+        {
+            "id": k,
+            "label": label_map.get(k, v["model"].split("/")[-1]),
+            "backend": v["backend"],
+            "model": v["model"],
+            "context_window": v["context_window"],
+        }
+        for k, v in PRESETS.items()
+    ]
+
+
+def get_backends(active_backend: str, active_model: str) -> list:
+    """Return the configured preset list with an `active` flag on the matching entry."""
+    from core.config import BACKENDS
+    entries = BACKENDS if BACKENDS else _default_backends()
+    result = []
+    for p in entries:
+        entry = dict(p)
+        entry["active"] = (p["backend"] == active_backend and p["model"] == active_model)
+        result.append(entry)
+    return result
+
+
 def pull_mlx_model(model_id: str, progress_cb=None) -> None:
     """Download a model from HuggingFace into the local mlx cache.
 
