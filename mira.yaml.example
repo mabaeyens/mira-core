@@ -3,13 +3,13 @@
 # All fields are optional; omit any to keep the built-in default.
 
 # ── LLM backend ──────────────────────────────────────────────────────────────
-# Recommended: dflash (speculative decoding, 64K context, stable sessions)
+# Recommended: omlx (KV cache held in RAM → ~0ms TTFT after startup warm-up)
 # Alternatives:
-#   - omlx: 4–10× faster first-token; OOM above ~18K KV on 32GB; restart between heavy sessions
-#   - ollama: fallback; gemma4:26b is fast but quality is lower than Qwen3.6
-backend: dflash              # dflash | omlx | ollama
-model: mlx-community/Qwen3.6-35B-A3B-4bit
-host: http://localhost:8080  # dflash and omlx default port
+#   - dflash: higher throughput for long responses; SSD prefix cache (slower TTFT ~48s)
+#   - ollama: fallback; gemma4:26b-mlx is fast but quality is lower than Qwen3.6
+backend: omlx                # omlx | dflash | ollama
+model: Qwen3.6-35B-A3B       # omlx model name (dflash: mlx-community/Qwen3.6-35B-A3B-4bit)
+host: http://localhost:8080  # omlx and dflash default port
 
 # ── Embedding model (for RAG) ─────────────────────────────────────────────────
 embed_model: nomic-ai/nomic-embed-text-v1.5   # HuggingFace model; downloaded once and cached locally
@@ -35,16 +35,13 @@ thinking_mode: adaptive
 # Can also be set via the BRAVE_API_KEY environment variable.
 brave_api_key: "your-brave-search-api-key-here"
 
-# ── Inference tuning ─────────────────────────────────────────────────────────
-# prefill_step_size: tokens processed per prefill chunk (dflash + mlx-lm).
-# Larger values reduce API round-trip overhead for long prompts.
+# ── Inference tuning (dflash and mlx-lm only — ignored by omlx) ─────────────
+# prefill_step_size: tokens processed per prefill chunk.
 # Valid powers of 2: 256 | 512 | 1024 | 2048 (2048 is experimental on 32GB RAM).
 prefill_step_size: 1024
 
 # dflash_diagnostics: write per-request structured logs to .artifacts/dflash/diagnostics/.
-# Enables measuring real draft acceptance rate and verify block distribution under load.
 # Values: off | basic (request/cache logs) | full (+memory waterfall). Default: off.
-# Clear .artifacts/dflash/diagnostics/ after each bench session to avoid accumulation.
 dflash_diagnostics: off
 
 # ── Performance Tips ─────────────────────────────────────────────────────────

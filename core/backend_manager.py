@@ -206,7 +206,7 @@ def is_backend_ready(backend: str) -> bool:
         return False
 
 
-def _warmup_model(model: str, host: str = MLX_LM_HOST) -> None:
+def _warmup_model(model: str, host: str = MLX_LM_HOST, api_key: str = "") -> None:
     from core.prompts import build_system_prompt
     payload = json.dumps({
         "model": model,
@@ -217,10 +217,13 @@ def _warmup_model(model: str, host: str = MLX_LM_HOST) -> None:
         "max_tokens": 1,
         "stream": False,
     }).encode()
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(
         host + "/v1/chat/completions",
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:
@@ -251,10 +254,9 @@ def ensure_backend_running(backend: str) -> None:
         try:
             _omlx_request("/v1/models")
             logger.info("oMLX already running")
-            return
         except Exception:
-            pass
-        start_omlx()
+            start_omlx()
+        _warmup_model(OMLX_MODEL, host=OMLX_HOST, api_key=_omlx_api_key())
     else:
         try:
             urllib.request.urlopen(OLLAMA_HOST + "/api/version", timeout=2)

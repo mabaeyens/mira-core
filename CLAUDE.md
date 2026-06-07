@@ -5,7 +5,7 @@ FastAPI backend for Mira.
 ## Project Stack
 
 - **Framework:** FastAPI (Python 3.11+)
-- **LLM Engine:** mlx-lm (local inference, gemma-4-26b-a4b-it-4bit, 64k context)
+- **LLM Engine:** omlx (local inference, Qwen3.6-35B-A3B, 64k context; ~0ms TTFT after startup warm-up)
 - **Embeddings:** sentence-transformers (`nomic-ai/nomic-embed-text-v1.5`, local, 768 dims)
 - **Vector DB:** ChromaDB (ephemeral, for RAG)
 - **Server:** Port 8000 (HTTP) / 8443 (HTTPS)

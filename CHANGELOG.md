@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.9.0 — June 2026
+
+### Inference
+
+- **oMLX becomes the default backend** — replaces dFlash; KV cache held in RAM gives ~0ms
+  TTFT on every new conversation after a one-time 5.5s startup warm-up (vs ~48s with dFlash
+  SSD prefix cache restore). Benchmark: omlx 0.4.1 median TTFT 0ms vs ollama 0.30.6 MLX
+  at 90ms vs dFlash at ~48s; all measured with the full Mira system prompt (1 488 tokens).
+- **oMLX startup warm-up** — `ensure_backend_running` now seeds the system-prompt KV cache
+  at server start for omlx (same pattern as existing dFlash/mlx-lm warmup); `_warmup_model`
+  gains an `api_key` parameter for backends that require Bearer auth.
+- `mira.yaml` updated: `backend: omlx`, `model: Qwen3.6-35B-A3B`; `prefill_step_size`
+  retained (used when switching to dFlash/mlx-lm) with a note that it is ignored by omlx.
+
 ## v0.8.0 — June 2026
 
 First tagged release. Captures the backend overhaul from Ollama to mlx-lm and the dFlash

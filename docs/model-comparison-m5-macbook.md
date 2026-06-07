@@ -1,29 +1,31 @@
 # Model Comparison: MacBook Pro M5 (32GB RAM) Performance Guide
 
-## Current Verdict (2026-05-31)
+## Current Verdict (2026-06-07)
 
-**Winner: mlx-lm 0.31.3 + `mlx-community/Qwen3.6-35B-A3B-4bit`**
+**Winner: oMLX 0.4.1 + `Qwen3.6-35B-A3B`**
 
 | Metric | Value |
 |--------|-------|
-| Warm TTFT | 300–450ms |
-| Sustained t/s | ~52–55 t/s (mlx-lm) |
-| Memory | ~18GB (16GB weights + KV cache) |
+| TTFT (warm) | ~0ms (KV cache held in RAM after startup warm-up) |
+| TTFT (startup warm-up) | ~5.5s (one-time per server start) |
+| Sustained t/s | ~52–55 t/s |
+| Memory | ~20GB (weights + KV cache) |
 | Quality | 58.7% SWE-Bench; MLX Community leaderboard: 52.5% |
-| Thinking | Per-request via `chat_template_kwargs`; ≤14 ms overhead (warm) |
+| Thinking | Per-request via `extra_body={"enable_thinking": False/True}`; ≤14 ms overhead |
 
-**Why:** mlx-lm delivers 4–6× better wall time than Ollama on agentic tasks. Qwen3.6-35B is a 35B MoE model (only ~3B active params per token), giving 52–55 t/s at 300–450ms warm TTFT — faster TTFT than Gemma4 on mlx-lm and +38% SWE-Bench quality. Thinking is controlled per-request via `extra_body={"chat_template_kwargs": {"enable_thinking": True/False}}`; warm overhead is ≤14ms (negligible). `_warmup_model()` on startup eliminates the 29–34s model-switch cold start.
+**Why:** oMLX 0.4.1 holds the KV cache in RAM and achieves ~0ms TTFT on every new conversation after a one-time 5.5s startup warm-up. Benchmarked 2026-06-07 against the full Mira system prompt (1 488 tokens): omlx median 0ms vs ollama 0.30.6 MLX at 90ms vs dFlash at ~48s (SSD prefix-cache restore). Qwen3.6-35B-A3B is unchanged as the model — same quality, same throughput, dramatically better responsiveness.
 
 **Rejected alternatives:**
-- **Ollama inference** — 4–6× slower wall time on agentic tasks (as of 2026-05-30 bench)
-- **omlx 0.3.12** — no throughput advantage over mlx-lm on gemma4; 15–30× TTFT regression on qwen3.6; see `docs/omlx-ctl.md`
+- **dFlash** — demoted to fallback; SSD prefix-cache restore adds ~48s TTFT regardless of cache hit; best option for very large context sessions (>18K tokens) where omlx can OOM
+- **ollama 0.30.6 MLX** — 90ms median TTFT (good, but 10–20× slower than omlx); viable fallback
+- **omlx 0.3.12** — had 15–30× TTFT regression on qwen3.6; fixed in 0.4.1 (see `docs/omlx-ctl.md`)
 - **OptiQ mixed-precision (4-bit)** — 20–25% slower decode; not worth the quality gain on this hardware
-- **gemma-4-26b-a4b-it-4bit (mlx-lm)** — demoted to manual fallback; 42.3% SWE-Bench vs Qwen3's 58.7%; no adaptive thinking
+- **gemma-4-26b-a4b-it-4bit** — 42.3% SWE-Bench vs Qwen3's 58.7%; no adaptive thinking
 
 **Current `mira.yaml`:**
 ```yaml
-backend: mlx-lm
-model: mlx-community/Qwen3.6-35B-A3B-4bit
+backend: omlx
+model: Qwen3.6-35B-A3B
 host: http://localhost:8080
 context_window: 65536
 ```
@@ -350,6 +352,8 @@ For M5 MacBook: Q4_K_M is optimal for GGUF models; NVFP4 is the format used by Q
 | 2026-05-29 | `bench-results-2026-05-29.md` | omlx 0.3.12 viability test — no advantage over mlx-lm on gemma4; 15–30× TTFT regression on qwen3.6 |
 | 2026-05-30 | `bench-results-2026-05-30.md` | mlx-lm promoted to default — 4–6× wall time improvement over Ollama on agentic tasks; OptiQ and unsloth rejected |
 | 2026-05-31 | `/tmp/mira_benchmark_report_2026-05-31.md` | Latency matrix: Qwen3.6 on mlx-lm wins (307ms warm TTFT, ≤14ms thinking overhead); Ollama cache saves 4.6× on warm prefix; Qwen3 becomes default |
+| 2026-06-06 | `bench-compare-omlx-vs-dflash.md` | omlx 0.4.1 vs dFlash: omlx 4–10× faster TTFT (963ms–4.7s vs 5.4–29.6s); dFlash OOM-safe above 18K KV |
+| 2026-06-07 | *(inline bench)* | TTFT shootout: omlx 0.4.1 (0ms warm) vs ollama 0.30.6 MLX (90ms) vs dFlash (~48s); omlx becomes default |
 
 ---
 

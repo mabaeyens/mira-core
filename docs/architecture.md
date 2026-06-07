@@ -10,7 +10,7 @@ main.py (CLI)     server.py (FastAPI + SSE)
                  │
       core/orchestrator.py → ChatOrchestrator
             │  stream_chat(user_message, attachments=None, thinking_enabled=True) → yields events
-            ├── _call_llm() → openai.chat.completions.create() (mlx-lm or ollama, OpenAI-compatible)
+            ├── _call_llm() → openai.chat.completions.create() (omlx/dflash/mlx-lm, OpenAI-compatible; ollama via ollama client)
             ├── core/search_engine.py → SearchEngine → ddgs.text()
             └── core/rag_engine.py → RagEngine
                       ├── SentenceTransformer (nomic-ai/nomic-embed-text-v1.5, local, 768 dims)

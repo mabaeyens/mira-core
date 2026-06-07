@@ -2,7 +2,7 @@
 
 A local AI assistant with autonomous web search, file attachments (PDF/HTML/images/text), and RAG for large documents. Available as a CLI tool and a local web interface with streaming markdown responses.
 
-Runs on a local mlx-lm backend for inference — no cloud APIs, no API keys. RAG embeddings use `sentence-transformers` (`nomic-ai/nomic-embed-text-v1.5`) locally — no external services required.
+Runs on a local inference backend ([oMLX](https://omlx.ai)) — no cloud APIs, no API keys. RAG embeddings use `sentence-transformers` (`nomic-ai/nomic-embed-text-v1.5`) locally — no external services required.
 
 See [CHANGELOG.md](CHANGELOG.md) for recent changes.
 
@@ -13,16 +13,16 @@ See [CHANGELOG.md](CHANGELOG.md) for recent changes.
 - **Two interfaces**: Rich CLI and local web UI (FastAPI + SSE)
 - **File attachments**: PDFs (RAG), HTML, images (multimodal), text/code files — tested with books up to 34 MB
 - **RAG**: Large documents chunked, embedded, reranked with Qwen3-Reranker-0.6B-4bit (mlx, in-process) — retrieved automatically on every turn, with hallucination guard for meta-queries (summarize, translate)
-- **Adaptive thinking**: Qwen3.6-35B uses extended reasoning on complex questions; suppressed automatically for trivial queries — zero overhead on mlx-lm (≤14ms warm)
+- **Adaptive thinking**: Qwen3.6-35B uses extended reasoning on complex questions; suppressed automatically for trivial queries — zero overhead (≤14ms warm)
 - **Temp workspace**: Model can read and write files in a per-session temp directory when no project is open
 - **Private**: Runs entirely on your local machine — no cloud APIs, no telemetry
 
 ## Prerequisites
 
 - **Python 3.12+** and **uv**
-- **mlx-lm 0.31.3+**: `uv tool install mlx-lm` — inference engine (port 8080)
-- **Model**: `mlx-community/Qwen3.6-35B-A3B-4bit` (cached locally via mlx-lm on first run)
-mlx-lm is started automatically by the server (`backend_manager.py`). The `nomic-ai/nomic-embed-text-v1.5` embedding model is downloaded from HuggingFace on first use (cached locally thereafter).
+- **oMLX 0.4.1+**: install from [omlx.ai](https://omlx.ai) — inference engine (port 8080). Load `Qwen3.6-35B-A3B` in the oMLX model library before first run.
+- oMLX is started automatically by the server (`backend_manager.py`). The `nomic-ai/nomic-embed-text-v1.5` embedding model is downloaded from HuggingFace on first use (cached locally thereafter).
+- **Fallback**: `mlx-lm` (`uv tool install mlx-lm`) and `dflash` are still supported — set `backend: dflash` in `mira.yaml` to switch.
 
 ## Setup
 
@@ -48,7 +48,7 @@ python server.py
 
 For remote access (iPad via Tailscale), the server also listens on HTTPS port **8443** — configure `SSL_CERTFILE` / `SSL_KEYFILE` in the plist (see [macOS LaunchAgent](#macos-launchagent-optional)) and connect to `https://<mac-hostname>:8443`.
 
-mlx-lm is started and managed automatically by the server. See `docs/model-comparison-m5-macbook.md` for benchmarks and model alternatives.
+oMLX is started and managed automatically by the server. See `docs/model-comparison-m5-macbook.md` for benchmarks and model alternatives.
 
 ## macOS LaunchAgent (optional)
 
@@ -115,8 +115,8 @@ RAG documents persist in the session index across turns — no need to re-attach
 Copy `mira.yaml.example` to `mira.yaml` and edit. All fields are optional — omit any to keep the built-in default.
 
 ```yaml
-backend: mlx-lm
-model: mlx-community/Qwen3.6-35B-A3B-4bit
+backend: omlx
+model: Qwen3.6-35B-A3B
 host: http://localhost:8080
 
 embed_model: nomic-ai/nomic-embed-text-v1.5
@@ -126,8 +126,8 @@ context_window: 65536
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `backend` | `mlx-lm` | Inference backend (`mlx-lm` or `ollama`) |
-| `model` | `mlx-community/Qwen3.6-35B-A3B-4bit` | Model identifier |
+| `backend` | `omlx` | Inference backend (`omlx`, `dflash`, `mlx-lm`, or `ollama`) |
+| `model` | `Qwen3.6-35B-A3B` | Model identifier (omlx name; use `mlx-community/Qwen3.6-35B-A3B-4bit` for dflash/mlx-lm) |
 | `host` | `http://localhost:8080` | Backend host URL |
 | `embed_model` | `nomic-ai/nomic-embed-text-v1.5` | HuggingFace embedding model for RAG |
 | `context_window` | `65536` | Token context window |
