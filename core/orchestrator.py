@@ -1155,10 +1155,11 @@ class ChatOrchestrator:
             if self.backend == "dflash":
                 restart_dflash_if_dead(self.model)
             extra: dict = {}
-            if self.backend in ("mlx-lm", "dflash"):
-                # mlx_lm.server and dflash serve only honour thinking through the chat-template
-                # kwargs. A top-level `enable_thinking` is silently ignored, and Qwen3's template
-                # default is off — so thinking must be requested explicitly here, both ways.
+            if self.backend in ("mlx-lm", "dflash") and (
+                "Qwen3" in self.model or "qwen3" in self.model.lower()
+            ):
+                # Qwen3's chat template controls thinking via enable_thinking kwarg.
+                # Other models (gemma4, etc.) don't have this variable — skip it.
                 ckwargs: dict = {"enable_thinking": thinking_enabled}
                 if thinking_enabled and MAX_THINKING_TOKENS > 0:
                     ckwargs["thinking_budget"] = MAX_THINKING_TOKENS

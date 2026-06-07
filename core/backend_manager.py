@@ -81,7 +81,6 @@ def start_mlx_lm(model: str = MLX_LM_MODEL) -> None:
             "--host", "127.0.0.1",
             "--port", str(MLX_LM_PORT),
             "--max-tokens", "4096",
-            "--chat-template-args", '{"enable_thinking": false}',
             "--prompt-cache-bytes", "3G",
             "--decode-concurrency", "1",
             "--prefill-step-size", str(PREFILL_STEP_SIZE),
