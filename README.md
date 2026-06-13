@@ -6,12 +6,18 @@ Runs on a local inference backend ([oMLX](https://omlx.ai)) — no cloud APIs, n
 
 See [CHANGELOG.md](CHANGELOG.md) for recent changes.
 
+## Native apps
+
+Mira is also available as native **macOS + iOS apps** — see [askmira.es](https://askmira.es)
+for an overview and TestFlight access, or the
+[mira-apps](https://github.com/mabaeyens/mira-apps) repo for the SwiftUI source.
+
 ## Features
 
 - **Autonomous Search**: Model searches the web via Brave Search and fetches full page content when snippets aren't enough (Jina fallback for JS-rendered pages) — sources are shown as clickable links
 - **Streaming responses**: Tokens buffered and rendered as formatted markdown
 - **Two interfaces**: Rich CLI and local web UI (FastAPI + SSE)
-- **File attachments**: PDFs (RAG), HTML, images (multimodal), text/code files — tested with books up to 34 MB
+- **File attachments**: PDFs (RAG), HTML, images (multimodal vision), text/code files — attach a screenshot and ask about it; tested with books up to 34 MB
 - **RAG**: Large documents chunked, embedded, reranked with Qwen3-Reranker-0.6B-4bit (mlx, in-process) — retrieved automatically on every turn, with hallucination guard for meta-queries (summarize, translate)
 - **Adaptive thinking**: Qwen3.6-35B uses extended reasoning on complex questions; suppressed automatically for trivial queries — zero overhead (≤14ms warm)
 - **Conversation search**: Search past conversations by content — model can call `search_conversations()` or use the `/conversations/search` API endpoint
