@@ -43,8 +43,9 @@ Thumbs.db
 # Logs
 *.log
 
-# Conversation database (local data, not committed)
+# Conversation and local databases (not committed)
 conversations.db
+mira.db
 *.db-shm
 *.db-wal
 

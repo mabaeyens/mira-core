@@ -70,6 +70,12 @@ RAG_RERANK_TOP_K = 4        # chunks injected into context after reranking
 RAG_SCORE_THRESHOLD = 0.0   # CrossEncoder scores below this are dropped
 RAG_MAX_CHUNKS = 10_000     # warn user to unload documents above this total
 
+# ── CLI paths (local install locations; override in mira.yaml under paths:) ───
+_paths = _get("paths", {})
+MLX_LM_CLI: str = _paths.get("mlx_lm_cli", str(Path.home() / ".local" / "bin" / "mlx_lm.server"))
+DFLASH_CLI: str = _paths.get("dflash_cli", str(Path(__file__).parent.parent / ".venv" / "bin" / "dflash"))
+OMLX_CLI: str = _paths.get("omlx_cli", "/Applications/oMLX.app/Contents/MacOS/omlx-cli")
+
 # ── Workspace ─────────────────────────────────────────────────────────────────
 WORKSPACE_ROOT = os.getenv("WORKSPACE_ROOT", str(Path.home() / "workspace"))
 SHELL_TIMEOUT = 30  # seconds per shell command

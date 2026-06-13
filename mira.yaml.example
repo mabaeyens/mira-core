@@ -56,6 +56,16 @@ thinking_mode: adaptive
 # Can also be set via the BRAVE_API_KEY environment variable.
 brave_api_key: "your-brave-search-api-key-here"
 
+# ── CLI paths ─────────────────────────────────────────────────────────────────
+# Absolute paths to inference server binaries on your machine.
+# Run `which mlx_lm.server` / `which dflash` to find them.
+# omlx_cli is fixed at /Applications/oMLX.app/... for all macOS installs.
+# Omit any entry to use the built-in default.
+# paths:
+#   mlx_lm_cli: /path/to/mlx_lm.server       # e.g. ~/.local/bin/mlx_lm.server
+#   dflash_cli: /path/to/.venv/bin/dflash      # e.g. <project>/.venv/bin/dflash
+#   omlx_cli: /Applications/oMLX.app/Contents/MacOS/omlx-cli  # same for all macOS
+
 # ── Inference tuning (dflash and mlx-lm only — ignored by omlx) ─────────────
 # prefill_step_size: tokens processed per prefill chunk.
 # Valid powers of 2: 256 | 512 | 1024 | 2048 (2048 is experimental on 32GB RAM).

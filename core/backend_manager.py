@@ -8,17 +8,19 @@ import time
 import urllib.request
 from pathlib import Path
 
-from core.config import DFLASH_DIAGNOSTICS, PREFILL_STEP_SIZE
+from core.config import DFLASH_CLI as _DFLASH_CLI_PATH
+from core.config import DFLASH_DIAGNOSTICS, MLX_LM_CLI as _MLX_LM_CLI_PATH
+from core.config import OMLX_CLI as _OMLX_CLI_PATH, PREFILL_STEP_SIZE
 
 logger = logging.getLogger(__name__)
 
-MLX_LM_CLI = "/Users/miguel/.local/bin/mlx_lm.server"
+MLX_LM_CLI = _MLX_LM_CLI_PATH
 MLX_LM_PORT = 8080
 MLX_LM_HOST = f"http://localhost:{MLX_LM_PORT}"
 MLX_LM_MODEL = "mlx-community/Qwen3.6-35B-A3B-4bit"
 MLX_LM_CONTEXT = 65536
 
-DFLASH_CLI = "/Users/miguel/Documents/Projects/mira-core/.venv/bin/dflash"
+DFLASH_CLI = _DFLASH_CLI_PATH
 DFLASH_PORT = 8080
 DFLASH_HOST = f"http://localhost:{DFLASH_PORT}"
 DFLASH_MODEL = "mlx-community/Qwen3.6-35B-A3B-4bit"
@@ -30,7 +32,7 @@ DFLASH_DRAFT_MODELS = {
     "mlx-community/gemma-4-26b-a4b-it-4bit": "z-lab/gemma-4-26B-A4B-it-DFlash",
 }
 
-OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
+OMLX_CLI = _OMLX_CLI_PATH
 OMLX_PORT = 8080
 OMLX_HOST = f"http://localhost:{OMLX_PORT}"
 OMLX_MODEL = "Qwen3.6-35B-A3B"
