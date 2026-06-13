@@ -13,6 +13,21 @@
   gains an `api_key` parameter for backends that require Bearer auth.
 - `mira.yaml` updated: `backend: omlx`, `model: Qwen3.6-35B-A3B`; `prefill_step_size`
   retained (used when switching to dFlash/mlx-lm) with a note that it is ignored by omlx.
+- **Multimodal vision** — Qwen3.6-35B-A3B accepts image attachments (JPEG, PNG) via oMLX.
+  The orchestrator's `_normalize_messages_for_oai` already emits the correct `image_url`
+  content part for all OpenAI-compatible backends; no code change was required.
+
+### Backends and model picker
+
+- **Dynamic model picker presets** — `GET /backends` serves the `backends:` list from
+  `mira.yaml` to connected clients. Adding or changing a backend preset in `mira.yaml` is
+  reflected in the app picker on next server restart — no app update required.
+
+### Conversations
+
+- **Weekly briefing** — Mira generates a Monday briefing summarising conversations from the
+  past week, delivered as a new pinned conversation. Runs automatically on the first server
+  startup of each week.
 
 ## v0.8.1 — June 2026
 
