@@ -14,15 +14,41 @@ See [CHANGELOG.md](CHANGELOG.md) for recent changes.
 - **File attachments**: PDFs (RAG), HTML, images (multimodal), text/code files — tested with books up to 34 MB
 - **RAG**: Large documents chunked, embedded, reranked with Qwen3-Reranker-0.6B-4bit (mlx, in-process) — retrieved automatically on every turn, with hallucination guard for meta-queries (summarize, translate)
 - **Adaptive thinking**: Qwen3.6-35B uses extended reasoning on complex questions; suppressed automatically for trivial queries — zero overhead (≤14ms warm)
+- **Conversation search**: Search past conversations by content — model can call `search_conversations()` or use the `/conversations/search` API endpoint
+- **Scheduled reminders**: Set reminders in natural language; delivered via macOS Notification Center
 - **Temp workspace**: Model can read and write files in a per-session temp directory when no project is open
 - **Private**: Runs entirely on your local machine — no cloud APIs, no telemetry
 
 ## Prerequisites
 
-- **Python 3.12+** and **uv**
-- **oMLX 0.4.1+**: install from [omlx.ai](https://omlx.ai) — inference engine (port 8080). Load `Qwen3.6-35B-A3B` in the oMLX model library before first run.
-- oMLX is started automatically by the server (`backend_manager.py`). The `nomic-ai/nomic-embed-text-v1.5` embedding model is downloaded from HuggingFace on first use (cached locally thereafter).
-- **Fallback**: `mlx-lm` (`uv tool install mlx-lm`) and `dflash` are still supported — set `backend: dflash` in `mira.yaml` to switch.
+**Python and uv**
+
+```bash
+brew install uv   # or: curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Python 3.12+ is managed automatically by uv — no separate install needed.
+
+**oMLX** (primary inference backend, port 8080)
+
+Download from [github.com/jundot/omlx/releases](https://github.com/jundot/omlx/releases), drag to `/Applications`, and open it once to accept the permission prompts. In the oMLX model library, load `Qwen3.6-35B-A3B`. oMLX is started automatically by the Mira server on first request.
+
+**ollama** (optional — required only for Gemma4 26B via the model picker)
+
+```bash
+brew install ollama
+ollama pull gemma4:26b
+```
+
+Add to `~/.zprofile` for best performance:
+```bash
+export OLLAMA_CONTEXT_LENGTH=65536
+export OLLAMA_FLASH_ATTENTION=1
+```
+
+**mira.yaml**
+
+Copy `mira.yaml.example` to `mira.yaml`. If your oMLX or ollama binaries are not at the default paths, set them under the `paths:` section (see the example file for instructions).
 
 ## Setup
 
@@ -32,7 +58,7 @@ source .venv/bin/activate
 uv sync
 ```
 
-> On first use, the CrossEncoder reranker model (~100 MB) downloads automatically from HuggingFace and caches to `~/.cache/huggingface/`.
+> On first use, the `nomic-ai/nomic-embed-text-v1.5` embedding model and `Qwen3-Reranker-0.6B-4bit` reranker download automatically from HuggingFace and cache to `~/.cache/huggingface/`.
 
 ## Running
 

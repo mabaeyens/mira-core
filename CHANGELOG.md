@@ -14,6 +14,22 @@
 - `mira.yaml` updated: `backend: omlx`, `model: Qwen3.6-35B-A3B`; `prefill_step_size`
   retained (used when switching to dFlash/mlx-lm) with a note that it is ignored by omlx.
 
+## v0.8.1 — June 2026
+
+### Backends and configuration
+
+- **Dynamic model picker presets** — `GET /backends` serves the `backends:` list from `mira.yaml`
+  to the iOS/macOS model picker; add or change models without pushing an app update
+- **Hardcoded CLI paths removed** — `MLX_LM_CLI`, `DFLASH_CLI`, and `OMLX_CLI` moved from
+  `core/backend_manager.py` to `mira.yaml` under a `paths:` section (with cross-user defaults);
+  `mira.yaml.example` documents the new block; `mira.db` added to `.gitignore`
+
+### Reliability
+
+- **Structured output robustness** — `_llm_chat_sync` retries without `response_format` if the
+  backend rejects it; `generate_title` uses `re.search` to extract JSON from anywhere in the
+  response, handling models that wrap JSON in prose
+
 ## v0.8.0 — June 2026
 
 First tagged release. Captures the backend overhaul from Ollama to mlx-lm and the dFlash
