@@ -68,6 +68,7 @@ def _stream(
     model: str,
     messages: list[dict],
     max_tokens: int,
+    api_key: str = "none",
     timeout: float = 180.0,
 ) -> dict:
     payload = {
@@ -77,9 +78,10 @@ def _stream(
         "stream_options": {"include_usage": True},
         "max_tokens": max_tokens,
         "temperature": 0.0,
+        "think": False,  # suppress Qwen3 thinking on ollama; ignored by other backends
     }
     headers = {
-        "Authorization": "Bearer none",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
@@ -112,11 +114,14 @@ def _stream(
                     output_tokens = usage.get("completion_tokens", output_tokens)
                     prompt_tokens  = usage.get("prompt_tokens", prompt_tokens)
                 for choice in chunk.get("choices", []):
-                    content = (choice.get("delta") or {}).get("content") or ""
-                    if content:
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content") or ""
+                    reasoning = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                    text = content or reasoning  # reasoning as TTFT fallback for thinking models
+                    if text:
                         if ttft_ms is None:
                             ttft_ms = (time.perf_counter() - t_start) * 1000
-                        char_count += len(content)
+                        char_count += len(content)  # only count non-thinking output
 
     wall_ms = (time.perf_counter() - t_start) * 1000
 
@@ -133,7 +138,7 @@ def _stream(
 
 # ─── Cell runners ─────────────────────────────────────────────────────────────
 
-def _run_pp_cell(base_url: str, model: str, size: int, reps: int) -> dict | None:
+def _run_pp_cell(base_url: str, model: str, size: int, reps: int, api_key: str = "none") -> dict | None:
     prompt = _build_pp_prompt(size)
     messages = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -143,7 +148,7 @@ def _run_pp_cell(base_url: str, model: str, size: int, reps: int) -> dict | None
     for rep in range(reps):
         print(f"  pp{size} rep {rep + 1}/{reps} ...", end=" ", flush=True)
         try:
-            r = _stream(base_url, model, messages, max_tokens=16)
+            r = _stream(base_url, model, messages, max_tokens=16, api_key=api_key)
         except Exception as exc:
             print(f"ERROR: {exc}")
             return None
@@ -161,26 +166,30 @@ def _run_pp_cell(base_url: str, model: str, size: int, reps: int) -> dict | None
     }
 
 
-def _run_tg_cell(base_url: str, model: str, size: int, reps: int) -> dict | None:
+def _run_tg_cell(base_url: str, model: str, size: int, reps: int, api_key: str = "none") -> dict | None:
     messages, max_tokens = _build_tg_messages(size)
     results = []
     for rep in range(reps):
         print(f"  tg{size} rep {rep + 1}/{reps} ...", end=" ", flush=True)
         try:
-            r = _stream(base_url, model, messages, max_tokens=max_tokens)
+            r = _stream(base_url, model, messages, max_tokens=max_tokens, api_key=api_key)
         except Exception as exc:
             print(f"ERROR: {exc}")
             return None
         if r["ttft_ms"] is None:
             print("no TTFT — skipping")
             return None
-        gen_ms = r["wall_ms"] - r["ttft_ms"]
-        if gen_ms <= 0 or r["output_tokens"] == 0:
-            print("generation too short — skipping")
+        if r["output_tokens"] == 0:
+            print("no output tokens — skipping")
             return None
+        gen_ms = r["wall_ms"] - r["ttft_ms"]
+        # Batch-streaming backends (e.g. omlx) emit all tokens in a single SSE chunk,
+        # making gen_ms ≈ 0. Fall back to wall_ms so tg reflects real throughput.
+        if gen_ms < 50:
+            gen_ms = r["wall_ms"]
         tg = r["output_tokens"] / (gen_ms / 1000)
         results.append({"tg_tps": tg, "wall_ms": r["wall_ms"]})
-        print(f"{tg:.1f} t/s  ({r['output_tokens']} tokens, {r['wall_ms']} ms)")
+        print(f"{tg:.1f} t/s  ({r['output_tokens']} tokens, {r['wall_ms']} ms wall)")
     return {
         "tps_median": statistics.median(x["tg_tps"] for x in results),
         "ms_values":  [x["wall_ms"] for x in results],
@@ -189,21 +198,33 @@ def _run_tg_cell(base_url: str, model: str, size: int, reps: int) -> dict | None
 
 # ─── Table output ─────────────────────────────────────────────────────────────
 
-def _print_table(rows: list[dict], model: str, base_url: str) -> None:
-    backend_label = "omlx" if "8080" in base_url else base_url
+def _print_table(rows: list[dict], model: str, base_url: str, output: str | None = None) -> None:
+    if "8080" in base_url:
+        backend_label = "omlx"
+    elif "11434" in base_url:
+        backend_label = "ollama"
+    else:
+        backend_label = base_url
     header = f"| {'model':<28} | {'backend':<10} | {'test':<8} | {'t/s':>8} | {'avg ms':>8} | {'std ms':>7} |"
     sep    = f"|{'-'*30}|{'-'*12}|{'-'*10}|{'-'*10}|{'-'*10}|{'-'*9}|"
-    print()
-    print(header)
-    print(sep)
+    lines = [header, sep]
     for row in rows:
         avg_ms = statistics.mean(row["ms_values"])
         std_ms = statistics.stdev(row["ms_values"]) if len(row["ms_values"]) > 1 else 0.0
-        print(
+        lines.append(
             f"| {model:<28} | {backend_label:<10} | {row['test']:<8} "
             f"| {row['tps_median']:>8.1f} | {avg_ms:>8.0f} | {std_ms:>7.0f} |"
         )
     print()
+    for line in lines:
+        print(line)
+    print()
+    if output:
+        with open(output, "a") as f:
+            f.write("\n")
+            for line in lines:
+                f.write(line + "\n")
+            f.write("\n")
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -213,11 +234,27 @@ def main() -> None:
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--model",    default=DEFAULT_MODEL)
     parser.add_argument("--reps",     type=int, default=DEFAULT_REPS)
+    parser.add_argument("--api-key",  default=None,
+                        help="Bearer token. Auto-read from ~/.omlx/settings.json for port 8080.")
+    parser.add_argument("--output",   default=None,
+                        help="Append the markdown result table to this file.")
     args = parser.parse_args()
+
+    # Resolve API key: explicit > auto-detect omlx > "none"
+    api_key = args.api_key
+    if api_key is None and ":8080" in args.base_url:
+        try:
+            import pathlib
+            s = json.loads(pathlib.Path.home().joinpath(".omlx/settings.json").read_text())
+            api_key = s["auth"]["api_key"]
+        except Exception:
+            pass
+    api_key = api_key or "none"
 
     # Health check
     try:
-        httpx.get(f"{args.base_url}/v1/models", timeout=5).raise_for_status()
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key != "none" else {}
+        httpx.get(f"{args.base_url}/v1/models", headers=headers, timeout=5).raise_for_status()
     except Exception:
         print(f"ERROR: server not reachable at {args.base_url}")
         print("Start omlx first: omlx-cli serve <model-path>")
@@ -229,18 +266,18 @@ def main() -> None:
 
     for size in PP_SIZES:
         print(f"[pp{size}]")
-        result = _run_pp_cell(args.base_url, args.model, size, args.reps)
+        result = _run_pp_cell(args.base_url, args.model, size, args.reps, api_key=api_key)
         if result:
             rows.append({"test": f"pp{size}", **result})
 
     for size in TG_SIZES:
         print(f"[tg{size}]")
-        result = _run_tg_cell(args.base_url, args.model, size, args.reps)
+        result = _run_tg_cell(args.base_url, args.model, size, args.reps, api_key=api_key)
         if result:
             rows.append({"test": f"tg{size}", **result})
 
     if rows:
-        _print_table(rows, args.model, args.base_url)
+        _print_table(rows, args.model, args.base_url, output=args.output)
     else:
         print("No results collected.")
         sys.exit(1)
