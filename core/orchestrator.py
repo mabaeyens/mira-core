@@ -347,11 +347,16 @@ class ChatOrchestrator:
             )
             return (resp.message.content or "").strip()
         else:
-            resp = self._oai.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                **({"response_format": {"type": "json_object"}} if format else {}),
-            )
+            kwargs = {"response_format": {"type": "json_object"}} if format else {}
+            try:
+                resp = self._oai.chat.completions.create(
+                    model=self.model, messages=messages, **kwargs
+                )
+            except Exception:
+                # Backend doesn't support response_format — retry without it
+                resp = self._oai.chat.completions.create(
+                    model=self.model, messages=messages
+                )
             return _strip_think((resp.choices[0].message.content or "").strip())
 
     def generate_title(self, first_user_message: str) -> str:
@@ -364,9 +369,10 @@ class ChatOrchestrator:
                 )}],
                 format=_TITLE_SCHEMA,
             )
-            # Strip markdown fences some models wrap around JSON output
             stripped = re.sub(r"^```[a-z]*\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
-            return json.loads(stripped).get("title", raw)[:80]
+            match = re.search(r'\{.*\}', stripped, re.DOTALL)
+            data = json.loads(match.group(0) if match else stripped)
+            return data.get("title", raw)[:80]
         except Exception:
             return first_user_message[:60].strip()
 
