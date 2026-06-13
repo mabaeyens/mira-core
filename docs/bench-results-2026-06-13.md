@@ -72,4 +72,4 @@ omlx Qwen3.6 is the fastest on generation at **~55.7 t/s** (batch-streaming corr
 | tg512  (t/s)   | **55.7**      | 43.3         | 42.3            | 40.1           |
 | warm TTFT (ms) | ~514–1220     | ~514–1127    | **68–110**      | 144–157        |
 
-**Verdict:** omlx + Qwen3.6 remains the right default for Mira. It has the fastest token generation (~56 t/s) and ~0 ms TTFT for chat (KV prefix cache warms on startup, so prefill latency above doesn't apply to typical chat turns). omlx + Gemma4 offers no advantage over ollama on tg and is slower to prefill than ollama — the main reason to use it would be multimodal (image/audio) via omlx, if that becomes a priority.
+**Verdict:** omlx + Qwen3.6 remains the right default for Mira. It has the fastest token generation (~56 t/s), ~0 ms TTFT for chat (KV prefix cache warms on startup), and already handles multimodal (image attachments confirmed working). omlx + Gemma4 offers no measurable advantage: slower tg than Qwen3.6, slower prefill than ollama, and Qwen3.6 already covers the multimodal use case.
