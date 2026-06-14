@@ -7,7 +7,6 @@ import re
 import shutil
 import tempfile
 import threading
-import types
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict, Optional, Iterator
@@ -30,6 +29,9 @@ from .rag_engine import RagEngine
 from . import url_fetcher
 from . import tool_registry
 from .backend_manager import restart_dflash_if_dead
+from .thinking_stripper import ThinkingStripper
+from . import backend_client as bc
+from . import context_manager as ctxmgr
 
 logger = logging.getLogger(__name__)
 
@@ -100,23 +102,6 @@ _CODE_SIGNAL = re.compile(
     r"|\b\w+\.(swift|py|js|ts|kt|java|go|rs|rb|cpp|c|h|vue|tsx|jsx)\b",
     re.IGNORECASE,
 )
-# Gemma 4 thinking token boundaries (mlx-lm raw stream format)
-_GEMMA_THINK_OPEN = "<|channel>thought\n"
-_GEMMA_THINK_CLOSE = "<channel|>"
-
-
-def _partial_marker_tail(buf: str, *markers: str) -> int:
-    """Length of the longest suffix of ``buf`` that is a proper prefix of any
-    marker. Such a tail might be the start of a marker that spans into the next
-    stream chunk, so it must be held back rather than emitted. Returns 0 when no
-    suffix could begin a marker."""
-    best = 0
-    for marker in markers:
-        for n in range(min(len(buf), len(marker) - 1), 0, -1):
-            if buf[-n:] == marker[:n]:
-                best = max(best, n)
-                break
-    return best
 
 # Short acknowledgements that are never complex regardless of other signals.
 _TRIVIAL = re.compile(
@@ -339,7 +324,7 @@ class ChatOrchestrator:
         if self.backend == "ollama":
             resp = self._ollama.chat(
                 model=self.model,
-                messages=_normalize_messages_for_ollama(messages),
+                messages=bc.normalize_messages_for_ollama(messages),
                 stream=False,
                 **({"format": format} if format else {}),
             )
@@ -355,7 +340,7 @@ class ChatOrchestrator:
                 resp = self._oai.chat.completions.create(
                     model=self.model, messages=messages
                 )
-            return _strip_think((resp.choices[0].message.content or "").strip())
+            return bc.strip_think((resp.choices[0].message.content or "").strip())
 
     def generate_title(self, first_user_message: str) -> str:
         try:
@@ -375,26 +360,13 @@ class ChatOrchestrator:
             return first_user_message[:60].strip()
 
     def compress_history(self) -> Optional[str]:
-        non_system = [m for m in self.conversation_history if m["role"] != "system"]
-        if len(non_system) <= COMPRESS_KEEP_RECENT:
+        plan = ctxmgr.plan_compression(self.conversation_history, COMPRESS_KEEP_RECENT)
+        if plan is None:
             return None
+        to_compress, to_keep = plan
 
-        to_compress = non_system[:-COMPRESS_KEEP_RECENT]
-        to_keep = non_system[-COMPRESS_KEEP_RECENT:]
-
-        excerpt = "\n".join(
-            f"{m['role'].upper()}: {str(m.get('content', ''))[:2000]}"
-            for m in to_compress
-        )
         try:
-            summary = self._llm_chat_sync([{
-                "role": "user",
-                "content": (
-                    "Summarize this conversation excerpt in a concise paragraph. "
-                    "Preserve key facts, decisions, URLs found, and files discussed. "
-                    "Be specific:\n\n" + excerpt
-                ),
-            }])
+            summary = self._llm_chat_sync(ctxmgr.build_summary_prompt(to_compress))
         except Exception as e:
             logger.warning("Compression LLM call failed: %s", e)
             return None
@@ -402,12 +374,9 @@ class ChatOrchestrator:
         if not summary:
             return None
 
-        system_msgs = [m for m in self.conversation_history if m["role"] == "system"]
-        self.conversation_history = system_msgs + [
-            {"role": "user",      "content": f"[Earlier conversation summary]\n{summary}"},
-            {"role": "assistant", "content": "Understood, I have the context."},
-        ] + to_keep
-
+        self.conversation_history = ctxmgr.rebuild_history(
+            self.conversation_history, summary, to_keep
+        )
         logger.info("Compressed %d messages into summary", len(to_compress))
         return summary
 
@@ -591,7 +560,7 @@ class ChatOrchestrator:
                     if forced:
                         self._mark_task_done(forced)
                         if _thinking_chars:
-                            self.total_output_tokens += round(_thinking_chars / 3.5)
+                            self.total_output_tokens += ctxmgr.thinking_tokens(_thinking_chars)
                         yield {
                             "type": "stats",
                             "input_tokens": self.total_input_tokens,
@@ -658,7 +627,7 @@ class ChatOrchestrator:
                 # Convert accumulated thinking chars to approximate tokens (~3.5 chars/tok)
                 # and fold into total_output_tokens so the display reflects actual compute.
                 if _thinking_chars:
-                    self.total_output_tokens += round(_thinking_chars / 3.5)
+                    self.total_output_tokens += ctxmgr.thinking_tokens(_thinking_chars)
                 yield {
                     "type": "stats",
                     "input_tokens": self.total_input_tokens,
@@ -669,7 +638,7 @@ class ChatOrchestrator:
                 return
 
             # Model requested tool call(s) — normalize history append
-            self.conversation_history.append(_message_to_history_dict(final_message))
+            self.conversation_history.append(bc.message_to_history_dict(final_message))
 
             # Prepare: resolve tc_id, divergence for each call in the batch
             prepared = []
@@ -719,7 +688,7 @@ class ChatOrchestrator:
                 task_done_args = next(args for _, name, args, _ in prepared if name == "task_done")
                 self._mark_task_done(task_done_args.get("summary", "Task complete."))
                 if _thinking_chars:
-                    self.total_output_tokens += round(_thinking_chars / 3.5)
+                    self.total_output_tokens += ctxmgr.thinking_tokens(_thinking_chars)
                 yield {
                     "type": "stats",
                     "input_tokens": self.total_input_tokens,
@@ -803,10 +772,7 @@ class ChatOrchestrator:
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 accumulated_tool_calls = None
-                think_buf = ""
-                in_thinking = False
-                gemma_buf = ""
-                in_gemma_thinking = False
+                stripper = ThinkingStripper()
 
                 for chunk in self._call_llm(
                     self.conversation_history,
@@ -824,75 +790,10 @@ class ChatOrchestrator:
 
                     raw_token = chunk.message.content or ""
                     if raw_token:
-                        think_buf += raw_token
-                        # Pass 1 — strip Qwen3 <think>...</think> blocks.
-                        while think_buf:
-                            if in_thinking:
-                                close = think_buf.find("</think>")
-                                if close == -1:
-                                    hold = _partial_marker_tail(think_buf, "</think>")
-                                    emit = think_buf[:len(think_buf) - hold] if hold else think_buf
-                                    if emit:
-                                        thinking_chars += len(emit)
-                                        yield {"type": "thinking", "content": emit}
-                                    think_buf = think_buf[len(think_buf) - hold:] if hold else ""
-                                    break
-                                thinking_fragment = think_buf[:close]
-                                if thinking_fragment:
-                                    thinking_chars += len(thinking_fragment)
-                                    yield {"type": "thinking", "content": thinking_fragment}
-                                in_thinking = False
-                                think_buf = think_buf[close + len("</think>"):]
-                            else:
-                                open_tag = think_buf.find("<think>")
-                                if open_tag == -1:
-                                    hold = _partial_marker_tail(think_buf, "<think>")
-                                    gemma_buf += think_buf[:len(think_buf) - hold] if hold else think_buf
-                                    think_buf = think_buf[len(think_buf) - hold:] if hold else ""
-                                    break
-                                if open_tag > 0:
-                                    gemma_buf += think_buf[:open_tag]
-                                    think_buf = think_buf[open_tag:]
-                                else:
-                                    in_thinking = True
-                                    think_buf = think_buf[len("<think>"):]
-
-                        # Pass 2 — strip Gemma 4 <|channel>thought\n...<channel|> blocks.
-                        while gemma_buf:
-                            if in_gemma_thinking:
-                                close = gemma_buf.find(_GEMMA_THINK_CLOSE)
-                                if close == -1:
-                                    hold = _partial_marker_tail(gemma_buf, _GEMMA_THINK_CLOSE)
-                                    emit = gemma_buf[:len(gemma_buf) - hold] if hold else gemma_buf
-                                    if emit:
-                                        thinking_chars += len(emit)
-                                        yield {"type": "thinking", "content": emit}
-                                    gemma_buf = gemma_buf[len(gemma_buf) - hold:] if hold else ""
-                                    break
-                                thinking_fragment = gemma_buf[:close]
-                                if thinking_fragment:
-                                    thinking_chars += len(thinking_fragment)
-                                    yield {"type": "thinking", "content": thinking_fragment}
-                                in_gemma_thinking = False
-                                gemma_buf = gemma_buf[close + len(_GEMMA_THINK_CLOSE):]
-                            else:
-                                open_tag = gemma_buf.find(_GEMMA_THINK_OPEN)
-                                if open_tag == -1:
-                                    hold = _partial_marker_tail(gemma_buf, _GEMMA_THINK_OPEN)
-                                    emit = gemma_buf[:len(gemma_buf) - hold] if hold else gemma_buf
-                                    if emit:
-                                        yield {"type": "token", "content": emit}
-                                        full_content += emit
-                                    gemma_buf = gemma_buf[len(gemma_buf) - hold:] if hold else ""
-                                    break
-                                if open_tag > 0:
-                                    regular = gemma_buf[:open_tag]
-                                    yield {"type": "token", "content": regular}
-                                    full_content += regular
-                                    gemma_buf = gemma_buf[open_tag:]
-                                else:
-                                    in_gemma_thinking = True
-                                    gemma_buf = gemma_buf[len(_GEMMA_THINK_OPEN):]
+                        # ThinkingStripper runs the dual-pass <think>/Gemma-channel
+                        # state machine and yields {"thinking"|"token"} events.
+                        yield from stripper.feed(raw_token)
+                        full_content = stripper.full_content
 
                     if chunk.done:
                         final_message = chunk.message
@@ -913,21 +814,9 @@ class ChatOrchestrator:
                             self.total_output_tokens += e
 
                 # Drain remaining buffered content.
-                if think_buf:
-                    if in_thinking:
-                        thinking_chars += len(think_buf)
-                        yield {"type": "thinking", "content": think_buf}
-                    else:
-                        gemma_buf += think_buf
-                    think_buf = ""
-                if gemma_buf:
-                    if in_gemma_thinking:
-                        thinking_chars += len(gemma_buf)
-                        yield {"type": "thinking", "content": gemma_buf}
-                    else:
-                        yield {"type": "token", "content": gemma_buf}
-                        full_content += gemma_buf
-                    gemma_buf = ""
+                yield from stripper.drain()
+                full_content = stripper.full_content
+                thinking_chars += stripper.thinking_chars
                 break
             except Exception as e:
                 if full_content:
@@ -1043,11 +932,11 @@ class ChatOrchestrator:
     ):
         """Call the configured LLM backend with streaming. Mockable in tests."""
         if self.backend == "ollama":
-            msgs = _normalize_messages_for_ollama(messages)
+            msgs = bc.normalize_messages_for_ollama(messages)
             if not thinking_enabled:
                 # Belt-and-suspenders: Qwen3 respects /no_think in the system prompt
                 # independently of the `think` API parameter (Ollama version-agnostic).
-                msgs = _inject_no_think(msgs)
+                msgs = bc.inject_no_think(msgs)
             return self._ollama.chat(
                 model=self.model, messages=msgs,
                 tools=tools, stream=True, think=thinking_enabled,
@@ -1067,102 +956,16 @@ class ChatOrchestrator:
                 extra["extra_body"] = {"chat_template_kwargs": ckwargs}
             elif not thinking_enabled:
                 extra["extra_body"] = {"enable_thinking": False}
-            return self._normalize_oai_stream(
+            return bc.normalize_oai_stream(
                 self._oai.chat.completions.create(
                     model=self.model,
-                    messages=_normalize_messages_for_oai(messages),
+                    messages=bc.normalize_messages_for_oai(messages),
                     tools=tools or None,
                     stream=True,
                     stream_options={"include_usage": True},
                     **extra,
                 )
             )
-
-    def _normalize_oai_stream(self, stream):
-        """Yield Ollama-compatible chunk objects from an OpenAI-compatible stream."""
-        acc_args: dict[int, str] = {}
-        acc_calls: dict[int, dict] = {}
-        last_usage = None
-        pending_done: object = None
-
-        for chunk in stream:
-            if hasattr(chunk, 'usage') and chunk.usage:
-                last_usage = chunk.usage
-
-            if not chunk.choices:
-                if pending_done is not None:
-                    if last_usage:
-                        pending_done.prompt_eval_count = getattr(last_usage, 'prompt_tokens', 0) or 0
-                        pending_done.eval_count = getattr(last_usage, 'completion_tokens', 0) or 0
-                    yield pending_done
-                    pending_done = None
-                continue
-
-            choice = chunk.choices[0]
-            delta = choice.delta
-            finish_reason = choice.finish_reason
-
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index
-                    if idx not in acc_calls:
-                        acc_calls[idx] = {"id": tc.id or f"call_{idx}", "name": ""}
-                        acc_args[idx] = ""
-                    if tc.function:
-                        if tc.function.name:
-                            acc_calls[idx]["name"] += tc.function.name
-                        if tc.function.arguments:
-                            acc_args[idx] += tc.function.arguments
-
-            content = delta.content or ""
-            # mlx_lm.server and dflash serve stream chain-of-thought in a separate field on
-            # the delta. The field name may be `reasoning` or `reasoning_content` depending
-            # on the server version. The OpenAI SDK keeps non-standard fields on model_extra
-            # and also exposes them as attributes — read both to be robust.
-            _extra = getattr(delta, "model_extra", None) or {}
-            reasoning = getattr(delta, "reasoning", None) \
-                or _extra.get("reasoning") \
-                or _extra.get("reasoning_content") \
-                or ""
-            is_done = finish_reason is not None
-
-            msg = types.SimpleNamespace(content=content, tool_calls=None, thinking=reasoning)
-            fake = types.SimpleNamespace(
-                message=msg, done=is_done, prompt_eval_count=0, eval_count=0
-            )
-
-            if is_done and acc_calls:
-                tool_calls = []
-                for idx in sorted(acc_calls.keys()):
-                    try:
-                        args_dict = json.loads(acc_args[idx] or "{}")
-                    except json.JSONDecodeError:
-                        args_dict = {}
-                    fn = types.SimpleNamespace(
-                        name=acc_calls[idx]["name"],
-                        arguments=args_dict,
-                    )
-                    tool_calls.append(types.SimpleNamespace(
-                        id=acc_calls[idx]["id"],
-                        function=fn,
-                    ))
-                msg.tool_calls = tool_calls
-
-            if is_done:
-                if last_usage:
-                    fake.prompt_eval_count = getattr(last_usage, 'prompt_tokens', 0) or 0
-                    fake.eval_count = getattr(last_usage, 'completion_tokens', 0) or 0
-                    yield fake
-                else:
-                    pending_done = fake
-            else:
-                yield fake
-
-        if pending_done is not None:
-            if last_usage:
-                pending_done.prompt_eval_count = getattr(last_usage, 'prompt_tokens', 0) or 0
-                pending_done.eval_count = getattr(last_usage, 'completion_tokens', 0) or 0
-            yield pending_done
 
     # ── Utilities ─────────────────────────────────────────────────────────────
 
@@ -1173,9 +976,7 @@ class ChatOrchestrator:
 
     @property
     def context_pct(self) -> int:
-        if not self.context_window or self.last_prompt_tokens == 0:
-            return 0
-        return min(100, round(self.last_prompt_tokens / self.context_window * 100))
+        return ctxmgr.context_pct(self.last_prompt_tokens, self.context_window)
 
     def reset_conversation(self):
         self._cleanup_temp_workspace()
@@ -1190,87 +991,3 @@ class ChatOrchestrator:
         self._add_system_prompt()
         self.rag_engine.load_project(self.project["id"] if self.project else None)
         logger.info("Conversation reset.")
-
-
-# ── Module-level helpers ─────────────────────────────────────────────────────
-
-def _inject_no_think(messages: List[Dict]) -> List[Dict]:
-    """Prepend /no_think to the system message so Qwen3 skips chain-of-thought
-    regardless of Ollama version. Safe to call on any message list."""
-    result = list(messages)
-    if result and result[0].get("role") == "system":
-        content = result[0].get("content", "")
-        if not content.startswith("/no_think"):
-            result[0] = {**result[0], "content": "/no_think\n" + content}
-    return result
-
-
-def _strip_think(text: str) -> str:
-    """Remove <think>...</think> blocks from a string."""
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-
-
-def _normalize_messages_for_ollama(messages: List[Dict]) -> List[Dict]:
-    """Ollama's Pydantic Message model requires tool_calls[].function.arguments as dict.
-    History stores them as JSON strings (OpenAI wire format). Parse them back."""
-    result = []
-    for msg in messages:
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            msg = dict(msg)
-            tcs = []
-            for tc in msg["tool_calls"]:
-                tc = dict(tc)
-                fn = dict(tc.get("function", {}))
-                args = fn.get("arguments")
-                if isinstance(args, str):
-                    try:
-                        fn["arguments"] = json.loads(args)
-                    except json.JSONDecodeError:
-                        fn["arguments"] = {}
-                tc["function"] = fn
-                tcs.append(tc)
-            msg["tool_calls"] = tcs
-        result.append(msg)
-    return result
-
-
-def _normalize_messages_for_oai(messages: List[Dict]) -> List[Dict]:
-    """Convert history messages to OpenAI-compat multimodal format.
-    User messages with an 'images' key are rewritten so that content becomes
-    a list of content parts: [{type:text,...}, {type:image_url,...}, ...]."""
-    result = []
-    for msg in messages:
-        if msg.get("role") == "user" and msg.get("images"):
-            msg = dict(msg)
-            images = msg.pop("images")
-            parts: List[Dict] = [{"type": "text", "text": msg["content"]}]
-            for b64 in images:
-                parts.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-                })
-            msg["content"] = parts
-        result.append(msg)
-    return result
-
-
-def _message_to_history_dict(msg) -> dict:
-    """Convert an Ollama Message object or SimpleNamespace to a history-compatible dict."""
-    if isinstance(msg, dict):
-        return msg
-
-    d: dict = {"role": "assistant", "content": msg.content or ""}
-    if msg.tool_calls:
-        d["tool_calls"] = []
-        for i, tc in enumerate(msg.tool_calls):
-            args = tc.function.arguments
-            if isinstance(args, dict):
-                args_str = json.dumps(args)
-            else:
-                args_str = str(args)
-            d["tool_calls"].append({
-                "id": getattr(tc, 'id', None) or f"call_{i}",
-                "type": "function",
-                "function": {"name": tc.function.name, "arguments": args_str},
-            })
-    return d
