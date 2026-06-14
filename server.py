@@ -28,6 +28,7 @@ import core.db as db
 import core.file_handler as file_handler
 from core.config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT, MODEL_NAME, BACKEND, OLLAMA_HOST, CONTEXT_WINDOW, AUTH_TOKEN
 from core.orchestrator import ChatOrchestrator
+from core.session_manager import SessionManager
 from core import backend_manager as _bm
 
 logging.basicConfig(
@@ -36,8 +37,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-orchestrator: ChatOrchestrator = None
-_orch_lock: asyncio.Lock = None
+# Per-conversation orchestrator pool. Replaces the old single global orchestrator so
+# concurrent turns on different conversations no longer share mutable state; turns on
+# the same conversation serialize through a per-conversation lock (see SessionManager).
+sessions: SessionManager = None
 _init_lock: asyncio.Lock = asyncio.Lock()
 # request_id -> (conversation_id, cancel_event). The conv_id lets /cancel target a
 # single conversation so one device's cancel never aborts another device's turn.
@@ -88,11 +91,10 @@ _rt: Dict = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global orchestrator, _orch_lock, _initialized, _ollama_ready
+    global sessions, _initialized, _ollama_ready
     async with _init_lock:
         if not _initialized:
             _initialized = True
-            _orch_lock = asyncio.Lock()
             db.init_db()
             
             # Verify configured model is installed; warn clearly if not.
@@ -118,15 +120,11 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     logger.warning(f"Could not check Ollama models: {e}")
 
-            orchestrator = ChatOrchestrator(verbose=VERBOSE_DEFAULT)
-            convs = db.list_conversations()
-            if convs:
-                project = db.get_project(convs[0]["project_id"]) if convs[0].get("project_id") else None
-                orchestrator.load_conversation(convs[0]["id"], project=project)
-            else:
-                conv_id = db.create_conversation(orchestrator.model)
-                orchestrator.new_conversation(conv_id)
-            logger.info(f"Initialized orchestrator — backend: {BACKEND}, model: {orchestrator.model}, conv: {orchestrator.conv_id}")
+            # Per-conversation orchestrators are created lazily on first use (no
+            # conversation is preloaded). Heavy RAG models are process-wide shared,
+            # so each session is cheap.
+            sessions = SessionManager(verbose=VERBOSE_DEFAULT)
+            logger.info(f"Initialized session pool — backend: {BACKEND}, model: {MODEL_NAME}")
             if BACKEND != "ollama":
                 logger.info(f"{BACKEND} backend — model {MODEL_NAME} at {OLLAMA_HOST}")
             _ollama_ready = True
@@ -144,6 +142,13 @@ async def lifespan(app: FastAPI):
             _scheduler.start()
 
     yield
+
+    # Under pytest, reset init state on shutdown so each module-scoped TestClient
+    # (its own event loop) starts a fresh pool. Harmless in production (shutdown
+    # only happens at process exit).
+    if os.getenv("MIRA_TESTING"):
+        _initialized = False
+        sessions = None
 
 
 app = FastAPI(title="ollama Search Tool", lifespan=lifespan)
@@ -168,8 +173,8 @@ async def _auth_middleware(request: Request, call_next):
 
 
 def _ready():
-    """FastAPI dependency — returns 503 until the orchestrator is initialised."""
-    if orchestrator is None:
+    """FastAPI dependency — returns 503 until the session pool is initialised."""
+    if sessions is None:
         raise HTTPException(status_code=503, detail="Server is starting up")
 
 
@@ -245,16 +250,15 @@ async def switch_backend(request: Request, _=Depends(_ready)):
         return {"status": "ok", "backend": target, "message": "already active"}
     _ollama_ready = False
     try:
-        async with _orch_lock:
-            loop = asyncio.get_event_loop()
-            preset = await loop.run_in_executor(None, _bm.switch_to, target)
-            orchestrator.reinitialize_client(
-                backend=preset["backend"],
-                model=preset["model"],
-                host=preset["host"],
-                context_window=preset["context_window"],
-            )
-            _rt.update(preset)
+        loop = asyncio.get_event_loop()
+        preset = await loop.run_in_executor(None, _bm.switch_to, target)
+        await sessions.reinitialize_all(
+            backend=preset["backend"],
+            model=preset["model"],
+            host=preset["host"],
+            context_window=preset["context_window"],
+        )
+        _rt.update(preset)
     except Exception as e:
         logger.error("Backend switch failed: %s", e)
         _ollama_ready = True
@@ -286,16 +290,15 @@ async def switch_model(request: Request, _=Depends(_ready)):
         return {"status": "ok", "backend": backend, "model": model_id, "message": "already active"}
     _ollama_ready = False
     try:
-        async with _orch_lock:
-            loop = asyncio.get_event_loop()
-            preset = await loop.run_in_executor(None, _bm.switch_to_model, backend, model_id)
-            orchestrator.reinitialize_client(
-                backend=preset["backend"],
-                model=preset["model"],
-                host=preset["host"],
-                context_window=preset["context_window"],
-            )
-            _rt.update(preset)
+        loop = asyncio.get_event_loop()
+        preset = await loop.run_in_executor(None, _bm.switch_to_model, backend, model_id)
+        await sessions.reinitialize_all(
+            backend=preset["backend"],
+            model=preset["model"],
+            host=preset["host"],
+            context_window=preset["context_window"],
+        )
+        _rt.update(preset)
     except Exception as e:
         logger.error("Model switch failed: %s", e)
         _ollama_ready = True
@@ -382,23 +385,27 @@ async def chat(
     request_id = str(uuid.uuid4())
     cancel_event = threading.Event()
 
-    async with _orch_lock:
-        if not conversation_id:
-            # No ID supplied — always start a fresh conversation so callers without
-            # an explicit ID never inherit whatever session is currently loaded.
-            conv_id = db.create_conversation(orchestrator.model)
-            orchestrator.new_conversation(conv_id)
-        elif conversation_id != orchestrator.conv_id:
-            conv = db.get_conversation(conversation_id)
-            if conv:
-                project = db.get_project(conv["project_id"]) if conv.get("project_id") else None
-                orchestrator.load_conversation(conversation_id, project=project)
-            else:
-                db.create_conversation(orchestrator.model, conv_id=conversation_id)
-                orchestrator.new_conversation(conversation_id)
-        # Register the cancel event against the resolved conversation so /cancel can
-        # target this turn without touching other conversations' in-flight turns.
-        _active_cancels[request_id] = (orchestrator.conv_id, cancel_event)
+    # Resolve the target conversation and ensure its DB row exists, then get (or
+    # lazily create) its dedicated orchestrator + lock from the pool.
+    project = None
+    if not conversation_id:
+        # No ID supplied — always start a fresh conversation so callers without an
+        # explicit ID never inherit another session.
+        conv_id = db.create_conversation(sessions.model)
+        fresh = True
+    else:
+        conv_id = conversation_id
+        conv = db.get_conversation(conv_id)
+        if conv:
+            project = db.get_project(conv["project_id"]) if conv.get("project_id") else None
+            fresh = False
+        else:
+            db.create_conversation(sessions.model, conv_id=conv_id)
+            fresh = True
+    orch, lock = await sessions.acquire(conv_id, project=project, fresh=fresh)
+    # Register the cancel event against the resolved conversation so /cancel can
+    # target this turn without touching other conversations' in-flight turns.
+    _active_cancels[request_id] = (conv_id, cancel_event)
 
     attachments = []
     for upload in files:
@@ -432,115 +439,126 @@ async def chat(
             })
 
     async def event_stream():
-        loop = asyncio.get_running_loop()
-        queue: asyncio.Queue = asyncio.Queue()
-        snapshot = {"len": len(orchestrator.conversation_history)}
+        # Hold the per-conversation lock for the whole turn: turns on the same
+        # conversation serialize (no history corruption), different conversations
+        # stream concurrently through their own locks.
+        async with lock:
+            loop = asyncio.get_running_loop()
+            queue: asyncio.Queue = asyncio.Queue()
+            snapshot = {"len": len(orch.conversation_history)}
 
-        def produce():
-            snapshot["len"] = len(orchestrator.conversation_history)
-            was_new_conv = orchestrator._is_new_conv
-            done_content = None
-            thinking_content = None
+            def produce():
+                snapshot["len"] = len(orch.conversation_history)
+                was_new_conv = orch._is_new_conv
+                done_content = None
+                thinking_content = None
 
-            try:
-                for event in orchestrator.stream_chat(message, attachments=attachments or None, thinking_enabled=thinking_enabled, github_tools_enabled=github_tools_enabled):
-                    if cancel_event.is_set():
-                        break
-                    if event.get("type") == "done":
-                        done_content = event.get("content", "")
-                    elif event.get("type") == "thinking" and event.get("content"):
-                        thinking_content = (thinking_content or "") + event["content"]
-                    loop.call_soon_threadsafe(queue.put_nowait, event)
+                try:
+                    for event in orch.stream_chat(message, attachments=attachments or None, thinking_enabled=thinking_enabled, github_tools_enabled=github_tools_enabled):
+                        if cancel_event.is_set():
+                            break
+                        if event.get("type") == "done":
+                            done_content = event.get("content", "")
+                        elif event.get("type") == "thinking" and event.get("content"):
+                            thinking_content = (thinking_content or "") + event["content"]
+                        loop.call_soon_threadsafe(queue.put_nowait, event)
 
-                if not cancel_event.is_set() and orchestrator.conv_id and done_content is not None:
-                    db.save_messages(orchestrator.conv_id, [
-                        {"role": "user",      "content": message},
-                        {"role": "assistant", "content": done_content,
-                         "thinking_content": thinking_content},
-                    ])
+                    if not cancel_event.is_set() and orch.conv_id and done_content is not None:
+                        db.save_messages(orch.conv_id, [
+                            {"role": "user",      "content": message},
+                            {"role": "assistant", "content": done_content,
+                             "thinking_content": thinking_content},
+                        ])
 
-                    if was_new_conv:
-                        orchestrator._is_new_conv = False
-                        title = orchestrator.generate_title(message)
-                        db.update_title(orchestrator.conv_id, title)
-                        loop.call_soon_threadsafe(queue.put_nowait, {
-                            "type": "title",
-                            "conv_id": orchestrator.conv_id,
-                            "title": title,
-                        })
-
-                    if orchestrator.context_pct >= COMPRESS_THRESHOLD:
-                        summary = orchestrator.compress_history()
-                        if summary:
-                            compressed = [
-                                m for m in orchestrator.conversation_history
-                                if m["role"] != "system"
-                            ]
-                            db.replace_messages(orchestrator.conv_id, compressed)
+                        if was_new_conv:
+                            orch._is_new_conv = False
+                            title = orch.generate_title(message)
+                            db.update_title(orch.conv_id, title)
                             loop.call_soon_threadsafe(queue.put_nowait, {
-                                "type": "compress",
-                                "message": "Earlier conversation summarised to free up context.",
+                                "type": "title",
+                                "conv_id": orch.conv_id,
+                                "title": title,
                             })
 
-            except Exception as e:
-                if not cancel_event.is_set():
-                    loop.call_soon_threadsafe(
-                        queue.put_nowait, {"type": "error", "message": str(e)}
-                    )
+                        if orch.context_pct >= COMPRESS_THRESHOLD:
+                            summary = orch.compress_history()
+                            if summary:
+                                compressed = [
+                                    m for m in orch.conversation_history
+                                    if m["role"] != "system"
+                                ]
+                                db.replace_messages(orch.conv_id, compressed)
+                                loop.call_soon_threadsafe(queue.put_nowait, {
+                                    "type": "compress",
+                                    "message": "Earlier conversation summarised to free up context.",
+                                })
+
+                except Exception as e:
+                    if not cancel_event.is_set():
+                        loop.call_soon_threadsafe(
+                            queue.put_nowait, {"type": "error", "message": str(e)}
+                        )
+                finally:
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+
+            threading.Thread(target=produce, daemon=True).start()
+
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        yield {"data": json.dumps({"type": "heartbeat"})}
+                        continue
+                    if event is None:
+                        if cancel_event.is_set():
+                            orch.conversation_history = \
+                                orch.conversation_history[:snapshot["len"]]
+                        break
+                    if event.get("type") == "search_done":
+                        event = {**event, "results": [
+                            {"title": r["title"], "url": r["url"]}
+                            for r in event.get("results", [])
+                        ]}
+                    logger.debug("SSE → %s", event.get("type"))
+                    yield {"data": json.dumps(event)}
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
-
-        threading.Thread(target=produce, daemon=True).start()
-
-        try:
-            while True:
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    yield {"data": json.dumps({"type": "heartbeat"})}
-                    continue
-                if event is None:
-                    if cancel_event.is_set():
-                        orchestrator.conversation_history = \
-                            orchestrator.conversation_history[:snapshot["len"]]
-                    break
-                if event.get("type") == "search_done":
-                    event = {**event, "results": [
-                        {"title": r["title"], "url": r["url"]}
-                        for r in event.get("results", [])
-                    ]}
-                logger.debug("SSE → %s", event.get("type"))
-                yield {"data": json.dumps(event)}
-        finally:
-            _active_cancels.pop(request_id, None)
+                _active_cancels.pop(request_id, None)
 
     return EventSourceResponse(event_stream())
 
 
 @app.post("/reset")
-async def reset(_: None = Depends(_ready)):
-    """Start a fresh conversation (old one stays in DB). Preserves active project."""
-    project = orchestrator.project
-    project_id = project["id"] if project else None
-    orchestrator.reset_conversation()
-    conv_id = db.create_conversation(orchestrator.model, project_id=project_id)
-    orchestrator.new_conversation(conv_id, project=project)
+async def reset(conversation_id: str = Form(default=""), _: None = Depends(_ready)):
+    """Start a fresh conversation (old one stays in DB). If a `conversation_id` is
+    given, the new conversation inherits its project."""
+    project = None
+    project_id = None
+    if conversation_id:
+        prev = db.get_conversation(conversation_id)
+        if prev and prev.get("project_id"):
+            project_id = prev["project_id"]
+            project = db.get_project(project_id)
+    conv_id = db.create_conversation(sessions.model, project_id=project_id)
+    await sessions.acquire(conv_id, project=project, fresh=True)
     return {"status": "ok", "conv_id": conv_id, "title": "New conversation"}
 
 
 @app.post("/compact")
-async def compact(_: None = Depends(_ready)):
-    """Manually compress conversation history. Returns compress event JSON."""
-    non_system = [m for m in orchestrator.conversation_history if m["role"] != "system"]
-    if len(non_system) == 0:
-        return {"type": "compact_noop", "message": "Nothing to compact yet."}
+async def compact(conversation_id: str = Form(...), _: None = Depends(_ready)):
+    """Manually compress a conversation's history. Returns compress event JSON."""
+    orch, lock = await sessions.acquire(conversation_id)
+    async with lock:
+        non_system = [m for m in orch.conversation_history if m["role"] != "system"]
+        if len(non_system) == 0:
+            return {"type": "compact_noop", "message": "Nothing to compact yet."}
 
-    summary = orchestrator.compress_history()
-    if summary is None:
-        return {"type": "compact_noop", "message": "Nothing to compact yet."}
+        summary = orch.compress_history()
+        if summary is None:
+            return {"type": "compact_noop", "message": "Nothing to compact yet."}
 
-    compressed = [m for m in orchestrator.conversation_history if m["role"] != "system"]
-    db.replace_messages(orchestrator.conv_id, compressed)
+        compressed = [m for m in orch.conversation_history if m["role"] != "system"]
+        db.replace_messages(orch.conv_id, compressed)
     return {"type": "compress", "message": "Earlier conversation summarised to free up context."}
 
 
@@ -651,8 +669,8 @@ async def create_conversation(
         project = db.get_project(project_id)
         if not project:
             raise HTTPException(status_code=400, detail=f"Project not found: {project_id}")
-    conv_id = db.create_conversation(orchestrator.model, project_id=project_id)
-    orchestrator.new_conversation(conv_id, project=project)
+    conv_id = db.create_conversation(sessions.model, project_id=project_id)
+    # The session is created lazily on first /chat; just register the DB row here.
     return {"id": conv_id, "title": "New conversation", "project_id": project_id}
 
 
@@ -672,15 +690,11 @@ async def rename_conversation(conv_id: str, body: RenameRequest):
 @app.delete("/conversations/{conv_id}")
 async def delete_conversation(conv_id: str, _: None = Depends(_ready)):
     db.delete_conversation(conv_id)
-    if orchestrator.conv_id == conv_id:
-        convs = db.list_conversations()
-        if convs:
-            project = db.get_project(convs[0]["project_id"]) if convs[0].get("project_id") else None
-            orchestrator.load_conversation(convs[0]["id"], project=project)
-        else:
-            new_id = db.create_conversation(orchestrator.model)
-            orchestrator.new_conversation(new_id)
-    return {"status": "ok", "active_conv_id": orchestrator.conv_id}
+    await sessions.remove(conv_id)        # drop its cached orchestrator, if any
+    # Report a sensible next conversation for clients that auto-select one.
+    convs = db.list_conversations()
+    active = convs[0]["id"] if convs else db.create_conversation(sessions.model)
+    return {"status": "ok", "active_conv_id": active}
 
 
 @app.get("/conversations/{conv_id}/messages")
@@ -691,35 +705,58 @@ async def get_messages(conv_id: str):
 # ── Existing endpoints ────────────────────────────────────────────────────────
 
 @app.get("/rag/documents")
-async def rag_list(_: None = Depends(_ready)):
-    return {"documents": orchestrator.rag_engine.list_documents()}
+async def rag_list(conversation_id: str = "", _: None = Depends(_ready)):
+    # The RAG index is per-conversation; without an id there's nothing to list.
+    if not conversation_id:
+        return {"documents": []}
+    orch, _l = await sessions.acquire(conversation_id)
+    return {"documents": orch.rag_engine.list_documents()}
 
 
 @app.delete("/rag/documents/{name:path}")
-async def rag_remove(name: str, _: None = Depends(_ready)):
-    orchestrator.rag_engine.remove(name)
-    return {"documents": orchestrator.rag_engine.list_documents()}
+async def rag_remove(name: str, conversation_id: str = "", _: None = Depends(_ready)):
+    if not conversation_id:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+    orch, _l = await sessions.acquire(conversation_id)
+    orch.rag_engine.remove(name)
+    return {"documents": orch.rag_engine.list_documents()}
 
 
 @app.post("/verbose")
 async def set_verbose(request: VerboseRequest, _: None = Depends(_ready)):
-    orchestrator.verbose = request.enabled
-    return {"verbose": orchestrator.verbose}
+    sessions.set_verbose(request.enabled)
+    return {"verbose": sessions.verbose}
 
 
 @app.get("/status")
-async def status(_: None = Depends(_ready)):
+async def status(conversation_id: str = "", _: None = Depends(_ready)):
+    """Per-conversation runtime stats. Without a `conversation_id`, returns the
+    server-level defaults (no session is materialised)."""
+    if not conversation_id:
+        return {
+            "model": sessions.model,
+            "verbose": sessions.verbose,
+            "history_length": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "context_pct": 0.0,
+            "home_dir": str(Path.home()),
+            "conv_id": None,
+            "project": None,
+            "workspace_root": None,
+        }
+    orch, _l = await sessions.acquire(conversation_id)
     return {
-        "model": orchestrator.model,
-        "verbose": orchestrator.verbose,
-        "history_length": len(orchestrator.conversation_history),
-        "input_tokens": orchestrator.total_input_tokens,
-        "output_tokens": orchestrator.total_output_tokens,
-        "context_pct": orchestrator.context_pct,
+        "model": orch.model,
+        "verbose": orch.verbose,
+        "history_length": len(orch.conversation_history),
+        "input_tokens": orch.total_input_tokens,
+        "output_tokens": orch.total_output_tokens,
+        "context_pct": orch.context_pct,
         "home_dir": str(Path.home()),
-        "conv_id": orchestrator.conv_id,
-        "project": orchestrator.project,
-        "workspace_root": orchestrator.workspace_root,
+        "conv_id": orch.conv_id,
+        "project": orch.project,
+        "workspace_root": orch.workspace_root,
     }
 
 
@@ -781,7 +818,7 @@ async def ask(body: AskRequest, _: None = Depends(_ready)):
     messages.append({"role": "user", "content": body.prompt.strip()})
     try:
         text = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: orchestrator._llm_chat_sync(messages)
+            None, lambda: sessions.llm_chat_sync(messages)
         )
         return {"response": text}
     except Exception as e:

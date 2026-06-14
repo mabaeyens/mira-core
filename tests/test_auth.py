@@ -7,8 +7,8 @@ import server
 
 @pytest.fixture(scope="module")
 def client():
-    # Module-scoped: see note in test_cancel.py — the global asyncio lock is bound
-    # to the event loop created on first startup.
+    # Module-scoped: see note in test_cancel.py — one lifespan per module keeps
+    # DB init / scheduler start to once.
     with TestClient(server.app) as c:
         yield c
 

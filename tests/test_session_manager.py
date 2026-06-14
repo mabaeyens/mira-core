@@ -104,6 +104,41 @@ def test_reinitialize_all_applies_to_all_and_future():
         assert oc.reinit == ("omlx", "new-model", "http://h", 4096)
 
 
+class _HistOrch(_FakeOrch):
+    """Fake orchestrator that carries a per-instance history list."""
+    def __init__(self, verbose=False):
+        super().__init__(verbose)
+        self.history = []
+
+
+def test_per_conversation_locks_serialize_same_conv_and_isolate_across():
+    """Concurrent turns on the same conversation serialize through its lock (no
+    interleaving / history loss); turns on different conversations run independently."""
+    with patch.object(session_manager, "ChatOrchestrator", _HistOrch):
+        m = _mgr()
+
+        async def turn(conv_id, tag, hold):
+            orch, lock = await m.acquire(conv_id, fresh=True)
+            async with lock:
+                start = len(orch.history)
+                await asyncio.sleep(hold)        # simulate streaming the turn
+                orch.history.append(tag)
+                # If a same-conversation turn had interleaved, this would fail.
+                assert len(orch.history) == start + 1
+
+        async def go():
+            await asyncio.gather(
+                turn("a", "a1", 0.02),           # holds conv-a's lock while "sleeping"
+                turn("a", "a2", 0.0),            # same conv → must wait for a1
+                turn("b", "b1", 0.0),            # different conv → runs concurrently
+            )
+            return m.get("a").history, m.get("b").history
+
+        hist_a, hist_b = asyncio.run(go())
+        assert sorted(hist_a) == ["a1", "a2"], "both same-conv turns recorded, none lost"
+        assert hist_b == ["b1"], "other conversation's history stays independent"
+
+
 def test_remove_drops_session():
     with patch.object(session_manager, "ChatOrchestrator", _FakeOrch):
         m = _mgr()

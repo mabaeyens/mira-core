@@ -14,8 +14,9 @@ module-level ``_orch_lock`` had.
 
 import asyncio
 import logging
+import threading
 from collections import OrderedDict
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .config import BACKEND, CONTEXT_WINDOW, MODEL_NAME, OLLAMA_HOST, VERBOSE_DEFAULT
 from .orchestrator import ChatOrchestrator
@@ -40,6 +41,10 @@ class SessionManager:
             "host": OLLAMA_HOST,
             "context_window": CONTEXT_WINDOW,
         }
+        # A single conversation-less orchestrator for stateless one-shot LLM calls
+        # (e.g. the /ask endpoint). Built lazily, kept in sync with the preset.
+        self._scratch: Optional[ChatOrchestrator] = None
+        self._scratch_lock = threading.Lock()
 
     @property
     def model(self) -> str:
@@ -48,6 +53,19 @@ class SessionManager:
     @property
     def backend(self) -> str:
         return self._preset["backend"]
+
+    @property
+    def verbose(self) -> bool:
+        return self._verbose
+
+    def set_verbose(self, enabled: bool) -> None:
+        """Apply a verbose toggle to every live session, the scratch orchestrator,
+        and future ones."""
+        self._verbose = enabled
+        for orch in self._sessions.values():
+            orch.verbose = enabled
+        if self._scratch is not None:
+            self._scratch.verbose = enabled
 
     # ── internals ─────────────────────────────────────────────────────────────
 
@@ -117,6 +135,19 @@ class SessionManager:
             }
             for orch in self._sessions.values():
                 orch.reinitialize_client(backend, model, host, context_window)
+            if self._scratch is not None:
+                self._scratch.reinitialize_client(backend, model, host, context_window)
+
+    def llm_chat_sync(self, messages: List[Dict], format: Optional[dict] = None) -> str:
+        """One-shot, conversation-less LLM call (for /ask). Uses a shared scratch
+        orchestrator built from the current preset. Synchronous — call from an
+        executor thread, not the event loop."""
+        with self._scratch_lock:
+            if self._scratch is None:
+                self._scratch = self._build()
+                self._scratch.verbose = self._verbose
+            scratch = self._scratch
+        return scratch._llm_chat_sync(messages, format=format)
 
     async def remove(self, conv_id: str) -> None:
         """Drop a session (e.g. when its conversation is deleted)."""

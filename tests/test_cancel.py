@@ -5,6 +5,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import server
+from core.orchestrator import ChatOrchestrator
 
 
 def _parse_sse(response_text):
@@ -29,11 +30,10 @@ def clear_cancel():
 
 @pytest.fixture(scope="module")
 def client():
-    # Module-scoped: the server uses a global asyncio.Lock bound to the event loop
-    # created on first startup. A fresh TestClient per test would create a new loop
-    # and the stale lock would raise "bound to a different event loop". One client
-    # for the module keeps a single loop. (Properly fixed by per-conversation
-    # sessions — see specs/stateless-chat-session.md.)
+    # Module-scoped: one TestClient (one event loop, one lifespan) per module keeps
+    # DB init / scheduler start to once. Locks are now per-conversation and created
+    # lazily in the running loop (SessionManager), so they're no longer the reason
+    # for module scope — efficiency is.
     with TestClient(server.app) as c:
         yield c
 
@@ -90,7 +90,8 @@ def test_cancel_stops_event_stream(client):
         yield {"type": "token", "content": "should_not_arrive"}
         yield {"type": "done", "content": "partial should_not_arrive"}
 
-    with patch.object(server.orchestrator, 'stream_chat', side_effect=cancelling_stream):
+    # Patch at the class so the pool-built orchestrator for this turn uses the mock.
+    with patch.object(ChatOrchestrator, 'stream_chat', side_effect=cancelling_stream):
         resp = client.post("/chat", data={"message": "cancel me"})
 
     contents = [e.get("content", "") for e in _parse_sse(resp.text)]
@@ -100,21 +101,24 @@ def test_cancel_stops_event_stream(client):
 
 def test_history_rolled_back_on_cancel(client):
     """Partial conversation history from a cancelled turn is removed."""
-    initial_len = len(server.orchestrator.conversation_history)
+    conv_id = "test-rollback-conv"
 
     def cancelling_stream(message, attachments=None, **kwargs):
         # Simulate what stream_chat does — write user message to history, then
         # get cancelled before the assistant turn is appended.
-        server.orchestrator.conversation_history.append({"role": "user", "content": message})
+        orch = server.sessions.get(conv_id)
+        orch.conversation_history.append({"role": "user", "content": message})
         yield {"type": "thinking"}
         _set_all_active_cancels()               # cancel before done event
         yield {"type": "done", "content": "never delivered"}
 
-    with patch.object(server.orchestrator, 'stream_chat', side_effect=cancelling_stream):
-        client.post("/chat", data={"message": "cancel me"})
+    with patch.object(ChatOrchestrator, 'stream_chat', side_effect=cancelling_stream):
+        client.post("/chat", data={"message": "cancel me", "conversation_id": conv_id})
 
-    assert len(server.orchestrator.conversation_history) == initial_len, \
-        "Cancelled turn must not leave entries in conversation history"
+    orch = server.sessions.get(conv_id)
+    non_system = [m for m in orch.conversation_history if m["role"] != "system"]
+    assert non_system == [], \
+        "Cancelled turn must not leave user/assistant entries in conversation history"
 
 
 # ── /browse endpoint tests ────────────────────────────────────────────────────
