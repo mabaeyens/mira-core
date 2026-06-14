@@ -43,23 +43,91 @@ logger = logging.getLogger(__name__)
 _EMBED_CHAR_LIMIT = 4096
 
 
+# ── Shared models (process-wide) ──────────────────────────────────────────────
+# Heavy models are loaded once per process and shared across every RagEngine
+# instance, so per-conversation sessions don't each reload the ~550 MB embedder or
+# the reranker. Lazy, guarded by a lock.
+_MODELS: Dict[str, object] = {}
+_MODELS_LOCK = threading.Lock()
+
+
+def _get_embedder():
+    with _MODELS_LOCK:
+        if "embedder" not in _MODELS:
+            _MODELS["embedder"] = SentenceTransformer(EMBED_MODEL, trust_remote_code=True)
+    return _MODELS["embedder"]
+
+
+def _get_crossencoder():
+    """Shared CrossEncoder reranker (crossencoder backend)."""
+    with _MODELS_LOCK:
+        if "reranker" not in _MODELS:
+            import contextlib, io
+            from sentence_transformers import CrossEncoder
+            logger.info(f"Loading reranker: {RERANK_MODEL}")
+            # Try the local cache silently; fall back to a visible download on a fresh install.
+            orig = os.environ.get("HF_HUB_OFFLINE")
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), \
+                     contextlib.redirect_stderr(io.StringIO()):
+                    _MODELS["reranker"] = CrossEncoder(RERANK_MODEL)
+            except Exception:
+                if orig is None:
+                    del os.environ["HF_HUB_OFFLINE"]
+                else:
+                    os.environ["HF_HUB_OFFLINE"] = orig
+                logger.info(f"Downloading reranker model (first run): {RERANK_MODEL}")
+                _MODELS["reranker"] = CrossEncoder(RERANK_MODEL)
+            logger.info("Reranker ready")
+    return _MODELS["reranker"]
+
+
+def _get_qwen3_scorer():
+    """Shared Qwen3 reranker scorer (qwen3 backend), in-process via mlx_lm."""
+    with _MODELS_LOCK:
+        if "qwen3_scorer" not in _MODELS:
+            import mlx.core as mx
+            from mlx_lm import load as mlx_load
+            logger.info(f"Loading Qwen3 reranker: {RERANKER_MODEL}")
+            model, tok = mlx_load(RERANKER_MODEL)
+            hf = getattr(tok, "_tokenizer", tok)
+            instruct = "Given a web search query, retrieve relevant passages that answer the query"
+            prefix = (
+                "<|im_start|>system\nJudge whether the Document meets the requirements "
+                "based on the Query and the Instruct provided. Note that the answer can "
+                "only be \"yes\" or \"no\".<|im_end|>\n<|im_start|>user\n"
+            )
+            suffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+            true_id = hf.convert_tokens_to_ids("yes")
+            false_id = hf.convert_tokens_to_ids("no")
+            pre = hf.encode(prefix, add_special_tokens=False)
+            suf = hf.encode(suffix, add_special_tokens=False)
+
+            def _score(query: str, doc: str) -> float:
+                content = f"<Instruct>: {instruct}\n<Query>: {query}\n<Document>: {doc}"
+                ids = pre + hf.encode(content, add_special_tokens=False) + suf
+                logits = model(mx.array([ids]))[:, -1, :]
+                pair = mx.stack([logits[0, false_id], logits[0, true_id]])
+                return float(mx.exp((pair - mx.logsumexp(pair))[1]))
+
+            _MODELS["qwen3_scorer"] = _score
+    return _MODELS["qwen3_scorer"]
+
+
 class RagEngine:
     """RAG index for Mira. Per-project sessions use a PersistentClient; no-project sessions use EphemeralClient."""
 
     def __init__(self):
-        self._embedder = SentenceTransformer(EMBED_MODEL, trust_remote_code=True)
-        self._reranker = None        # CrossEncoder instance (crossencoder backend)
-        self._qwen3_scorer = None    # callable(query, doc) -> float (qwen3 backend)
-        self._reranker_lock = threading.Lock()
+        self._embedder = _get_embedder()   # process-wide shared model
         self._init_db()
-        # Pre-warm the active reranker so the first query isn't slow. Skipped under
-        # tests: the daemon thread (mlx/torch) can still be mid-load at interpreter
-        # shutdown and SIGABRT the CI job; the reranker loads lazily on first query.
+        # Pre-warm the active reranker (shared across instances) so the first query
+        # isn't slow. Skipped under tests: the daemon thread (mlx/torch) can still be
+        # mid-load at interpreter shutdown and SIGABRT the CI job; it loads lazily on
+        # first query instead.
         if not os.getenv("MIRA_TESTING"):
-            if RERANKER_BACKEND == "qwen3":
-                threading.Thread(target=self._load_qwen3_reranker, daemon=True).start()
-            else:
-                threading.Thread(target=self._load_reranker, daemon=True).start()
+            warm = _get_qwen3_scorer if RERANKER_BACKEND == "qwen3" else _get_crossencoder
+            threading.Thread(target=warm, daemon=True).start()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -175,8 +243,7 @@ class RagEngine:
         if RERANKER_BACKEND == "qwen3":
             scores = self._score_qwen3(question, docs)
         else:
-            reranker = self._get_reranker()
-            scores = reranker.predict([[question, d] for d in docs])
+            scores = _get_crossencoder().predict([[question, d] for d in docs])
 
         ranked = sorted(zip(docs, metas, scores), key=lambda x: x[2], reverse=True)
 
@@ -224,69 +291,6 @@ class RagEngine:
         """Batch-embed texts using sentence-transformers."""
         return self._embedder.encode(texts, batch_size=64).tolist()
 
-    def _load_reranker(self):
-        """Load the CrossEncoder model (thread-safe, called once)."""
-        with self._reranker_lock:
-            if self._reranker is None:
-                import contextlib, io, os
-                from sentence_transformers import CrossEncoder
-                logger.info(f"Loading reranker: {RERANK_MODEL}")
-                # Try loading from local cache silently (model already downloaded).
-                # If cache is missing (fresh install), fall back to online download.
-                orig = os.environ.get("HF_HUB_OFFLINE")
-                os.environ["HF_HUB_OFFLINE"] = "1"
-                try:
-                    with contextlib.redirect_stdout(io.StringIO()), \
-                         contextlib.redirect_stderr(io.StringIO()):
-                        self._reranker = CrossEncoder(RERANK_MODEL)
-                except Exception:
-                    # Not cached yet — download it (output visible so user sees progress)
-                    if orig is None:
-                        del os.environ["HF_HUB_OFFLINE"]
-                    else:
-                        os.environ["HF_HUB_OFFLINE"] = orig
-                    logger.info(f"Downloading reranker model (first run): {RERANK_MODEL}")
-                    self._reranker = CrossEncoder(RERANK_MODEL)
-                logger.info("Reranker ready")
-
-    def _get_reranker(self):
-        if self._reranker is None:
-            self._load_reranker()
-        return self._reranker
-
-    def _load_qwen3_reranker(self):
-        """Load Qwen3-Reranker-0.6B-4bit in-process via mlx_lm (thread-safe, called once)."""
-        with self._reranker_lock:
-            if self._qwen3_scorer is not None:
-                return
-            import mlx.core as mx
-            from mlx_lm import load as mlx_load
-            logger.info(f"Loading Qwen3 reranker: {RERANKER_MODEL}")
-            model, tok = mlx_load(RERANKER_MODEL)
-            hf = getattr(tok, "_tokenizer", tok)
-            instruct = "Given a web search query, retrieve relevant passages that answer the query"
-            prefix = (
-                "<|im_start|>system\nJudge whether the Document meets the requirements "
-                "based on the Query and the Instruct provided. Note that the answer can "
-                "only be \"yes\" or \"no\".<|im_end|>\n<|im_start|>user\n"
-            )
-            suffix = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
-            true_id = hf.convert_tokens_to_ids("yes")
-            false_id = hf.convert_tokens_to_ids("no")
-            pre = hf.encode(prefix, add_special_tokens=False)
-            suf = hf.encode(suffix, add_special_tokens=False)
-
-            def _score(query: str, doc: str) -> float:
-                content = f"<Instruct>: {instruct}\n<Query>: {query}\n<Document>: {doc}"
-                ids = pre + hf.encode(content, add_special_tokens=False) + suf
-                logits = model(mx.array([ids]))[:, -1, :]
-                pair = mx.stack([logits[0, false_id], logits[0, true_id]])
-                return float(mx.exp((pair - mx.logsumexp(pair))[1]))
-
-            self._qwen3_scorer = _score
-            logger.info("Qwen3 reranker ready")
-
     def _score_qwen3(self, question: str, docs: List[str]) -> List[float]:
-        if self._qwen3_scorer is None:
-            self._load_qwen3_reranker()
-        return [self._qwen3_scorer(question, doc) for doc in docs]
+        scorer = _get_qwen3_scorer()   # process-wide shared scorer
+        return [scorer(question, doc) for doc in docs]
