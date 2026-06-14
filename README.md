@@ -88,6 +88,20 @@ install with `--with-tailscale <host>` and connect to `https://<mac-hostname>:84
 oMLX is started and managed automatically by the server. See
 `docs/model-comparison-m5-macbook.md` for benchmarks and model alternatives.
 
+### Access control
+
+The server exposes tools that **run shell commands and read/write files**, so network
+exposure is gated on a shared secret:
+
+- **No token set (default):** the server binds **`127.0.0.1` only**. It will *refuse* to
+  bind a non-loopback interface and downgrade to loopback with a warning. Safe for a
+  private machine; not reachable from other devices.
+- **To reach Mira over LAN/Tailscale:** set a token via `auth_token:` in `mira.yaml` or the
+  `MIRA_TOKEN` env var. The server then binds `0.0.0.0` and requires
+  `Authorization: Bearer <token>` on every route except `/health` and the static web UI.
+  The iOS/macOS apps send this header automatically. `MIRA_HOST` can pin a specific
+  interface.
+
 ## macOS LaunchAgent (optional)
 
 `make install ARGS="--with-launchagent"` renders the plist + wrapper from their

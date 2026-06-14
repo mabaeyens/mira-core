@@ -22,6 +22,12 @@ def _get(key: str, default):
 
 # ── Backend ───────────────────────────────────────────────────────────────────
 # "mlx-lm" and "omlx" use the OpenAI-compatible API; "ollama" uses the ollama Python client.
+# Shared-secret auth. When set, every sensitive route requires
+# `Authorization: Bearer <token>`. When unset, the server refuses to bind a
+# non-loopback host (see server.py __main__) so an open server stays local-only.
+# Read from mira.yaml `auth_token:` or the MIRA_TOKEN env var.
+AUTH_TOKEN: str = _get("auth_token", os.getenv("MIRA_TOKEN", ""))
+
 BACKEND: str = _get("backend", "ollama")
 MODEL_NAME: str = _get("model", "gemma4:26b-mlx")
 OLLAMA_HOST: str = _get("host", os.getenv("OLLAMA_HOST", "http://localhost:11434"))

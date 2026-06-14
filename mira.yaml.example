@@ -2,6 +2,14 @@
 # mira.yaml is git-ignored; mira.yaml.example is committed.
 # All fields are optional; omit any to keep the built-in default.
 
+# ── Access control ─────────────────────────────────────────────────────────────
+# Shared secret required by every API route (sent as `Authorization: Bearer <token>`).
+# Leave unset for a private machine: the server then binds 127.0.0.1 only and refuses
+# to expose a non-loopback interface. To reach Mira over LAN/Tailscale you MUST set a
+# token here (or via the MIRA_TOKEN env var) — the /chat endpoint can run shell
+# commands and read/write files, so an unauthenticated open bind is never allowed.
+# auth_token: "choose-a-long-random-string"
+
 # ── LLM backend ──────────────────────────────────────────────────────────────
 # Recommended: omlx (KV cache held in RAM → ~0ms TTFT after startup warm-up)
 # Alternatives:

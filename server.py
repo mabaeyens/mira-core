@@ -26,7 +26,7 @@ logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
 import core.db as db
 import core.file_handler as file_handler
-from core.config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT, MODEL_NAME, BACKEND, OLLAMA_HOST, CONTEXT_WINDOW
+from core.config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT, MODEL_NAME, BACKEND, OLLAMA_HOST, CONTEXT_WINDOW, AUTH_TOKEN
 from core.orchestrator import ChatOrchestrator
 from core import backend_manager as _bm
 
@@ -145,6 +145,23 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="ollama Search Tool", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Routes reachable without a token even when auth is enabled: liveness probe
+# (clients poll it before they can authenticate) and the static web UI shell.
+_AUTH_OPEN_PATHS = ("/health", "/")
+
+
+@app.middleware("http")
+async def _auth_middleware(request: Request, call_next):
+    """Require `Authorization: Bearer <AUTH_TOKEN>` on every route when a token is
+    configured. No-op when AUTH_TOKEN is empty (in that mode the server only binds
+    loopback — see __main__)."""
+    if AUTH_TOKEN and request.method != "OPTIONS":
+        path = request.url.path
+        is_open = path in _AUTH_OPEN_PATHS or path.startswith("/static")
+        if not is_open and request.headers.get("authorization", "") != f"Bearer {AUTH_TOKEN}":
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
 
 
 def _ready():
@@ -794,13 +811,30 @@ if __name__ == "__main__":
     ssl_certfile = os.environ.get("SSL_CERTFILE")
     ssl_keyfile  = os.environ.get("SSL_KEYFILE")
 
+    # Bind host policy: never expose a non-loopback interface without a token.
+    # MIRA_HOST overrides the default (0.0.0.0 when a token is set, else 127.0.0.1),
+    # but a non-loopback request without AUTH_TOKEN is downgraded to loopback.
+    _requested_host = os.environ.get("MIRA_HOST", "0.0.0.0" if AUTH_TOKEN else "127.0.0.1")
+    _loopback = {"127.0.0.1", "localhost", "::1"}
+    if _requested_host not in _loopback and not AUTH_TOKEN:
+        logger.warning(
+            "Refusing to bind %s without MIRA_TOKEN set — an open server with shell/"
+            "filesystem tools must not be exposed off-host. Binding 127.0.0.1 instead. "
+            "Set MIRA_TOKEN (or mira.yaml auth_token) to enable LAN/Tailscale access.",
+            _requested_host,
+        )
+        bind_host = "127.0.0.1"
+    else:
+        bind_host = _requested_host
+    logger.info("Binding %s (auth %s)", bind_host, "enabled" if AUTH_TOKEN else "disabled — loopback only")
+
     async def _run():
         http_server = uvicorn.Server(
-            uvicorn.Config("server:app", host="0.0.0.0", port=8000, log_level="info")
+            uvicorn.Config("server:app", host=bind_host, port=8000, log_level="info")
         )
         if ssl_certfile and ssl_keyfile:
             https_cfg = uvicorn.Config(
-                "server:app", host="0.0.0.0", port=8443,
+                "server:app", host=bind_host, port=8443,
                 ssl_certfile=ssl_certfile, ssl_keyfile=ssl_keyfile,
                 log_level="info",
             )
