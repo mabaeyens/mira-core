@@ -116,7 +116,10 @@ def test_tool_result_added_to_history(orc):
 
     tool_msgs = [m for m in orc.conversation_history if m.get("role") == "tool"]
     assert len(tool_msgs) == 1
-    assert json.loads(tool_msgs[0]["content"]) == fake_result
+    # Tool results are wrapped in a structured observation before reaching the model.
+    parsed = json.loads(tool_msgs[0]["content"])
+    assert parsed["status"] == "success"
+    assert parsed["payload"] == fake_result
 
 
 # ── Confirmation flow ─────────────────────────────────────────────────────────
@@ -138,7 +141,7 @@ def test_confirmation_required_result_reaches_model(orc):
     # Model must receive the confirmation_resp so it can surface it
     tool_msgs = [m for m in orc.conversation_history if m.get("role") == "tool"]
     parsed = json.loads(tool_msgs[0]["content"])
-    assert parsed.get("requires_confirmation") is True
+    assert parsed["payload"].get("requires_confirmation") is True
 
     # Final answer should be produced (model tells user to confirm)
     done_events = [e for e in events if e["type"] == "done"]
@@ -162,8 +165,8 @@ def test_shell_dangerous_command_confirmation_flow(orc):
 
     tool_msgs = [m for m in orc.conversation_history if m.get("role") == "tool"]
     parsed = json.loads(tool_msgs[0]["content"])
-    assert parsed.get("requires_confirmation") is True
-    assert parsed.get("matched") == "rm with -r/-f flag"
+    assert parsed["payload"].get("requires_confirmation") is True
+    assert parsed["payload"].get("matched") == "rm with -r/-f flag"
 
 
 # ── Error propagation ─────────────────────────────────────────────────────────
@@ -179,7 +182,8 @@ def test_tool_error_result_reaches_model(orc):
 
     tool_msgs = [m for m in orc.conversation_history if m.get("role") == "tool"]
     parsed = json.loads(tool_msgs[0]["content"])
-    assert "error" in parsed
+    assert parsed["status"] == "error"
+    assert "missing.txt" in parsed["error_details"]
 
     done_ev = next(e for e in events if e["type"] == "tool_done")
     assert "Error" in done_ev["label"]
@@ -196,5 +200,5 @@ def test_unknown_tool_returns_error_to_model(orc):
 
     tool_msgs = [m for m in orc.conversation_history if m.get("role") == "tool"]
     parsed = json.loads(tool_msgs[0]["content"])
-    assert "error" in parsed
-    assert "nonexistent_tool" in parsed["error"]
+    assert parsed["status"] == "error"
+    assert "nonexistent_tool" in parsed["error_details"]
