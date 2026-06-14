@@ -132,11 +132,14 @@ async def lifespan(app: FastAPI):
             _ollama_ready = True
             # Auto-start the inference backend in a background thread so the app is
             # usable immediately (health returns 200) even while oMLX/Ollama loads.
-            threading.Thread(
-                target=_bm.ensure_backend_running,
-                args=(BACKEND,),
-                daemon=True,
-            ).start()
+            # Skipped under tests: the warm-up would try (and time out) reaching a
+            # backend that isn't running, leaving a lingering thread + noisy warning.
+            if not os.getenv("MIRA_TESTING"):
+                threading.Thread(
+                    target=_bm.ensure_backend_running,
+                    args=(BACKEND,),
+                    daemon=True,
+                ).start()
             from core import scheduler as _scheduler
             _scheduler.start()
 
