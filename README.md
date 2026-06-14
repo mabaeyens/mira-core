@@ -96,6 +96,26 @@ loads it — no manual editing. Add `--with-tailscale <host>` to keep the HTTPS 
 The generated files are git-ignored; only the `*.template` originals are committed. Logs
 go to `/tmp/com.mab.mira.log`.
 
+## Uninstall
+
+If you installed the `mira` command with `uv tool`, remove it by its **package** name
+(`mira-core`), not the executable name:
+
+```bash
+uv tool uninstall mira-core   # NOT `uv tool uninstall mira`
+```
+
+If you installed the LaunchAgent, unload and remove it:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.mab.mira.plist
+rm ~/Library/LaunchAgents/com.mab.mira.plist
+```
+
+The rest is self-contained: delete the checkout (its `.venv`, `mira.yaml`, and local DBs go
+with it). Shared caches under `~/.cache/uv` and `~/.cache/huggingface` are left for other tools;
+remove the Mira model weights from `~/.cache/huggingface/hub` manually if you want the space back.
+
 ## CLI Commands
 
 | Command | Description |

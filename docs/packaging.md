@@ -75,6 +75,19 @@ keeps the code in the checkout, so paths resolve).
   `uv tool install <url-to-wheel>` without cloning (works for the CLI/doctor; the full server still
   wants a checkout).
 
+### Uninstalling the `mira` tool
+
+`uv tool` keys on the **package** name, not the executable. The package is `mira-core` and the
+executable is `mira`, so:
+
+```bash
+uv tool uninstall mira-core   # correct
+uv tool uninstall mira        # error: `mira` is not installed
+```
+
+This bit us during the fresh-install test — a teardown that ran `uv tool uninstall mira` silently
+left the tool behind.
+
 ## 6. How a release is cut
 
 Versioning is tag-driven, so the version lives in exactly one place — the git tag. The
