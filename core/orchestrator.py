@@ -31,6 +31,7 @@ from . import tool_registry
 from .backend_manager import restart_dflash_if_dead
 from .thinking_stripper import ThinkingStripper
 from . import backend_client as bc
+from . import context_manager as ctxmgr
 
 logger = logging.getLogger(__name__)
 
@@ -359,26 +360,13 @@ class ChatOrchestrator:
             return first_user_message[:60].strip()
 
     def compress_history(self) -> Optional[str]:
-        non_system = [m for m in self.conversation_history if m["role"] != "system"]
-        if len(non_system) <= COMPRESS_KEEP_RECENT:
+        plan = ctxmgr.plan_compression(self.conversation_history, COMPRESS_KEEP_RECENT)
+        if plan is None:
             return None
+        to_compress, to_keep = plan
 
-        to_compress = non_system[:-COMPRESS_KEEP_RECENT]
-        to_keep = non_system[-COMPRESS_KEEP_RECENT:]
-
-        excerpt = "\n".join(
-            f"{m['role'].upper()}: {str(m.get('content', ''))[:2000]}"
-            for m in to_compress
-        )
         try:
-            summary = self._llm_chat_sync([{
-                "role": "user",
-                "content": (
-                    "Summarize this conversation excerpt in a concise paragraph. "
-                    "Preserve key facts, decisions, URLs found, and files discussed. "
-                    "Be specific:\n\n" + excerpt
-                ),
-            }])
+            summary = self._llm_chat_sync(ctxmgr.build_summary_prompt(to_compress))
         except Exception as e:
             logger.warning("Compression LLM call failed: %s", e)
             return None
@@ -386,12 +374,9 @@ class ChatOrchestrator:
         if not summary:
             return None
 
-        system_msgs = [m for m in self.conversation_history if m["role"] == "system"]
-        self.conversation_history = system_msgs + [
-            {"role": "user",      "content": f"[Earlier conversation summary]\n{summary}"},
-            {"role": "assistant", "content": "Understood, I have the context."},
-        ] + to_keep
-
+        self.conversation_history = ctxmgr.rebuild_history(
+            self.conversation_history, summary, to_keep
+        )
         logger.info("Compressed %d messages into summary", len(to_compress))
         return summary
 
@@ -575,7 +560,7 @@ class ChatOrchestrator:
                     if forced:
                         self._mark_task_done(forced)
                         if _thinking_chars:
-                            self.total_output_tokens += round(_thinking_chars / 3.5)
+                            self.total_output_tokens += ctxmgr.thinking_tokens(_thinking_chars)
                         yield {
                             "type": "stats",
                             "input_tokens": self.total_input_tokens,
@@ -642,7 +627,7 @@ class ChatOrchestrator:
                 # Convert accumulated thinking chars to approximate tokens (~3.5 chars/tok)
                 # and fold into total_output_tokens so the display reflects actual compute.
                 if _thinking_chars:
-                    self.total_output_tokens += round(_thinking_chars / 3.5)
+                    self.total_output_tokens += ctxmgr.thinking_tokens(_thinking_chars)
                 yield {
                     "type": "stats",
                     "input_tokens": self.total_input_tokens,
@@ -703,7 +688,7 @@ class ChatOrchestrator:
                 task_done_args = next(args for _, name, args, _ in prepared if name == "task_done")
                 self._mark_task_done(task_done_args.get("summary", "Task complete."))
                 if _thinking_chars:
-                    self.total_output_tokens += round(_thinking_chars / 3.5)
+                    self.total_output_tokens += ctxmgr.thinking_tokens(_thinking_chars)
                 yield {
                     "type": "stats",
                     "input_tokens": self.total_input_tokens,
@@ -991,9 +976,7 @@ class ChatOrchestrator:
 
     @property
     def context_pct(self) -> int:
-        if not self.context_window or self.last_prompt_tokens == 0:
-            return 0
-        return min(100, round(self.last_prompt_tokens / self.context_window * 100))
+        return ctxmgr.context_pct(self.last_prompt_tokens, self.context_window)
 
     def reset_conversation(self):
         self._cleanup_temp_workspace()
