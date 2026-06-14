@@ -26,7 +26,7 @@ logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
 import core.db as db
 import core.file_handler as file_handler
-from core.config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT, MODEL_NAME, BACKEND, OLLAMA_HOST, CONTEXT_WINDOW
+from core.config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT, MODEL_NAME, BACKEND, OLLAMA_HOST, CONTEXT_WINDOW, AUTH_TOKEN
 from core.orchestrator import ChatOrchestrator
 from core import backend_manager as _bm
 
@@ -39,7 +39,9 @@ logger = logging.getLogger(__name__)
 orchestrator: ChatOrchestrator = None
 _orch_lock: asyncio.Lock = None
 _init_lock: asyncio.Lock = asyncio.Lock()
-_active_cancels: Dict[str, threading.Event] = {}
+# request_id -> (conversation_id, cancel_event). The conv_id lets /cancel target a
+# single conversation so one device's cancel never aborts another device's turn.
+_active_cancels: Dict[str, tuple] = {}
 _initialized = False
 _ollama_ready = False
 
@@ -143,6 +145,23 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="ollama Search Tool", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Routes reachable without a token even when auth is enabled: liveness probe
+# (clients poll it before they can authenticate) and the static web UI shell.
+_AUTH_OPEN_PATHS = ("/health", "/")
+
+
+@app.middleware("http")
+async def _auth_middleware(request: Request, call_next):
+    """Require `Authorization: Bearer <AUTH_TOKEN>` on every route when a token is
+    configured. No-op when AUTH_TOKEN is empty (in that mode the server only binds
+    loopback — see __main__)."""
+    if AUTH_TOKEN and request.method != "OPTIONS":
+        path = request.url.path
+        is_open = path in _AUTH_OPEN_PATHS or path.startswith("/static")
+        if not is_open and request.headers.get("authorization", "") != f"Bearer {AUTH_TOKEN}":
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
 
 
 def _ready():
@@ -328,10 +347,22 @@ async def pull_model(request: Request):
 
 
 @app.post("/cancel")
-async def cancel():
-    for ev in list(_active_cancels.values()):
-        ev.set()
-    return {"status": "cancelled"}
+async def cancel(request: Request):
+    """Abort in-progress turn(s). With a `conversation_id` in the JSON body, only
+    that conversation's turns are cancelled; with no body, all are cancelled
+    (back-compat for older clients)."""
+    conv_id = ""
+    try:
+        body = await request.json()
+        conv_id = (body or {}).get("conversation_id", "") or ""
+    except Exception:
+        conv_id = ""
+    cancelled = 0
+    for cid, ev in list(_active_cancels.values()):
+        if not conv_id or cid == conv_id:
+            ev.set()
+            cancelled += 1
+    return {"status": "cancelled", "count": cancelled}
 
 
 @app.post("/chat")
@@ -347,7 +378,6 @@ async def chat(
     """SSE endpoint — streams typed events from stream_chat() to the browser."""
     request_id = str(uuid.uuid4())
     cancel_event = threading.Event()
-    _active_cancels[request_id] = cancel_event
 
     async with _orch_lock:
         if not conversation_id:
@@ -363,6 +393,9 @@ async def chat(
             else:
                 db.create_conversation(orchestrator.model, conv_id=conversation_id)
                 orchestrator.new_conversation(conversation_id)
+        # Register the cancel event against the resolved conversation so /cancel can
+        # target this turn without touching other conversations' in-flight turns.
+        _active_cancels[request_id] = (orchestrator.conv_id, cancel_event)
 
     attachments = []
     for upload in files:
@@ -778,13 +811,30 @@ if __name__ == "__main__":
     ssl_certfile = os.environ.get("SSL_CERTFILE")
     ssl_keyfile  = os.environ.get("SSL_KEYFILE")
 
+    # Bind host policy: never expose a non-loopback interface without a token.
+    # MIRA_HOST overrides the default (0.0.0.0 when a token is set, else 127.0.0.1),
+    # but a non-loopback request without AUTH_TOKEN is downgraded to loopback.
+    _requested_host = os.environ.get("MIRA_HOST", "0.0.0.0" if AUTH_TOKEN else "127.0.0.1")
+    _loopback = {"127.0.0.1", "localhost", "::1"}
+    if _requested_host not in _loopback and not AUTH_TOKEN:
+        logger.warning(
+            "Refusing to bind %s without MIRA_TOKEN set — an open server with shell/"
+            "filesystem tools must not be exposed off-host. Binding 127.0.0.1 instead. "
+            "Set MIRA_TOKEN (or mira.yaml auth_token) to enable LAN/Tailscale access.",
+            _requested_host,
+        )
+        bind_host = "127.0.0.1"
+    else:
+        bind_host = _requested_host
+    logger.info("Binding %s (auth %s)", bind_host, "enabled" if AUTH_TOKEN else "disabled — loopback only")
+
     async def _run():
         http_server = uvicorn.Server(
-            uvicorn.Config("server:app", host="0.0.0.0", port=8000, log_level="info")
+            uvicorn.Config("server:app", host=bind_host, port=8000, log_level="info")
         )
         if ssl_certfile and ssl_keyfile:
             https_cfg = uvicorn.Config(
-                "server:app", host="0.0.0.0", port=8443,
+                "server:app", host=bind_host, port=8443,
                 ssl_certfile=ssl_certfile, ssl_keyfile=ssl_keyfile,
                 log_level="info",
             )

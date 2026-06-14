@@ -21,44 +21,72 @@ def _parse_sse(response_text):
 
 @pytest.fixture(autouse=True)
 def clear_cancel():
-    """Reset cancel_event before and after each test."""
-    server.cancel_event.clear()
+    """Reset the active-cancel registry before and after each test."""
+    server._active_cancels.clear()
     yield
-    server.cancel_event.clear()
+    server._active_cancels.clear()
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def client():
+    # Module-scoped: the server uses a global asyncio.Lock bound to the event loop
+    # created on first startup. A fresh TestClient per test would create a new loop
+    # and the stale lock would raise "bound to a different event loop". One client
+    # for the module keeps a single loop. (Properly fixed by per-conversation
+    # sessions — see specs/stateless-chat-session.md.)
     with TestClient(server.app) as c:
         yield c
 
 
-def test_cancel_endpoint_sets_event(client):
-    """POST /cancel returns ok and sets cancel_event."""
+def _set_all_active_cancels():
+    """Set every registered request's cancel event (used by mocked streams that
+    can't see their own per-request event handle)."""
+    for _cid, ev in list(server._active_cancels.values()):
+        ev.set()
+
+
+def test_cancel_endpoint_scopes_to_conversation(client):
+    """POST /cancel with a conversation_id sets only that conversation's event."""
+    import threading
+    ev_a, ev_b = threading.Event(), threading.Event()
+    server._active_cancels["req-a"] = ("conv-a", ev_a)
+    server._active_cancels["req-b"] = ("conv-b", ev_b)
+
+    resp = client.post("/cancel", json={"conversation_id": "conv-a"})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "cancelled"
+    assert ev_a.is_set()
+    assert not ev_b.is_set(), "cancel for conv-a must not touch conv-b"
+
+
+def test_cancel_no_body_cancels_all(client):
+    """POST /cancel with no body cancels every in-flight turn (back-compat)."""
+    import threading
+    ev_a, ev_b = threading.Event(), threading.Event()
+    server._active_cancels["req-a"] = ("conv-a", ev_a)
+    server._active_cancels["req-b"] = ("conv-b", ev_b)
+
     resp = client.post("/cancel")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "cancelled"}
-    assert server.cancel_event.is_set()
+    assert ev_a.is_set() and ev_b.is_set()
 
 
-def test_new_chat_clears_cancel_event(client):
-    """Starting a new /chat request always clears a previously set cancel flag."""
-    server.cancel_event.set()
+def test_cancel_unknown_conversation_is_noop(client):
+    """Cancel for a conversation with no active turn returns ok and sets nothing."""
+    import threading
+    ev = threading.Event()
+    server._active_cancels["req-a"] = ("conv-a", ev)
 
-    def instant_stream(message, attachments=None):
-        yield {"type": "done", "content": "hello"}
-
-    with patch.object(server.orchestrator, 'stream_chat', side_effect=instant_stream):
-        client.post("/chat", data={"message": "hi"})
-
-    assert not server.cancel_event.is_set()
+    resp = client.post("/cancel", json={"conversation_id": "conv-zzz"})
+    assert resp.status_code == 200
+    assert not ev.is_set()
 
 
 def test_cancel_stops_event_stream(client):
     """Events emitted after cancel fires must not reach the client."""
-    def cancelling_stream(message, attachments=None):
+    def cancelling_stream(message, attachments=None, **kwargs):
         yield {"type": "token", "content": "partial"}
-        server.cancel_event.set()               # cancel after first token
+        _set_all_active_cancels()               # cancel this request mid-stream
         yield {"type": "token", "content": "should_not_arrive"}
         yield {"type": "done", "content": "partial should_not_arrive"}
 
@@ -67,19 +95,19 @@ def test_cancel_stops_event_stream(client):
 
     contents = [e.get("content", "") for e in _parse_sse(resp.text)]
     assert not any("should_not_arrive" in c for c in contents), \
-        "Events emitted after cancel_event was set must be dropped by produce()"
+        "Events emitted after the request's cancel event was set must be dropped by produce()"
 
 
 def test_history_rolled_back_on_cancel(client):
     """Partial conversation history from a cancelled turn is removed."""
     initial_len = len(server.orchestrator.conversation_history)
 
-    def cancelling_stream(message, attachments=None):
+    def cancelling_stream(message, attachments=None, **kwargs):
         # Simulate what stream_chat does — write user message to history, then
         # get cancelled before the assistant turn is appended.
         server.orchestrator.conversation_history.append({"role": "user", "content": message})
         yield {"type": "thinking"}
-        server.cancel_event.set()               # cancel before done event
+        _set_all_active_cancels()               # cancel before done event
         yield {"type": "done", "content": "never delivered"}
 
     with patch.object(server.orchestrator, 'stream_chat', side_effect=cancelling_stream):

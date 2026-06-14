@@ -28,10 +28,8 @@ from .prompts import build_system_prompt, current_datetime_str, SEARCH_RESULT_TE
 from .search_engine import SearchEngine
 from .rag_engine import RagEngine
 from . import url_fetcher
-from . import fs_tools
-from . import shell_tools
+from . import tool_registry
 from .backend_manager import restart_dflash_if_dead
-from . import github_tools
 
 logger = logging.getLogger(__name__)
 
@@ -774,124 +772,21 @@ class ChatOrchestrator:
             yield {"type": "token", "content": full_text}
         yield {"type": "done", "content": full_text}
 
-    def _handle_list_attachments(self) -> str:
-        if not self._attachment_registry:
-            return "No files attached to this conversation."
-        lines = [
-            f"- {info['name']} ({info['type']}, {info['size']:,} bytes)"
-            for info in self._attachment_registry.values()
-        ]
-        return "Attached files:\n" + "\n".join(lines)
-
-    def _handle_read_attachment(self, name: str, offset: int = 0, limit: Optional[int] = None) -> str:
-        info = self._attachment_registry.get(name)
-        if info is None:
-            available = ", ".join(self._attachment_registry.keys()) or "none"
-            return f"No attachment named '{name}'. Available: {available}"
-        content = info["content"]
-        if not content:
-            return f"Attachment '{name}' has no readable text content (type: {info['type']})."
-        chunk = content[offset: offset + limit] if limit is not None else content[offset:]
-        total = len(content)
-        if offset or limit is not None:
-            end = offset + len(chunk)
-            return f"[{name} — chars {offset}–{end} of {total}]\n{chunk}"
-        return f"[{name}]\n{chunk}"
-
     def _mark_task_done(self, summary: str) -> dict:
         self._task_done = True
         self._task_done_summary = summary
         return {"done": True}
 
-    def _schedule_reminder(self, text: str, when: str) -> dict:
-        from . import db
-        import dateparser
-        from dateutil import parser as dateutil_parser
-        import datetime
-        if not text.strip():
-            return {"error": "Reminder text cannot be empty."}
-        if not when.strip():
-            return {"error": "Please specify when to deliver the reminder."}
-        dt = dateparser.parse(when, settings={"PREFER_DATES_FROM": "future", "RETURN_AS_TIMEZONE_AWARE": True})
-        if dt is None:
-            # Fall back to dateutil for ISO 8601 and absolute dates
-            try:
-                now = datetime.datetime.now().astimezone()
-                dt = dateutil_parser.parse(when, default=now, fuzzy=True)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=now.tzinfo)
-            except Exception:
-                return {"error": f"Could not parse '{when}' as a date/time. Try 'tomorrow at 9am', 'in 2 hours', or '2026-06-04T09:00'."}
-        scheduled_at = int(dt.timestamp())
-        reminder_id = db.add_reminder(text.strip(), scheduled_at)
-        return {
-            "id": reminder_id,
-            "text": text.strip(),
-            "scheduled_at": scheduled_at,
-            "scheduled_for": dt.strftime("%A, %B %-d at %-I:%M %p"),
-        }
-
-    def _search_conversations(self, query: str, limit: int = 10) -> dict:
-        from . import db
-        if not query.strip():
-            return {"results": [], "message": "No query provided."}
-        results = db.search_conversations(query, limit=min(int(limit), 50))
-        if not results:
-            return {"results": [], "message": f"No conversations found matching '{query}'."}
-        return {"results": results, "count": len(results)}
-
     def _dispatch_tool(self, name: str, args: dict) -> dict:
-        dispatch = {
-            "read_file":    lambda a: fs_tools.read_file(a.get("path", ""), root=self.workspace_root or self._temp_workspace),
-            "write_file":   lambda a: fs_tools.write_file(a.get("path", ""), a.get("content", ""), root=self.workspace_root),
-            "edit_file":    lambda a: fs_tools.edit_file(a.get("path", ""), a.get("old_str", ""), a.get("new_str", ""), root=self.workspace_root),
-            "list_files":   lambda a: fs_tools.list_files(a.get("path", "."), a.get("recursive", False), root=self.workspace_root or self._temp_workspace),
-            "search_files": lambda a: fs_tools.search_files(a.get("pattern", ""), a.get("path", "."), a.get("case_sensitive", False), root=self.workspace_root or self._temp_workspace),
-            "move_file":    lambda a: fs_tools.move_file(a.get("src", ""), a.get("dst", ""), root=self.workspace_root),
-            "delete_file":  lambda a: fs_tools.delete_file(a.get("path", ""), a.get("confirm", False), root=self.workspace_root),
-            "run_shell":    lambda a: shell_tools.run_shell(a.get("command", ""), a.get("cwd", "."), a.get("force", False), root=self.workspace_root, timeout=a.get("timeout", 30)),
-            "list_attachments": lambda a: self._handle_list_attachments(),
-            "read_attachment":  lambda a: self._handle_read_attachment(a.get("name", ""), a.get("offset", 0), a.get("limit")),
-            "github_clone_repo":    lambda a: self._clone_and_register(a),
-            "github_list_repos":    lambda a: github_tools.github_list_repos(a.get("repo_type", "owner")),
-            "github_read_file":     lambda a: github_tools.github_read_file(a["repo"], a["path"], a.get("ref", "")),
-            "github_list_files":    lambda a: github_tools.github_list_files(a["repo"], a.get("path", ""), a.get("ref", "")),
-            "github_list_issues":   lambda a: github_tools.github_list_issues(a["repo"], a.get("state", "open")),
-            "github_list_prs":      lambda a: github_tools.github_list_prs(a["repo"], a.get("state", "open")),
-            "github_search_code":   lambda a: github_tools.github_search_code(a["query"], a.get("repo", "")),
-            "github_write_file":    lambda a: github_tools.github_write_file(a["repo"], a["path"], a["content"], a["message"], a.get("branch", ""), a.get("sha", "")),
-            "github_create_repo":   lambda a: github_tools.github_create_repo(a["name"], a.get("private", True), a.get("description", ""), a.get("auto_init", True)),
-            "github_create_issue":  lambda a: github_tools.github_create_issue(a["repo"], a["title"], a.get("body", "")),
-            "github_create_branch": lambda a: github_tools.github_create_branch(a["repo"], a["branch"], a.get("from_ref", "")),
-            "github_create_pr":     lambda a: github_tools.github_create_pr(a["repo"], a["title"], a.get("body", ""), a.get("head", ""), a.get("base", "")),
-            "github_merge_pr":      lambda a: github_tools.github_merge_pr(a["repo"], a["pr_number"], a.get("merge_method", "merge"), a.get("confirm", False)),
-            "github_delete_file":   lambda a: github_tools.github_delete_file(a["repo"], a["path"], a["message"], a.get("branch", ""), a.get("confirm", False)),
-            "github_delete_branch": lambda a: github_tools.github_delete_branch(a["repo"], a["branch"], a.get("confirm", False)),
-            "schedule_reminder":     lambda a: self._schedule_reminder(a.get("text", ""), a.get("when", "")),
-            "search_conversations":  lambda a: self._search_conversations(a.get("query", ""), a.get("limit", 10)),
-            "task_done":            lambda a: self._mark_task_done(a.get("summary", "Task complete.")),
-        }
-        fn = dispatch.get(name)
-        if fn is None:
-            logger.warning("Unknown tool: %s", name)
-            return {"error": f"Unknown tool: {name}"}
-        try:
-            return fn(args)
-        except Exception as e:
-            logger.error("Tool %s raised: %s", name, e)
-            return {"error": str(e)}
-
-    def _clone_and_register(self, args: dict) -> dict:
-        from . import db
-        result = github_tools.github_clone_repo(args["repo"], args.get("dest", ""))
-        if "error" in result:
-            return result
-        repo_name = args["repo"].split("/")[-1]
-        project_name = args.get("project_name", "").strip() or repo_name
-        project_id = db.create_project(project_name, local_path=result["cloned_to"], github_repo=args["repo"])
-        result["project_id"] = project_id
-        result["project_name"] = project_name
-        return result
+        """Run a tool via the central registry (schema↔handler parity guaranteed by
+        tests/test_tool_registry.py). web_search/fetch_url are handled in the loop."""
+        ctx = tool_registry.ToolContext(
+            workspace_root=self.workspace_root,
+            temp_workspace=self._temp_workspace,
+            attachments=self._attachment_registry,
+            mark_task_done=self._mark_task_done,
+        )
+        return tool_registry.dispatch(name, args, ctx)
 
     # ── LLM backend ──────────────────────────────────────────────────────────
 

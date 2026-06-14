@@ -9,6 +9,8 @@ See [CHANGELOG.md](CHANGELOG.md) for recent changes.
 - [ ] Server-side auth token check — add `verify_token` FastAPI dependency to `/chat`; reads `MIRA_TOKEN` env var; no-op if unset. Client already sends `Bearer` token. ~15 lines in `server.py`
 - [ ] HTTPS on LAN — self-signed CA on startup, `.mobileconfig` endpoint, QR code sheet in mira-apps connection settings (Tailscale HTTPS already works; this covers direct LAN only)
 - [ ] `server.py` startup `pkill -f "python.*server\.py"` (~line 763) is greedy — it kills *every* server.py process, so a second instance can't run and a fresh install on a machine already running Mira would kill production. Consider matching the venv path or using a PID file. (Found while testing fresh install — blocked validating test server boot.)
+- [ ] **Test rot (found 2026-06-14 during arch-hardening):** `tests/test_fs_shell_tools.py` — 4 `run_shell` tests fail on result-shape drift (KeyError on `exit_code`/stderr keys, force/timeout assertions). Unrelated to the hardening phases; verify against current `core/shell_tools.run_shell` contract.
+- [ ] **Test misfile (found 2026-06-14):** 5 `test_browse_*` tests live inside `tests/test_cancel.py` and fail because they browse `/tmp` / `tmp_path`, which the home-only `_safe_path` guard now (correctly) 403s. Move to their own file and point them at paths under `$HOME`, or stub `Path.home()`.
 
 ## Notes
 
