@@ -979,7 +979,6 @@ wheels = [
 
 [[package]]
 name = "mira-core"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },

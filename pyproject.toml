@@ -1,6 +1,6 @@
 [project]
 name = "mira-core"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Mira — local AI assistant with autonomous web search, RAG, and a web UI"
 requires-python = ">=3.12,<3.14"
 dependencies = [
@@ -41,8 +41,13 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+# Version is derived from the git tag (e.g. tag v0.8.2 -> package 0.8.2). The tag
+# is the single source of truth; never hardcode a version here.
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 # Flat-layout repo: ship the core package plus the top-level entry modules.

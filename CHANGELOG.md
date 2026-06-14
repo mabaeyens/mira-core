@@ -1,6 +1,19 @@
 # Changelog
 
-## v0.9.0 — June 2026
+## v0.8.2 — June 2026
+
+- **One-command installer** — `install.sh` (curl-able bootstrap that clones to `~/mira-core`
+  or reuses the current checkout) and `scripts/setup.sh` (idempotent: installs `uv`, runs
+  `uv sync`, creates `mira.yaml`, optional `--with-ollama` / `--with-launchagent` /
+  `--with-tailscale`, oMLX detect-and-instruct). Plus a `Makefile` (`make install` / `serve` /
+  `chat` / `doctor`).
+- **`mira` command** — packaged via `uv` (`uv tool install --editable .`): `mira setup`,
+  `mira serve`, `mira chat`, and a stdlib-only `mira doctor` health check.
+- **Packaging** — `pyproject.toml` is now a real installable package (hatchling backend,
+  `[project.scripts] mira`); project renamed from `ollama-search-tool` to `mira-core`.
+- README setup rewritten around the three one-line install paths.
+
+## v0.8.1 — June 2026
 
 ### Inference
 
@@ -17,11 +30,14 @@
   The orchestrator's `_normalize_messages_for_oai` already emits the correct `image_url`
   content part for all OpenAI-compatible backends; no code change was required.
 
-### Backends and model picker
+### Backends and configuration
 
 - **Dynamic model picker presets** — `GET /backends` serves the `backends:` list from
-  `mira.yaml` to connected clients. Adding or changing a backend preset in `mira.yaml` is
-  reflected in the app picker on next server restart — no app update required.
+  `mira.yaml` to the iOS/macOS model picker; add or change a backend preset without pushing
+  an app update (reflected on next server restart).
+- **Hardcoded CLI paths removed** — `MLX_LM_CLI`, `DFLASH_CLI`, and `OMLX_CLI` moved from
+  `core/backend_manager.py` to `mira.yaml` under a `paths:` section (with cross-user defaults);
+  `mira.yaml.example` documents the new block; `mira.db` added to `.gitignore`.
 
 ### Conversations
 
@@ -29,21 +45,11 @@
   past week, delivered as a new pinned conversation. Runs automatically on the first server
   startup of each week.
 
-## v0.8.1 — June 2026
-
-### Backends and configuration
-
-- **Dynamic model picker presets** — `GET /backends` serves the `backends:` list from `mira.yaml`
-  to the iOS/macOS model picker; add or change models without pushing an app update
-- **Hardcoded CLI paths removed** — `MLX_LM_CLI`, `DFLASH_CLI`, and `OMLX_CLI` moved from
-  `core/backend_manager.py` to `mira.yaml` under a `paths:` section (with cross-user defaults);
-  `mira.yaml.example` documents the new block; `mira.db` added to `.gitignore`
-
 ### Reliability
 
 - **Structured output robustness** — `_llm_chat_sync` retries without `response_format` if the
   backend rejects it; `generate_title` uses `re.search` to extract JSON from anywhere in the
-  response, handling models that wrap JSON in prose
+  response, handling models that wrap JSON in prose.
 
 ## v0.8.0 — June 2026
 
