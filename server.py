@@ -39,7 +39,9 @@ logger = logging.getLogger(__name__)
 orchestrator: ChatOrchestrator = None
 _orch_lock: asyncio.Lock = None
 _init_lock: asyncio.Lock = asyncio.Lock()
-_active_cancels: Dict[str, threading.Event] = {}
+# request_id -> (conversation_id, cancel_event). The conv_id lets /cancel target a
+# single conversation so one device's cancel never aborts another device's turn.
+_active_cancels: Dict[str, tuple] = {}
 _initialized = False
 _ollama_ready = False
 
@@ -328,10 +330,22 @@ async def pull_model(request: Request):
 
 
 @app.post("/cancel")
-async def cancel():
-    for ev in list(_active_cancels.values()):
-        ev.set()
-    return {"status": "cancelled"}
+async def cancel(request: Request):
+    """Abort in-progress turn(s). With a `conversation_id` in the JSON body, only
+    that conversation's turns are cancelled; with no body, all are cancelled
+    (back-compat for older clients)."""
+    conv_id = ""
+    try:
+        body = await request.json()
+        conv_id = (body or {}).get("conversation_id", "") or ""
+    except Exception:
+        conv_id = ""
+    cancelled = 0
+    for cid, ev in list(_active_cancels.values()):
+        if not conv_id or cid == conv_id:
+            ev.set()
+            cancelled += 1
+    return {"status": "cancelled", "count": cancelled}
 
 
 @app.post("/chat")
@@ -347,7 +361,6 @@ async def chat(
     """SSE endpoint — streams typed events from stream_chat() to the browser."""
     request_id = str(uuid.uuid4())
     cancel_event = threading.Event()
-    _active_cancels[request_id] = cancel_event
 
     async with _orch_lock:
         if not conversation_id:
@@ -363,6 +376,9 @@ async def chat(
             else:
                 db.create_conversation(orchestrator.model, conv_id=conversation_id)
                 orchestrator.new_conversation(conversation_id)
+        # Register the cancel event against the resolved conversation so /cancel can
+        # target this turn without touching other conversations' in-flight turns.
+        _active_cancels[request_id] = (orchestrator.conv_id, cancel_event)
 
     attachments = []
     for upload in files:
