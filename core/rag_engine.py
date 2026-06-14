@@ -19,6 +19,7 @@ Key design decisions:
 """
 
 import logging
+import os
 import threading
 import uuid
 from typing import List, Dict, Optional
@@ -51,11 +52,14 @@ class RagEngine:
         self._qwen3_scorer = None    # callable(query, doc) -> float (qwen3 backend)
         self._reranker_lock = threading.Lock()
         self._init_db()
-        # Pre-warm the active reranker so the first query isn't slow
-        if RERANKER_BACKEND == "qwen3":
-            threading.Thread(target=self._load_qwen3_reranker, daemon=True).start()
-        else:
-            threading.Thread(target=self._load_reranker, daemon=True).start()
+        # Pre-warm the active reranker so the first query isn't slow. Skipped under
+        # tests: the daemon thread (mlx/torch) can still be mid-load at interpreter
+        # shutdown and SIGABRT the CI job; the reranker loads lazily on first query.
+        if not os.getenv("MIRA_TESTING"):
+            if RERANKER_BACKEND == "qwen3":
+                threading.Thread(target=self._load_qwen3_reranker, daemon=True).start()
+            else:
+                threading.Thread(target=self._load_reranker, daemon=True).start()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 

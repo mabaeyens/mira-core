@@ -12,6 +12,7 @@ jobs:
       HF_HUB_DISABLE_TELEMETRY: "1"
       TOKENIZERS_PARALLELISM: "false"
       HF_HOME: ${{ github.workspace }}/.hf-cache
+      HF_HUB_DOWNLOAD_TIMEOUT: "60"   # fail a stuck download fast instead of hanging
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,7 +27,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.hf-cache
-          key: hf-${{ runner.os }}-v1
+          key: hf-${{ runner.os }}-${{ hashFiles('core/config.py') }}
+          restore-keys: |
+            hf-${{ runner.os }}-
 
       - name: Provision env (CPU reranker + default workspace dir)
         run: |
@@ -35,6 +38,9 @@ jobs:
           # run_shell defaults its root to WORKSPACE_ROOT (~/workspace); the server
           # expects this dir to exist. Create it so shell-tool tests have a sandbox.
           mkdir -p "$HOME/workspace"
+
+      - name: Prefetch models (warms HF cache; retries transient errors)
+        run: uv run --group dev python scripts/prefetch_models.py
 
       # The 9 deselected tests are pre-existing rot tracked in BACKLOG.md
       # (misfiled browse tests vs. the home-only path guard; run_shell shape drift),
