@@ -12,6 +12,10 @@
 
 <!-- e.g. `uv run pytest` passes; manual server smoke (serve, send a message, exercise the feature). -->
 
+## Screenshots / recording
+
+<!-- For web UI changes, add before/after screenshots or a short screen recording. -->
+
 ## Checklist
 
 - [ ] `uv run pytest` passes
