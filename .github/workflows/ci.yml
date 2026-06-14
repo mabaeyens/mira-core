@@ -29,7 +29,8 @@ jobs:
           key: hf-${{ runner.os }}-v1
 
       - name: Use CPU reranker (mlx is macOS-only and excluded on Linux runners)
-        run: printf 'reranker_backend: crossencoder\n' > mira.yaml
+        run: |
+          printf 'reranker_backend: crossencoder\n' > mira.yaml
 
       # The 9 deselected tests are pre-existing rot tracked in BACKLOG.md
       # (misfiled browse tests vs. the home-only path guard; run_shell shape drift),
