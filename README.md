@@ -25,81 +25,76 @@ for an overview and TestFlight access, or the
 - **Temp workspace**: Model can read and write files in a per-session temp directory when no project is open
 - **Private**: Runs entirely on your local machine — no cloud APIs, no telemetry
 
-## Prerequisites
+## Requirements
 
-**Python and uv**
+macOS on Apple Silicon (the inference backends are MLX-based). Everything else —
+`uv`, Python 3.12+, the virtualenv, and `mira.yaml` — is handled by the installer.
 
+## Install
+
+Pick whichever fits; each leaves you with a working backend in one command.
+
+**Fresh machine** (clones to `~/mira-core`):
 ```bash
-brew install uv   # or: curl -LsSf https://astral.sh/uv/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/mabaeyens/mira-core/main/install.sh | bash
 ```
 
-Python 3.12+ is managed automatically by uv — no separate install needed.
-
-**oMLX** (primary inference backend, port 8080)
-
-Download from [github.com/jundot/omlx/releases](https://github.com/jundot/omlx/releases), drag to `/Applications`, and open it once to accept the permission prompts. In the oMLX model library, load `Qwen3.6-35B-A3B`. oMLX is started automatically by the Mira server on first request.
-
-**ollama** (optional — required only for Gemma4 26B via the model picker)
-
+**Already cloned the repo:**
 ```bash
-brew install ollama
-ollama pull gemma4:26b
+make install
 ```
 
-Add to `~/.zprofile` for best performance:
+**As a package** (installs the `mira` command via uv):
 ```bash
-export OLLAMA_CONTEXT_LENGTH=65536
-export OLLAMA_FLASH_ATTENTION=1
+uv tool install --editable .   # run from inside the checkout
+mira setup
 ```
 
-**mira.yaml**
-
-Copy `mira.yaml.example` to `mira.yaml`. If your oMLX or ollama binaries are not at the default paths, set them under the `paths:` section (see the example file for instructions).
-
-## Setup
+The installer checks/installs `uv`, runs `uv sync`, and creates `mira.yaml`. Opt into
+the extras with flags (the curl one-liner takes them after `-s --`):
 
 ```bash
-uv venv --python 3.12
-source .venv/bin/activate
-uv sync
+make install ARGS="--with-ollama --with-launchagent"
+# or:  curl -LsSf .../install.sh | bash -s -- --with-ollama --with-launchagent
 ```
 
-> On first use, the `nomic-ai/nomic-embed-text-v1.5` embedding model and `Qwen3-Reranker-0.6B-4bit` reranker download automatically from HuggingFace and cache to `~/.cache/huggingface/`.
+| Flag | Effect |
+|------|--------|
+| `--with-ollama` | `brew install ollama` + `ollama pull gemma4:26b` (optional Gemma4 backend) |
+| `--with-launchagent` | install & load the macOS LaunchAgent (server runs at login) |
+| `--with-tailscale <host>` | configure HTTPS/Tailscale cert paths in the LaunchAgent |
+
+The one thing the installer **can't** do for you (it's GUI-gated): install the oMLX
+app and load the model. Download from
+[github.com/jundot/omlx/releases](https://github.com/jundot/omlx/releases), drag to
+`/Applications`, open it once to accept the prompts, and load `Qwen3.6-35B-A3B` in its
+model library. Run `mira doctor` (or `make doctor`) any time to see what's still missing.
+
+> On first use, the `nomic-ai/nomic-embed-text-v1.5` embedding model and
+> `Qwen3-Reranker-0.6B-4bit` reranker download automatically from HuggingFace and cache
+> to `~/.cache/huggingface/`. For best ollama performance, add
+> `export OLLAMA_CONTEXT_LENGTH=65536` and `export OLLAMA_FLASH_ATTENTION=1` to `~/.zprofile`.
 
 ## Running
 
-**CLI:**
 ```bash
-python main.py
+mira serve     # web UI at http://localhost:8000   (or: make serve)
+mira chat      # interactive CLI                    (or: make chat)
 ```
 
-**Web interface** — open `http://localhost:8000` in your browser:
-```bash
-python server.py
-```
+For remote access (iPad via Tailscale), the server also listens on HTTPS port **8443** —
+install with `--with-tailscale <host>` and connect to `https://<mac-hostname>:8443`.
 
-For remote access (iPad via Tailscale), the server also listens on HTTPS port **8443** — configure `SSL_CERTFILE` / `SSL_KEYFILE` in the plist (see [macOS LaunchAgent](#macos-launchagent-optional)) and connect to `https://<mac-hostname>:8443`.
-
-oMLX is started and managed automatically by the server. See `docs/model-comparison-m5-macbook.md` for benchmarks and model alternatives.
+oMLX is started and managed automatically by the server. See
+`docs/model-comparison-m5-macbook.md` for benchmarks and model alternatives.
 
 ## macOS LaunchAgent (optional)
 
-To run the web server as a background service that starts at login:
-
-```bash
-cp com.mab.mira.plist.template com.mab.mira.plist
-cp start-mira-server.sh.template start-mira-server.sh
-```
-
-Edit both files — replace `<MIRA_DIR>` and `<YOUR_HOME>` with your actual paths. If you are not using HTTPS/Tailscale, remove the `SSL_CERTFILE` / `SSL_KEYFILE` keys from the plist.
-
-```bash
-chmod +x start-mira-server.sh
-cp com.mab.mira.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.mab.mira.plist
-```
-
-Both filled-in files are git-ignored (they contain local paths). Only the `*.template` originals are committed.
+`make install ARGS="--with-launchagent"` renders the plist + wrapper from their
+`*.template` files (substituting your paths), installs to `~/Library/LaunchAgents/`, and
+loads it — no manual editing. Add `--with-tailscale <host>` to keep the HTTPS cert keys.
+The generated files are git-ignored; only the `*.template` originals are committed. Logs
+go to `/tmp/com.mab.mira.log`.
 
 ## CLI Commands
 
