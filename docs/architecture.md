@@ -11,11 +11,12 @@ main.py (CLI)     server.py (FastAPI + SSE)
       core/orchestrator.py → ChatOrchestrator
             │  stream_chat(user_message, attachments=None, thinking_enabled=True) → yields events
             ├── _call_llm() → openai.chat.completions.create() (omlx/dflash/mlx-lm, OpenAI-compatible; ollama via ollama client)
-            ├── core/search_engine.py → SearchEngine → ddgs.text()
+            ├── core/search_engine.py → SearchEngine → Brave API (primary, if keyed) / ddgs.text() (fallback)
+            ├── core/url_fetcher.py → fetch_url() → BeautifulSoup, Jina Reader fallback
             └── core/rag_engine.py → RagEngine
                       ├── SentenceTransformer (nomic-ai/nomic-embed-text-v1.5, local, 768 dims)
                       ├── chromadb.EphemeralClient (in-memory)
-                      └── CrossEncoder (sentence-transformers)
+                      └── reranker: Qwen3-Reranker-0.6B-4bit (mlx, default) or CrossEncoder ms-marco (sentence-transformers)
 
 core/config.py       — all tunables; loads overrides from mira.yaml (git-ignored)
 core/file_handler.py — load_file() / load_file_bytes(): PDF→RAG, HTML→text, image→base64
@@ -132,11 +133,13 @@ The native clients (mira-apps) connect to this server over HTTP/HTTPS. Key integ
 
 See `mira-apps/OllamaSearch/Shared/Networking/` for client implementation.
 
-## Why DDGS over Ollama native search
+## Search providers (Brave primary, DDGS fallback)
 
-Ollama offers a free-tier web search API, but signup requires a phone number and Ollama's docs contain no privacy disclosures — queries are tied to an authenticated account and can be logged. DuckDuckGo's core value proposition is no-tracking search. This project is local-first and privacy-conscious, so DDGS is the deliberate choice. Additionally, `gemma4:26b` is not listed as a supported model for Ollama native search.
+`SearchEngine.search()` tries providers in order:
 
-`USE_NATIVE_SEARCH` is `False` in `config.py` — do not change it.
+1. **Ollama native** — only if `USE_NATIVE_SEARCH` is `True` (it is `False`). Disabled deliberately: signup requires a phone number, Ollama's docs carry no privacy disclosures (queries tie to an authenticated account and can be logged), and `gemma4:26b` isn't a supported model for it. Leave `USE_NATIVE_SEARCH` `False`.
+2. **Brave Search** — used whenever `brave_api_key` (in `mira.yaml`) or the `BRAVE_API_KEY` env var is set. This is the primary provider in normal operation. The free tier is **2,000 queries/month at ~1 query/second**; the key never gets committed (`mira.yaml` is git-ignored — only `mira.yaml.example` ships, with a placeholder).
+3. **DuckDuckGo (ddgs)** — the no-key, no-tracking fallback. Serves requests whenever native is off and Brave is unkeyed or errors (including rate-limit/429 responses, which currently fall through silently rather than retrying).
 
 ## Backend startup
 

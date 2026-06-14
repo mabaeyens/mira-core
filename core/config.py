@@ -55,7 +55,7 @@ SAME_TOOL_REPEAT_LIMIT = 15  # same tool name N times in one turn → bail (catc
 TOOL_SOFT_LIMIT = 10     # per-tool calls before pausing to check in with the user
 UNPRODUCTIVE_TOOL_REPEAT_LIMITS: dict = {}  # no per-tool hard caps; soft limit handles research use cases
 MAX_RETRIES = 3          # API-level error retries per model call
-USE_NATIVE_SEARCH = False  # DDGS chosen for privacy (see docs/architecture.md)
+USE_NATIVE_SEARCH = False  # Ollama native search off; Brave is primary when keyed, DDGS is the fallback (see docs/architecture.md)
 SEARCH_TIMEOUT = 30
 BRAVE_API_KEY: str = _get("brave_api_key", os.getenv("BRAVE_API_KEY", ""))
 

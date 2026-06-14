@@ -59,9 +59,12 @@ context_window: 65536
 thinking_mode: adaptive
 
 # ── Search ───────────────────────────────────────────────────────────────────
-# Brave Search API key (optional). When set, Brave is used before DuckDuckGo.
-# Get a key at https://api.search.brave.com — Free tier: 2,000 queries/month.
+# Brave Search API key. When set, Brave is the primary web-search provider;
+# DuckDuckGo (ddgs) is the no-key fallback used if this is empty or Brave errors.
+# Get a key at https://api.search.brave.com — Free tier: 2,000 queries/month, ~1 query/sec.
 # Can also be set via the BRAVE_API_KEY environment variable.
+# This file is the committed template — keep the placeholder; put the real key in
+# mira.yaml (git-ignored) or the env var, never here.
 brave_api_key: "your-brave-search-api-key-here"
 
 # ── CLI paths ─────────────────────────────────────────────────────────────────

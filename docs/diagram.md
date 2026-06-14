@@ -22,8 +22,9 @@ graph TD
     subgraph mira-core["mira-core (Python/FastAPI)"]
         SRV["server.py\nFastAPI + SSE"]
         ORCH["ChatOrchestrator\nstream_chat()"]
-        RAG["RagEngine\nChromaDB + CrossEncoder"]
-        SEARCH["SearchEngine\nDuckDuckGo"]
+        RAG["RagEngine\nChromaDB + reranker"]
+        SEARCH["SearchEngine\nBrave / DuckDuckGo / native"]
+        FETCH["url_fetcher\nBeautifulSoup + Jina fallback"]
         FS["fs_tools / shell_tools\nworkspace-sandboxed"]
         GH["github_tools\nGitHub API"]
         DB["db.py\nSQLite"]
@@ -32,6 +33,7 @@ graph TD
         SRV --> ORCH
         ORCH --> RAG
         ORCH --> SEARCH
+        ORCH --> FETCH
         ORCH --> FS
         ORCH --> GH
         ORCH --> DB
@@ -39,10 +41,10 @@ graph TD
     end
 
     subgraph infra["Local Infrastructure"]
-        MLX["mlx-lm (port 8080)\nQwen3.6-35B-A3B-4bit"]
+        MLX["oMLX (port 8080)\nQwen3.6-35B-A3B\n(mlx-lm / dFlash compatible API)"]
         ST["SentenceTransformer\nnomic-embed-text-v1.5\n(local, 768 dims)"]
-        OLLAMA["Ollama (port 11434)\n(optional inference fallback)"]
-        DDGS["DuckDuckGo\n(ddgs library)"]
+        OLLAMA["Ollama (port 11434)\n(optional inference backend)"]
+        WEB["Web search\nBrave / DuckDuckGo / native\n+ Jina fetch fallback"]
         SQLITE[("SQLite\n~/.local/share/mira/")]
     end
 
@@ -50,7 +52,8 @@ graph TD
     SSE -->|"SSE stream\nPOST /chat"| SRV
     ORCH -->|"chat + tool calling"| MLX
     RAG -->|"embeddings"| ST
-    SEARCH -->|"web queries"| DDGS
+    SEARCH -->|"web queries"| WEB
+    FETCH -->|"page content"| WEB
     DB --> SQLITE
 ```
 
@@ -61,8 +64,8 @@ sequenceDiagram
     participant Client as iOS/macOS/Web Client
     participant Server as server.py
     participant Orch as ChatOrchestrator
-    participant Ollama as mlx-lm (Qwen3.6-35B)
-    participant Tools as Tools (search/files/shell)
+    participant Ollama as oMLX (Qwen3.6-35B)
+    participant Tools as Tools (search/fetch/files/shell)
 
     Client->>Server: POST /chat (multipart: message + files)
     Server->>Server: clear cancel_event
@@ -143,7 +146,7 @@ flowchart LR
         Q["User message"] --> QE["Embed query\n(SentenceTransformer\nnomic-embed-text-v1.5)"]
         QE --> RET["Cosine similarity\ntop-10 candidates"]
         CHROMA --> RET
-        RET --> RERANK["CrossEncoder\nms-marco-MiniLM-L-6-v2"]
+        RET --> RERANK["Reranker (default qwen3)\nQwen3-Reranker-0.6B-4bit (mlx, in-process)\nor CrossEncoder ms-marco-MiniLM-L-6-v2"]
         RERANK --> FILTER{"score >\nthreshold?"}
         FILTER -->|yes| INJECT["Inject into\nsystem prompt"]
         FILTER -->|no| DROP["Drop chunk"]
@@ -181,7 +184,7 @@ flowchart TD
     READY -->|no| SPLASH["SplashView\nspinner + status"]
     SPLASH --> RETRY["Retry (up to 5×)\nexponential backoff"]
     RETRY --> READY
-    READY -->|timeout| ERROR([Error state\nmlx-lm unreachable])
+    READY -->|timeout| ERROR([Error state\nbackend unreachable])
 
     subgraph launchd["launchd (login item)"]
         PLIST["com.mab.mira-server.plist\n~/Library/LaunchAgents/"]
