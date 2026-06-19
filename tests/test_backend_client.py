@@ -195,3 +195,62 @@ def test_stream_accumulates_split_tool_call():
     assert calls[0].function.name == "search"
     assert calls[0].function.arguments == {"q": "hi"}
     assert calls[0].id == "call_0"
+
+
+# -- parse_xml_tool_calls (qwen3_coder XML, e.g. Nemotron-3) ----------------
+
+def test_parse_xml_tool_calls_single():
+    calls = bc.parse_xml_tool_calls(
+        "</think>\n<tool_call>\n<function=get_weather>\n"
+        "<parameter=city>\nMadrid\n</parameter>\n</function>\n</tool_call>"
+    )
+    assert len(calls) == 1
+    assert calls[0].function.name == "get_weather"
+    assert calls[0].function.arguments == {"city": "Madrid"}
+
+
+def test_parse_xml_tool_calls_coerces_scalars_and_multi_param():
+    calls = bc.parse_xml_tool_calls(
+        "<tool_call><function=run_shell>"
+        "<parameter=command>\nls -la\n</parameter>"
+        "<parameter=timeout>\n30\n</parameter>"
+        "</function></tool_call>"
+    )
+    assert calls[0].function.arguments == {"command": "ls -la", "timeout": 30}
+
+
+def test_parse_xml_tool_calls_none_on_plain_text():
+    assert bc.parse_xml_tool_calls("Just a normal answer, no tools.") is None
+
+
+def test_stream_parses_xml_tool_call_from_content():
+    # Nemotron-3 streams the tool call as XML text across content deltas.
+    stream = [
+        _chunk(_delta(content="<tool_call>\n<function=get_weather>\n")),
+        _chunk(_delta(content="<parameter=city>\nMadrid\n</parameter>\n")),
+        _chunk(_delta(content="</function>\n</tool_call>"), finish_reason="stop",
+               usage=_usage(20, 9)),
+    ]
+    out = list(bc.normalize_oai_stream(stream))
+    final = out[-1]
+    assert final.done is True
+    calls = final.message.tool_calls
+    assert len(calls) == 1
+    assert calls[0].function.name == "get_weather"
+    assert calls[0].function.arguments == {"city": "Madrid"}
+
+
+def test_stream_native_tool_calls_take_precedence_over_xml():
+    # If a backend sends structured tool_calls, XML-looking content is ignored.
+    tc = types.SimpleNamespace(
+        index=0, id="call_0",
+        function=types.SimpleNamespace(name="search", arguments='{"q": "hi"}'),
+    )
+    stream = [
+        _chunk(_delta(content="<tool_call><function=ignored></function></tool_call>",
+                      tool_calls=[tc]), finish_reason="tool_calls", usage=_usage(3, 4)),
+    ]
+    out = list(bc.normalize_oai_stream(stream))
+    calls = out[-1].message.tool_calls
+    assert len(calls) == 1
+    assert calls[0].function.name == "search"

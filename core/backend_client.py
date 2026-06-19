@@ -80,10 +80,56 @@ def normalize_messages_for_oai(messages: List[Dict]) -> List[Dict]:
     return result
 
 
+_XML_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
+_XML_FUNC_RE = re.compile(r"<function=([^>\s]+)\s*>(.*?)</function>", re.DOTALL)
+_XML_PARAM_RE = re.compile(r"<parameter=([^>\s]+)\s*>\s*(.*?)\s*</parameter>", re.DOTALL)
+
+
+def parse_xml_tool_calls(text: str):
+    """Parse qwen3_coder-style XML tool calls into the same structured shape that
+    :func:`normalize_oai_stream` builds from native ``delta.tool_calls``.
+
+    Some models (e.g. NVIDIA Nemotron-3) emit tool calls as XML text in the content
+    stream rather than as OpenAI structured ``tool_calls``::
+
+        <tool_call>
+        <function=get_weather>
+        <parameter=city>
+        Madrid
+        </parameter>
+        </function>
+        </tool_call>
+
+    Returns a list of ``SimpleNamespace(id, function=SimpleNamespace(name, arguments=dict))``
+    or ``None`` when the text contains no tool-call blocks.
+    """
+    if "<tool_call>" not in text or "<function=" not in text:
+        return None
+    calls = []
+    for i, block in enumerate(_XML_TOOL_CALL_RE.findall(text)):
+        fm = _XML_FUNC_RE.search(block)
+        if not fm:
+            continue
+        args: dict = {}
+        for pname, pval in _XML_PARAM_RE.findall(fm.group(2)):
+            val = pval.strip()
+            # Coerce unambiguous JSON scalars (numbers/bools/null); keep strings otherwise.
+            try:
+                args[pname.strip()] = json.loads(val)
+            except (json.JSONDecodeError, ValueError):
+                args[pname.strip()] = val
+        calls.append(types.SimpleNamespace(
+            id=f"call_{i}",
+            function=types.SimpleNamespace(name=fm.group(1).strip(), arguments=args),
+        ))
+    return calls or None
+
+
 def normalize_oai_stream(stream):
     """Yield Ollama-compatible chunk objects from an OpenAI-compatible stream."""
     acc_args: dict[int, str] = {}
     acc_calls: dict[int, dict] = {}
+    acc_content_parts: list[str] = []
     last_usage = None
     pending_done: object = None
 
@@ -117,6 +163,7 @@ def normalize_oai_stream(stream):
                         acc_args[idx] += tc.function.arguments
 
         content = delta.content or ""
+        acc_content_parts.append(content)
         # mlx_lm.server and dflash serve stream chain-of-thought in a separate field on
         # the delta. The field name may be `reasoning` or `reasoning_content` depending
         # on the server version. The OpenAI SDK keeps non-standard fields on model_extra
@@ -149,6 +196,10 @@ def normalize_oai_stream(stream):
                     function=fn,
                 ))
             msg.tool_calls = tool_calls
+        elif is_done:
+            # Fallback for models that emit tool calls as qwen3_coder XML text in the
+            # content stream (e.g. Nemotron-3) instead of native structured tool_calls.
+            msg.tool_calls = parse_xml_tool_calls("".join(acc_content_parts))
 
         if is_done:
             if last_usage:
