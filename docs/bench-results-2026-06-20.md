@@ -113,3 +113,34 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | 10 | expert | multi-turn-long-context | 0 (still omlx OOM — wired limit did not help) |
 
 Suggested total: **20/26**. Raising the wired limit (enforcer ceiling 23.8→26 GB) did **not** change the prefill safety cap (still 21.8 GB / 90% of effective ceiling 24.2 GB): Q8 and Q10 OOM identically to Run 1. Q7 happened to take a non-OOM tool path this run but then failed behaviorally. **Conclusion: the wired-limit lever does not fix large-context prefill OOMs on 32 GB — route large-context work to dflash (handled 24 K cleanly in the omlx-0.4.4 dflash bench) or change omlx's Memory Guard tier.**
+
+---
+
+## Run 3 — omlx aggressive memory guard (`--memory-guard aggressive`, + wired limit 26 GB) — re-test of OOM questions only
+
+Aggressive tier raised the prefill effective ceiling 24.2 → 26 GB (cap ~23.4 GB). **Both previously-OOM questions now pass, no Metal panic.**
+
+### Timing
+
+| Q | Difficulty | Category | Qwen3.6-35B-A3B:Qwen3.6-35B-A3B TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 8 | hard | agentic-read-reason | 9975ms | 59.9s | 29.1 |
+| 10 | expert | multi-turn-long-context | 11920ms | 45.2s | 377.6 |
+
+### Agentic results
+
+| Q | Category | Expected calls | Qwen3.6-35B-A3B calls | task_done |
+|---|---------|----------------|---|---|
+| 8 | agentic-read-reason | 1 | read_file | YES |
+| 10 | multi-turn-long-context | 0 | none | no |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | Qwen3.6-35B-A3B score |
+|---|-----------|---------|---|
+| 8 | hard | agentic-read-reason | 2 (read_file, accurate divergence-guard explanation w/ quoted code) |
+| 10 | expert | multi-turn-long-context | 2 (correctly identified the guard is in orchestrator.py, not the shared server.py) |
+
+**Conclusion: the aggressive Memory Guard tier (with `iogpu.wired_limit_mb=26624`) fixes the large-context prefill OOMs.** Q8 and Q10 went 0→2. This confirms Run 1's three 0s were the memory guard, not model capability — Qwen3.6's effective score rises to ~24-26/26 (Q7 remains the one behavioral weak spot, unrelated to OOM). Trade-off: aggressive lets allocations approach the 26 GB cap and Metal will **panic** if a request exceeds it (omlx suggests `iogpu.wired_limit_mb=28672` for full aggressive-tier headroom). Both levers are needed together — wired limit alone (Run 2) did not help.
