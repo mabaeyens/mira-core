@@ -2,7 +2,7 @@
 
 Hardware: MacBook Pro M5 32GB · Backend: omlx 0.4.4 · Model: Qwen3.6-35B-A3B
 
-## Benchmark Results — 2026-06-20
+## Run 1 — omlx default Metal cap (prefill effective ceiling 24.2 GB)
 
 ### Timing
 
@@ -55,4 +55,61 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | 13 | expert | agentic-divergence-guard | 2 |
 | 10 | expert | multi-turn-long-context | 0 (omlx OOM) |
 
-Suggested total: **19/26** — but the three 0s are omlx's 32GB prefill memory-guard (OOM), not model capability; on a memory-unconstrained backend Qwen3.6 would likely score ~25/26.
+Suggested total: **19/26** — the three 0s are omlx's prefill memory-guard (OOM), not model capability. See Run 2 below: raising `iogpu.wired_limit_mb` to 26 GB did **not** clear them (the prefill safety cap is computed from available memory, independent of the wired limit).
+
+---
+
+## Run 2 — omlx with iogpu.wired_limit_mb=26624 (enforcer ceiling 23.8 → 26 GB)
+
+### Timing
+
+| Q | Difficulty | Category | Qwen3.6-35B-A3B:Qwen3.6-35B-A3B TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 1 | easy | baseline | 9994ms | 10.6s | 5.3 |
+| 2 | easy | code-no-tools | 1430ms | 7.4s | 52.7 |
+| 3 | medium | reasoning | 1917ms | 21.6s | 58.8 |
+| 4 | medium | long-output | 1673ms | 14.5s | 60.0 |
+| 5 | medium | thinking-toggle | 1913ms | 14.9s | 62.0 |
+| 6 | hard | agentic-single-tool | 2685ms | 6.8s | 46.7 |
+| 7 | hard | agentic-multi-step | 2535ms | 238.6s | — |
+| 8 | hard | agentic-read-reason | ERR: Prefill context too large for available memory (pre-chunk guard at 4096 tokens, kv_len=6144): predicted peak would exceed prefill safety cap 21.8GB (90% of effective ceiling 24.2GB) | — | — |
+| 9 | expert | agentic-task-done | 3267ms | 9.5s | 47.0 |
+| 11 | hard | agentic-write-file | 2269ms | 10.4s | 24.5 |
+| 12 | hard | agentic-edit-file | 3940ms | 16.2s | 30.1 |
+| 13 | expert | agentic-divergence-guard | 2427ms | 15.4s | 41.0 |
+| 10 | expert | multi-turn-long-context | ERR: Prefill context too large for available memory (pre-chunk guard at 6144 tokens, kv_len=8192): predicted peak would exceed prefill safety cap 21.8GB (90% of effective ceiling 24.2GB) | — | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | Qwen3.6-35B-A3B calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | run_shell | YES |
+| 7 | agentic-multi-step | 2 | run_shell, run_shell, run_shell, run_shell, run_shell, search_files, run_shell, run_shell, run_shell, run_shell, write_file | no |
+| 8 | agentic-read-reason | 1 | ERR | — |
+| 9 | agentic-task-done | 3 | run_shell | YES |
+| 11 | agentic-write-file | 2 | write_file, read_file | YES |
+| 12 | agentic-edit-file | 3 | write_file, edit_file, read_file | YES |
+| 13 | agentic-divergence-guard | 3 | run_shell, run_shell | YES |
+| 10 | multi-turn-long-context | 0 | ERR | — |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | Qwen3.6-35B-A3B score |
+|---|-----------|---------|---|
+| 1 | easy | baseline | 2 |
+| 2 | easy | code-no-tools | 2 |
+| 3 | medium | reasoning | 2 |
+| 4 | medium | long-output | 2 |
+| 5 | medium | thinking-toggle | 2 |
+| 6 | hard | agentic-single-tool | 2 |
+| 7 | hard | agentic-multi-step | 0 (no longer OOM, but ran away: 11 calls, tool-path confusion, no task_done) |
+| 8 | hard | agentic-read-reason | 0 (still omlx OOM — wired limit did not help) |
+| 9 | expert | agentic-task-done | 2 |
+| 11 | hard | agentic-write-file | 2 |
+| 12 | hard | agentic-edit-file | 2 (confirmed read-back this run) |
+| 13 | expert | agentic-divergence-guard | 2 |
+| 10 | expert | multi-turn-long-context | 0 (still omlx OOM — wired limit did not help) |
+
+Suggested total: **20/26**. Raising the wired limit (enforcer ceiling 23.8→26 GB) did **not** change the prefill safety cap (still 21.8 GB / 90% of effective ceiling 24.2 GB): Q8 and Q10 OOM identically to Run 1. Q7 happened to take a non-OOM tool path this run but then failed behaviorally. **Conclusion: the wired-limit lever does not fix large-context prefill OOMs on 32 GB — route large-context work to dflash (handled 24 K cleanly in the omlx-0.4.4 dflash bench) or change omlx's Memory Guard tier.**
