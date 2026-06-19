@@ -393,7 +393,7 @@ def main():
         existing = results_path.read_text()
         results_path.write_text(existing + "\n\n---\n\n" + md)
     else:
-        header = f"# Benchmark Results — {today}\n\nHardware: MacBook Pro M5 32GB · Ollama 0.24.0\n\n"
+        header = f"# Benchmark Results — {today}\n\nHardware: MacBook Pro M5 32GB (backend/model per run — see sections below)\n\n"
         results_path.write_text(header + md)
 
     print(f"\nResults written to {results_path}")
