@@ -41,16 +41,18 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 
 | Q | Difficulty | Category | NVIDIA-Nemotron-3-Nano-30B-A3B score |
 |---|-----------|---------|---|
-| 1 | easy | baseline | — |
-| 2 | easy | code-no-tools | — |
-| 3 | medium | reasoning | — |
-| 4 | medium | long-output | — |
-| 5 | medium | thinking-toggle | — |
-| 6 | hard | agentic-single-tool | — |
-| 7 | hard | agentic-multi-step | — |
-| 8 | hard | agentic-read-reason | — |
-| 9 | expert | agentic-task-done | — |
-| 11 | hard | agentic-write-file | — |
-| 12 | hard | agentic-edit-file | — |
-| 13 | expert | agentic-divergence-guard | — |
-| 10 | expert | multi-turn-long-context | — |
+| 1 | easy | baseline | 2 |
+| 2 | easy | code-no-tools | 2 |
+| 3 | medium | reasoning | 2 |
+| 4 | medium | long-output | 2 |
+| 5 | medium | thinking-toggle | 2 |
+| 6 | hard | agentic-single-tool | 1 (4 cmds vs 1 asked, total not shown) |
+| 7 | hard | agentic-multi-step | 1 (ran tool, no markdown output shown) |
+| 8 | hard | agentic-read-reason | 2 |
+| 9 | expert | agentic-task-done | 1 (done, but did not report findings) |
+| 11 | hard | agentic-write-file | 0 (empty/thinking-only, no tool call) |
+| 12 | hard | agentic-edit-file | 1 (6 calls + divergence guard, no confirmation) |
+| 13 | expert | agentic-divergence-guard | 1 (gave up after 2 checks, asked user) |
+| 10 | expert | multi-turn-long-context | 2 |
+
+Suggested total: **19/26** — strong on read/reason + large-context (no OOM), but a recurring pattern of completing via tools while emitting an empty final answer, plus the Q11 miss and tool over-calling.

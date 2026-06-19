@@ -41,16 +41,18 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 
 | Q | Difficulty | Category | Qwen3.6-35B-A3B score |
 |---|-----------|---------|---|
-| 1 | easy | baseline | — |
-| 2 | easy | code-no-tools | — |
-| 3 | medium | reasoning | — |
-| 4 | medium | long-output | — |
-| 5 | medium | thinking-toggle | — |
-| 6 | hard | agentic-single-tool | — |
-| 7 | hard | agentic-multi-step | — |
-| 8 | hard | agentic-read-reason | — |
-| 9 | expert | agentic-task-done | — |
-| 11 | hard | agentic-write-file | — |
-| 12 | hard | agentic-edit-file | — |
-| 13 | expert | agentic-divergence-guard | — |
-| 10 | expert | multi-turn-long-context | — |
+| 1 | easy | baseline | 2 |
+| 2 | easy | code-no-tools | 2 |
+| 3 | medium | reasoning | 2 |
+| 4 | medium | long-output | 2 |
+| 5 | medium | thinking-toggle | 2 |
+| 6 | hard | agentic-single-tool | 2 |
+| 7 | hard | agentic-multi-step | 0 (omlx OOM) |
+| 8 | hard | agentic-read-reason | 0 (omlx OOM) |
+| 9 | expert | agentic-task-done | 2 |
+| 11 | hard | agentic-write-file | 2 |
+| 12 | hard | agentic-edit-file | 1 (correct tool sequence, no confirmation text) |
+| 13 | expert | agentic-divergence-guard | 2 |
+| 10 | expert | multi-turn-long-context | 0 (omlx OOM) |
+
+Suggested total: **19/26** — but the three 0s are omlx's 32GB prefill memory-guard (OOM), not model capability; on a memory-unconstrained backend Qwen3.6 would likely score ~25/26.
