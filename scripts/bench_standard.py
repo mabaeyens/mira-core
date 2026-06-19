@@ -234,6 +234,10 @@ def main() -> None:
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--model",    default=DEFAULT_MODEL)
     parser.add_argument("--reps",     type=int, default=DEFAULT_REPS)
+    parser.add_argument("--pp-sizes", default=None,
+                        help="Comma-separated prompt-token sizes (override default matrix), e.g. 16384,24576")
+    parser.add_argument("--tg-sizes", default=None,
+                        help="Comma-separated output-token sizes (override default matrix)")
     parser.add_argument("--api-key",  default=None,
                         help="Bearer token. Auto-read from ~/.omlx/settings.json for port 8080.")
     parser.add_argument("--output",   default=None,
@@ -264,13 +268,16 @@ def main() -> None:
 
     rows: list[dict] = []
 
-    for size in PP_SIZES:
+    pp_sizes = [int(s) for s in args.pp_sizes.split(",")] if args.pp_sizes else PP_SIZES
+    tg_sizes = [int(s) for s in args.tg_sizes.split(",")] if args.tg_sizes else TG_SIZES
+
+    for size in pp_sizes:
         print(f"[pp{size}]")
         result = _run_pp_cell(args.base_url, args.model, size, args.reps, api_key=api_key)
         if result:
             rows.append({"test": f"pp{size}", **result})
 
-    for size in TG_SIZES:
+    for size in tg_sizes:
         print(f"[tg{size}]")
         result = _run_tg_cell(args.base_url, args.model, size, args.reps, api_key=api_key)
         if result:
