@@ -223,7 +223,7 @@ Additional settings (not user-configurable via `mira.yaml` — edit `core/config
 | `MAX_SEARCH_RESULTS` | `5` | Results per web search |
 | `MAX_TOOL_STEPS` | `10` | Max tool calls per turn |
 | `MAX_RETRIES` | `3` | API error retries per call |
-| `SEARCH_TIMEOUT` | `30` | DuckDuckGo timeout in seconds |
+| `SEARCH_TIMEOUT` | `30` | Web search timeout in seconds |
 | `RERANK_MODEL` | `Qwen3-Reranker-0.6B-4bit` | RAG reranker (mlx, in-process) |
 | `RAG_CHUNK_SIZE` | `400` | Words per RAG chunk |
 | `RAG_CHUNK_OVERLAP` | `40` | Word overlap between chunks |
