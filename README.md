@@ -18,8 +18,10 @@ Mira is public and ready for testing. Two ways in: the apps (iPhone/iPad/Mac via
 TestFlight at [askmira.es](https://askmira.es), easiest), or this repo (run the
 backend yourself; Apple Silicon, and the models are big, so check the preflight below).
 
-Two things I'd love to know: is it actually useful, and what broke. Tell me in
-[Discussions](https://github.com/mabaeyens/mira-core/discussions); I read everything.
+Two things I'd love to know: is it actually useful, and what broke. Feedback,
+questions, and whether it's useful go in
+[Discussions](https://github.com/mabaeyens/mira-core/discussions); bugs and crashes go
+in [Issues](https://github.com/mabaeyens/mira-core/issues/new/choose). I read both.
 
 ## Features
 
