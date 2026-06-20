@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import shutil
 import subprocess
 import time
 import urllib.request
@@ -25,6 +26,9 @@ DFLASH_PORT = 8080
 DFLASH_HOST = f"http://localhost:{DFLASH_PORT}"
 DFLASH_MODEL = "mlx-community/Qwen3.6-35B-A3B-4bit"
 DFLASH_CONTEXT = 65536
+# dflash's prefix/KV cache (regenerable). dflash is a secondary large-context fallback
+# here, so we trim this on stop rather than let it grow to tens of GB.
+DFLASH_CACHE_DIR = Path.home() / ".cache" / "dflash"
 
 # Validated target → draft pairings from the dflash-mlx README
 DFLASH_DRAFT_MODELS = {
@@ -131,6 +135,19 @@ def start_dflash(model: str = DFLASH_MODEL) -> None:
     _wait_for_ready(DFLASH_HOST + "/v1/models", timeout=120)
 
 
+def _clear_dflash_cache() -> None:
+    """Delete dflash's prefix/KV cache (regenerable). Trades a cold first-prefill on the
+    next dflash session for not letting the cache grow to tens of GB. Appropriate because
+    dflash is a secondary/large-context fallback here, not the primary server."""
+    cache = DFLASH_CACHE_DIR / "prefix_l2"
+    if cache.exists():
+        try:
+            shutil.rmtree(cache, ignore_errors=True)
+            logger.info("Cleared dflash prefix cache at %s", cache)
+        except Exception as e:
+            logger.warning("Failed to clear dflash cache %s: %s", cache, e)
+
+
 def stop_dflash() -> None:
     global _dflash_proc
     if _dflash_proc and _dflash_proc.poll() is None:
@@ -140,6 +157,8 @@ def stop_dflash() -> None:
         except subprocess.TimeoutExpired:
             _dflash_proc.kill()
         _dflash_proc = None
+        # Reclaim the prefix cache now that dflash is down (it rebuilds on next use).
+        _clear_dflash_cache()
 
 
 def restart_dflash_if_dead(model: str = DFLASH_MODEL) -> None:
