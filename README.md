@@ -12,6 +12,15 @@ Mira is also available as native **macOS + iOS apps** — see [askmira.es](https
 for an overview and TestFlight access, or the
 [mira-apps](https://github.com/mabaeyens/mira-apps) repo for the SwiftUI source.
 
+## Testing Mira
+
+Mira is public and ready for testing. Two ways in: the apps (iPhone/iPad/Mac via
+TestFlight at [askmira.es](https://askmira.es), easiest), or this repo (run the
+backend yourself; Apple Silicon, and the models are big, so check the preflight below).
+
+Two things I'd love to know: is it actually useful, and what broke. Tell me in
+[Discussions](https://github.com/mabaeyens/mira-core/discussions); I read everything.
+
 ## Features
 
 - **Autonomous Search**: Model searches the web via Brave Search and fetches full page content when snippets aren't enough (Jina fallback for JS-rendered pages) — sources are shown as clickable links
