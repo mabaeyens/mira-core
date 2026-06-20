@@ -9,6 +9,8 @@
 #   --with-ocr               install tesseract (OCR for scanned PDFs)
 #   --with-launchagent       install the macOS LaunchAgent (run server at login)
 #   --with-tailscale <host>  configure HTTPS/Tailscale certs in the LaunchAgent
+#   --skip-preflight         skip the disk + memory check
+#   --force                  proceed even if disk space is low
 #   -y, --yes                non-interactive (assume yes)
 #
 # Everything except `uv sync` + config is opt-in. The big oMLX app and its
@@ -24,6 +26,8 @@ WITH_OCR=0
 WITH_LAUNCHAGENT=0
 TAILSCALE_HOST=""
 ASSUME_YES=0
+SKIP_PREFLIGHT=0
+FORCE=0
 
 G="\033[32m"; R="\033[31m"; Y="\033[33m"; D="\033[2m"; N="\033[0m"
 info() { printf "${Y}==>${N} %s\n" "$1"; }
@@ -36,6 +40,8 @@ while [ $# -gt 0 ]; do
     --with-ocr) WITH_OCR=1 ;;
     --with-launchagent) WITH_LAUNCHAGENT=1 ;;
     --with-tailscale) TAILSCALE_HOST="${2:-}"; shift ;;
+    --skip-preflight) SKIP_PREFLIGHT=1 ;;
+    --force) FORCE=1 ;;
     -y|--yes) ASSUME_YES=1 ;;
     *) warn "unknown flag: $1" ;;
   esac
@@ -60,6 +66,17 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 command -v uv >/dev/null 2>&1 || { warn "uv still not on PATH — open a new shell and re-run."; exit 1; }
 ok "uv $(uv --version 2>/dev/null | awk '{print $2}')"
+
+# ── preflight: disk + memory ──────────────────────────────────────────────────
+# Runs on system python3 (stdlib only) before the venv exists. Aborts on low disk
+# (set -e) unless --force / --skip-preflight.
+if [ "$SKIP_PREFLIGHT" = "0" ]; then
+  PRE_ARGS=()
+  [ "$ASSUME_YES" = "1" ] && PRE_ARGS+=(-y)
+  [ "$FORCE" = "1" ] && PRE_ARGS+=(--force)
+  [ "$WITH_OLLAMA" = "1" ] && PRE_ARGS+=(--include ollama)
+  /usr/bin/python3 "$REPO_ROOT/mira_cli.py" preflight "${PRE_ARGS[@]+"${PRE_ARGS[@]}"}"
+fi
 
 # ── python deps ──────────────────────────────────────────────────────────────
 info "Syncing Python dependencies (uv sync)"

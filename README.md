@@ -64,6 +64,18 @@ make install ARGS="--with-ollama --with-launchagent"
 | `--with-ocr` | `brew install tesseract` (OCR for scanned PDFs — see below) |
 | `--with-launchagent` | install & load the macOS LaunchAgent (server runs at login) |
 | `--with-tailscale <host>` | configure HTTPS/Tailscale cert paths in the LaunchAgent |
+| `--skip-preflight` | skip the disk + memory check |
+| `--force` | proceed even when free disk is below the recommended headroom |
+
+### Disk & memory
+
+Before doing any work the installer runs a **preflight** (`mira preflight`): it lets you
+pick which models count toward the budget, estimates total disk (the default
+`Qwen3.6-35B-A3B` alone is ~19 GB; a full multi-model install can top 70 GB), and checks
+you have that **plus ~15 GB breathing room** free — otherwise it stops (override with
+`--force`). It also warns when RAM is tight: on a 32 GB Mac the large models can't be
+resident at once (Mira loads one at a time), and below 24 GB the default model may OOM at
+large context. Run `mira preflight` standalone any time to see the budget.
 
 The one thing the installer **can't** do for you (it's GUI-gated): install the oMLX
 app and load the model. Download from

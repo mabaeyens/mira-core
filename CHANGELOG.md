@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.8.3 — June 2026
+
+- **Installer preflight** — `scripts/setup.sh` now runs a disk + memory check before any
+  work (`mira preflight`, stdlib-only, runs on system python before the venv exists). It
+  lets you pick which models count toward the budget, estimates total disk (incl. the
+  GUI-gated oMLX models — the default `Qwen3.6-35B-A3B` alone is ~19 GB), and aborts if you
+  don't have that plus ~15 GB breathing room (override with `--force`). Warns when RAM is
+  tight: 32 GB can't co-host two large models; below 24 GB the default may OOM at large
+  context. New flags `--skip-preflight` / `--force`; `mira doctor` now shows free disk.
+
 ## v0.8.2 — June 2026
 
 - **One-command installer** — `install.sh` (curl-able bootstrap that clones to `~/mira-core`
