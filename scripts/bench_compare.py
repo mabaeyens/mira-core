@@ -94,19 +94,17 @@ def register_throwaway_project(local_path: Path) -> tuple[str, str]:
 
 def teardown(source_repo: Path | None, tmp_base: Path | None, wt: Path | None,
              project_id: str | None) -> None:
-    """Best-effort cleanup — each step is isolated so one failure doesn't block the rest."""
+    """Best-effort cleanup — each step is isolated so one failure doesn't block the rest.
+
+    Order matters: the worktree folder is removed *before* the project is deleted, because
+    DELETE /projects refuses to drop an entry whose local_path still exists on disk.
+    """
     for cid in _created_convs:
         try:
             requests.delete(f"{BASE_URL}/conversations/{cid}", timeout=5)
         except Exception as e:
             print(f"  teardown: failed to delete conversation {cid}: {e}")
     _created_convs.clear()
-
-    if project_id:
-        try:
-            requests.delete(f"{BASE_URL}/projects/{project_id}", timeout=5)
-        except Exception as e:
-            print(f"  teardown: failed to delete project {project_id}: {e}")
 
     if source_repo and wt:
         try:
@@ -126,6 +124,13 @@ def teardown(source_repo: Path | None, tmp_base: Path | None, wt: Path | None,
             )
         except Exception:
             pass
+
+    if project_id:
+        # Folder is now gone, so the local_path-exists guard in DELETE /projects passes.
+        try:
+            requests.delete(f"{BASE_URL}/projects/{project_id}", timeout=5)
+        except Exception as e:
+            print(f"  teardown: failed to delete project {project_id}: {e}")
 
 
 def load_questions() -> list[dict]:

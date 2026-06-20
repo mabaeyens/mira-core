@@ -592,8 +592,22 @@ async def create_project(body: ProjectRequest):
 
 @app.delete("/projects/{project_id}")
 async def delete_project(project_id: str):
-    if not db.get_project(project_id):
+    project = db.get_project(project_id)
+    if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    # A project entry can only be removed once its backing files are gone. While the
+    # local folder still exists, deletion is refused — the user must delete the local
+    # folder (or its GitHub repo) manually first. This prevents an accidental tap in the
+    # app from dropping a live project and its conversation history.
+    local_path = (project.get("local_path") or "").strip()
+    if local_path and Path(local_path).expanduser().exists():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Project files still exist at {local_path}. Delete the local folder "
+                "(or its GitHub repo) manually first, then remove the project entry."
+            ),
+        )
     db.delete_project(project_id)
     return {"status": "ok"}
 
