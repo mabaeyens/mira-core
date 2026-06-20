@@ -49,9 +49,13 @@ def _abs_outside_ws_pattern(workspace_root: str) -> re.Pattern:
     # Match /word-start sequences that are absolute paths outside the workspace.
     # Require a letter/digit after / so sed s/^/- / and similar regex delimiters
     # aren't falsely flagged (metacharacters like ^ $ . [ are not path components).
+    # The lookbehind also excludes a preceding '*' so glob-relative exclusion
+    # patterns (e.g. find . -path '*/build/*', grep --exclude '*/dist/*') are not
+    # mistaken for absolute paths — a shell glob expands relative to cwd and cannot
+    # escape the workspace, whereas a true absolute path ('/etc', ' /etc') still matches.
     # /tmp/ is explicitly allowed as a safe OS temp directory.
     return re.compile(
-        r'(?<!\w)/(?=[a-zA-Z0-9])'
+        r'(?<![\w*])/(?=[a-zA-Z0-9])'
         r'(?!tmp(?:/|$))'
         r'(?!' + re.escape(ws.lstrip('/')) + r'(?:/|$))',
     )

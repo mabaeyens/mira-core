@@ -214,6 +214,7 @@ RUN_SHELL_TOOL = {
             "For aggregation tasks, use ONE pipeline — never split into list-files then process-each:\n"
             "  Count lines:    find . -name '*.py' -not -path '*/__pycache__/*' | xargs cat | wc -l\n"
             "  Find patterns:  grep -rn 'TODO\\|FIXME' . --include='*.py'\n"
+            "  Exclude dirs:   grep -rIn 'TODO\\|FIXME' . --exclude-dir=.venv --exclude-dir=.git --exclude-dir=__pycache__\n"
             "  Count matches:  grep -rl 'pattern' . | wc -l\n"
             "Run the command once. If it returns a number, that IS the answer — do not reformat or retry."
         ),

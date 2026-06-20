@@ -8,6 +8,10 @@ from typing import Any, Dict, Optional
 
 _MAX_LIST_ENTRIES = 2_000
 
+# Directories never worth searching/walking — dependency & VCS noise. Dot-dirs
+# (.venv, .git, …) are handled separately via the leading-"." check.
+_EXCLUDED_DIRS = {"__pycache__", "node_modules"}
+
 from .workspace import safe_path, rel
 
 
@@ -79,6 +83,11 @@ def search_files(pattern: str, path: str = ".", case_sensitive: bool = False, ro
     matches = []
     for file_path in sorted(p.rglob("*")):
         if not file_path.is_file():
+            continue
+        # Skip dependency/VCS dirs (.venv, .git, __pycache__, node_modules) so repo
+        # searches return signal, not thousands of vendored matches that blow the cap.
+        rel_parts = file_path.relative_to(p).parts
+        if any(part.startswith(".") or part in _EXCLUDED_DIRS for part in rel_parts):
             continue
         try:
             for i, line in enumerate(file_path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):

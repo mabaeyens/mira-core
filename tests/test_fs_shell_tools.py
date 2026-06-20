@@ -130,6 +130,19 @@ def test_search_files_invalid_regex_returns_error(ws):
     assert "error" in result
 
 
+def test_search_files_excludes_dot_and_pycache_dirs(ws):
+    from core import fs_tools
+    (ws / "pkg").mkdir()
+    (ws / "pkg" / "y.py").write_text("# TODO real\n")
+    (ws / ".venv").mkdir()
+    (ws / ".venv" / "x.py").write_text("# TODO vendored\n")
+    (ws / "__pycache__").mkdir()
+    (ws / "__pycache__" / "z.py").write_text("# TODO cached\n")
+    result = fs_tools.search_files("TODO")
+    files = {m["file"] for m in result["matches"]}
+    assert files == {"pkg/y.py"}
+
+
 # ── fs_tools: move_file ───────────────────────────────────────────────────────
 
 def test_move_file_renames(ws):
@@ -211,6 +224,22 @@ def test_run_shell_cwd_sandbox_escape_blocked(ws):
     from core import shell_tools
     result = shell_tools.run_shell("pwd", cwd="../../..")
     assert "error" in result
+
+
+def test_run_shell_allows_glob_exclusion_pattern(ws):
+    from core import shell_tools
+    # Glob-relative exclusion patterns must NOT be mistaken for absolute paths.
+    result = shell_tools.run_shell("find . -path '*/build/*' -prune -o -name '*.py' -print")
+    assert "error" not in result
+    assert result["exit_code"] == 0
+
+
+def test_run_shell_absolute_path_outside_workspace_still_blocked(ws):
+    from core import shell_tools
+    # Security regression: a true absolute path outside the workspace stays blocked.
+    result = shell_tools.run_shell("cat /etc/hosts")
+    assert "error" in result
+    assert "absolute path" in result["error"].lower()
 
 
 def test_run_shell_rm_rf_blocked_without_force(ws):
