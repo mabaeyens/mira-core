@@ -104,6 +104,10 @@ def doctor() -> int:
     ok &= _line(OMLX_APP.exists(), "oMLX app installed",
                 f"download from {OMLX_RELEASES}, drag to /Applications")
 
+    # Optional dep (informational — not counted toward exit status).
+    _line(_which("tesseract"), "tesseract installed (optional — scanned-PDF OCR)",
+          "mira setup --with-ocr")
+
     # Runtime checks (informational — not counted toward exit status).
     print(f"\n{DIM}  runtime (start a backend / server to light these up){RESET}")
     omlx_up = _http_ok(OMLX_HOST + "/v1/models",

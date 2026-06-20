@@ -61,6 +61,7 @@ make install ARGS="--with-ollama --with-launchagent"
 | Flag | Effect |
 |------|--------|
 | `--with-ollama` | `brew install ollama` + `ollama pull gemma4:26b` (optional Gemma4 backend) |
+| `--with-ocr` | `brew install tesseract` (OCR for scanned PDFs — see below) |
 | `--with-launchagent` | install & load the macOS LaunchAgent (server runs at login) |
 | `--with-tailscale <host>` | configure HTTPS/Tailscale cert paths in the LaunchAgent |
 
@@ -150,6 +151,7 @@ remove the Mira model weights from `~/.cache/huggingface/hub` manually if you wa
 
 - Streaming responses with live markdown rendering
 - Upload button — attach files from your machine
+- PDFs are text-extracted and RAG-indexed automatically; **scanned PDFs** (no text layer) are OCR'd page-by-page when `tesseract` is installed (`--with-ocr`, or `brew install tesseract`), otherwise a clear warning is shown. OCR is capped (50 pages, per-page timeout) and only runs on pages with no extractable text
 - Folder browser — navigate the server's filesystem, filter by extension, select multiple files; files with wrong or missing extension are shown greyed out with a rejection warning
 - Search chips expand to show clickable source links; fetch chips link directly to the fetched page
 - Green Documents panel showing RAG-indexed files with per-doc remove

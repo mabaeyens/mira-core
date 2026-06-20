@@ -6,6 +6,7 @@
 #
 # Flags:
 #   --with-ollama            install ollama + pull gemma4:26b (optional backend)
+#   --with-ocr               install tesseract (OCR for scanned PDFs)
 #   --with-launchagent       install the macOS LaunchAgent (run server at login)
 #   --with-tailscale <host>  configure HTTPS/Tailscale certs in the LaunchAgent
 #   -y, --yes                non-interactive (assume yes)
@@ -19,6 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 WITH_OLLAMA=0
+WITH_OCR=0
 WITH_LAUNCHAGENT=0
 TAILSCALE_HOST=""
 ASSUME_YES=0
@@ -31,6 +33,7 @@ warn() { printf "${R}  !${N} %s\n" "$1"; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --with-ollama) WITH_OLLAMA=1 ;;
+    --with-ocr) WITH_OCR=1 ;;
     --with-launchagent) WITH_LAUNCHAGENT=1 ;;
     --with-tailscale) TAILSCALE_HOST="${2:-}"; shift ;;
     -y|--yes) ASSUME_YES=1 ;;
@@ -80,6 +83,16 @@ if [ "$WITH_OLLAMA" = "1" ]; then
       warn "Homebrew not found — install ollama manually from https://ollama.com"; fi
   fi
   command -v ollama >/dev/null 2>&1 && { ollama pull gemma4:26b || warn "ollama pull failed (start the ollama app first)"; ok "ollama ready"; }
+fi
+
+# ── optional: OCR (tesseract) ────────────────────────────────────────────────
+if [ "$WITH_OCR" = "1" ]; then
+  info "Setting up tesseract (OCR for scanned PDFs)"
+  if ! command -v tesseract >/dev/null 2>&1; then
+    if command -v brew >/dev/null 2>&1; then brew install tesseract; else
+      warn "Homebrew not found — install tesseract manually (https://github.com/tesseract-ocr/tesseract)"; fi
+  fi
+  command -v tesseract >/dev/null 2>&1 && ok "tesseract ready ($(tesseract --version 2>&1 | head -1))"
 fi
 
 # ── optional: LaunchAgent ────────────────────────────────────────────────────
