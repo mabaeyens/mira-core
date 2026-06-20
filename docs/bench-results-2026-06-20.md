@@ -2,6 +2,30 @@
 
 Hardware: MacBook Pro M5 32GB · Backend: omlx 0.4.4 · Model: Qwen3.6-35B-A3B
 
+## Consolidated Qwen3.6 scorecard (best config: aggressive Memory Guard + iogpu.wired_limit_mb=26624)
+
+Best achieved score per question across the three configs below. Under the aggressive guard the prefill OOMs clear (Q8, Q10 → 2); only Q7 remains a non-OOM behavioral miss.
+
+| Q | Category | Score | Note |
+|---|---|---|---|
+| 1 | baseline | 2 | |
+| 2 | code-no-tools | 2 | |
+| 3 | reasoning | 2 | |
+| 4 | long-output | 2 | |
+| 5 | thinking-toggle | 2 | |
+| 6 | agentic-single-tool | 2 | |
+| 7 | agentic-multi-step | 0 | behavioral (tool-path confusion, no task_done) — not memory-related; not re-tested under aggressive |
+| 8 | agentic-read-reason | 2 | passes under aggressive guard (Run 3) |
+| 9 | agentic-task-done | 2 | |
+| 11 | agentic-write-file | 2 | |
+| 12 | agentic-edit-file | 2 | |
+| 13 | agentic-divergence-guard | 2 | |
+| 10 | multi-turn-long-context | 2 | passes under aggressive guard (Run 3) |
+
+**Total: 24/26** (best config) — vs Nemotron 3 Nano **19/26** (2026-06-19). The earlier 19–20/26 totals reflected the default/balanced guard OOMing on large-context questions; with the memory guard fixed, Qwen3.6 clearly leads.
+
+---
+
 ## Run 1 — omlx default Metal cap (prefill effective ceiling 24.2 GB)
 
 ### Timing
