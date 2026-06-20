@@ -841,13 +841,19 @@ async def ask(body: AskRequest, _: None = Depends(_ready)):
 
 
 if __name__ == "__main__":
+    import re
     import signal
     import subprocess
     import sys
     import time
 
+    # Clear a stale instance of *this same deployment* only — scope the pattern to this
+    # checkout's interpreter (sys.executable is unique per venv), so a second checkout or a
+    # production server from another path is never killed. SIGTERM is ignored across the call
+    # so pkill matching our own process is a no-op for us but still reaps the old instance.
+    _self_py = re.escape(sys.executable)
     _old_sigterm = signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    subprocess.run(["/usr/bin/pkill", "-f", "python.*server\\.py"], capture_output=True)
+    subprocess.run(["/usr/bin/pkill", "-f", rf"{_self_py}.*server\.py"], capture_output=True)
     signal.signal(signal.SIGTERM, _old_sigterm)
     time.sleep(0.4)
 
