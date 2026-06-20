@@ -2,9 +2,9 @@
 
 Hardware: MacBook Pro M5 32GB · Backend: omlx 0.4.4 · Model: Qwen3.6-35B-A3B
 
-## Consolidated Qwen3.6 scorecard (best config: aggressive Memory Guard + iogpu.wired_limit_mb=26624)
+## Consolidated Qwen3.6 scorecard (best config: agent-tool fixes + chunked_prefill; aggressive/custom ceiling for Q10)
 
-Best achieved score per question across the three configs below. Under the aggressive guard the prefill OOMs clear (Q8, Q10 → 2); only Q7 remains a non-OOM behavioral miss.
+Best achieved score per question across the four runs below. Agent-tool fixes (Run 4) fixed Q7; `chunked_prefill` at the safe balanced tier fixed Q8; Q10 needs the aggressive tier (Run 3) or a slightly higher custom ceiling.
 
 | Q | Category | Score | Note |
 |---|---|---|---|
@@ -14,15 +14,17 @@ Best achieved score per question across the three configs below. Under the aggre
 | 4 | long-output | 2 | |
 | 5 | thinking-toggle | 2 | |
 | 6 | agentic-single-tool | 2 | |
-| 7 | agentic-multi-step | 0 | behavioral (tool-path confusion, no task_done) — not memory-related; not re-tested under aggressive |
-| 8 | agentic-read-reason | 2 | passes under aggressive guard (Run 3) |
+| 7 | agentic-multi-step | 2 | fixed by run_shell glob + search_files exclusion fixes (Run 4) — memory-independent |
+| 8 | agentic-read-reason | 2 | chunked_prefill at balanced (Run 4); also passes aggressive (Run 3) |
 | 9 | agentic-task-done | 2 | |
 | 11 | agentic-write-file | 2 | |
 | 12 | agentic-edit-file | 2 | |
 | 13 | agentic-divergence-guard | 2 | |
-| 10 | multi-turn-long-context | 2 | passes under aggressive guard (Run 3) |
+| 10 | multi-turn-long-context | 2 | aggressive tier (Run 3); balanced+chunked misses by ~10 MB |
 
-**Total: 24/26** (best config) — vs Nemotron 3 Nano **19/26** (2026-06-19). The earlier 19–20/26 totals reflected the default/balanced guard OOMing on large-context questions; with the memory guard fixed, Qwen3.6 clearly leads.
+**Total: 26/26** (best config) — vs Nemotron 3 Nano **19/26** (2026-06-19).
+
+Config achievability: **balanced + chunked_prefill + tool fixes = 24/26** (safe, no panic risk; only Q10 misses). Adding the **aggressive tier** (or `memory_guard_custom_ceiling_gb ≈ 25`, or routing Q10-style long retrievals to dflash) reaches **26/26**. The earlier 19–20/26 totals were artifacts of the default/balanced guard OOMing on large-context questions, plus the agent-tool friction on Q7.
 
 ---
 
@@ -168,3 +170,40 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | 10 | expert | multi-turn-long-context | 2 (correctly identified the guard is in orchestrator.py, not the shared server.py) |
 
 **Conclusion: the aggressive Memory Guard tier (with `iogpu.wired_limit_mb=26624`) fixes the large-context prefill OOMs.** Q8 and Q10 went 0→2. This confirms Run 1's three 0s were the memory guard, not model capability — Qwen3.6's effective score rises to ~24-26/26 (Q7 remains the one behavioral weak spot, unrelated to OOM). Trade-off: aggressive lets allocations approach the 26 GB cap and Metal will **panic** if a request exceeds it (omlx suggests `iogpu.wired_limit_mb=28672` for full aggressive-tier headroom). Both levers are needed together — wired limit alone (Run 2) did not help.
+
+---
+
+## Run 4 — balanced guard + chunked_prefill + agent-tool fixes (re-test Q7/Q8/Q10)
+
+Safe config: `memory_guard_tier=balanced` + `chunked_prefill=true` (no aggressive, no panic risk), plus the `run_shell` glob-exclusion fix and `search_files` dir exclusions.
+
+### Timing
+
+| Q | Difficulty | Category | Qwen3.6-35B-A3B:Qwen3.6-35B-A3B TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 7 | hard | agentic-multi-step | 13773ms | 68.8s | 53.6 |
+| 8 | hard | agentic-read-reason | 3291ms | 52.5s | 37.1 |
+| 10 | expert | multi-turn-long-context | ERR: Error code: 400 - {'error': {'message': 'oMLX prefill memory guard rejected this prompt: Prefill context too large for available memory (preflight safety guard, kv_len=19970, min_chunk=32): predicted peak would require ~21.72 GB (current 21.47 GB + KV 128.14 MB + min-chunk transient 130.19 MB) but prefill safety cap is 21.71 GB (90% of effective ceiling 24.12 GB). Reduce context length, free system memory, or loosen memory_guard_tier (safe → balanced → aggressive). To continue, set Memory Guard to aggressive, raise the custom memory guard ceiling, free system memory, or compact/reduce context.', 'type': 'invalid_request_error', 'param': None, 'code': 'prefill_memory_exceeded', 'omlx_code': 'prefill_memory_exceeded', 'estimated_bytes': 23322985386, 'limit_bytes': 23305700966}, 'type': 'error'} | — | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | Qwen3.6-35B-A3B calls | task_done |
+|---|---------|----------------|---|---|
+| 7 | agentic-multi-step | 2 | run_shell, run_shell, run_shell, run_shell, run_shell, run_shell | YES |
+| 8 | agentic-read-reason | 1 | read_file | YES |
+| 10 | multi-turn-long-context | 0 | ERR | — |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | Qwen3.6-35B-A3B score |
+|---|-----------|---------|---|
+| 7 | hard | agentic-multi-step | 2 (tool fixes worked — no path confusion; correct grouped-markdown answer, task_done; guard fired once but converged in 6 calls) |
+| 8 | hard | agentic-read-reason | 2 (chunked_prefill cleared the OOM at balanced — no aggressive needed; accurate answer) |
+| 10 | expert | multi-turn-long-context | 0 (turn 1 inject now passes via chunking; turn 2 OOMs by ~10 MB — needs 21.72 GB vs 21.71 GB balanced cap; passes under aggressive, Run 3) |
+
+**Conclusions:**
+- **Tool fixes resolve Q7 permanently** (memory-independent): the `run_shell` abs-path regex no longer false-flags `*/dir/*` exclusion globs, and `search_files` skips `.venv`/`.git`/`__pycache__`. Q7 went 0→2.
+- **chunked_prefill makes the safe (balanced) tier clear Q8** with no Metal-panic risk — the preferred fix over aggressive.
+- **Q10 is the lone holdout at balanced**, missing the cap by ~10 MB on the retrieval turn (≈20 K-token context). Options: aggressive tier (Run 3), bump `memory_guard_custom_ceiling_gb` to ~25, enable context compaction, or route to dflash.
