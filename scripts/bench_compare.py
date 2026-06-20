@@ -17,7 +17,10 @@ Outputs:
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 from datetime import date
 from pathlib import Path
@@ -27,9 +30,13 @@ import yaml
 
 BASE_URL = "http://localhost:8000"
 SCRIPTS_DIR = Path(__file__).parent
+SOURCE_REPO = SCRIPTS_DIR.parent  # the mira-core repo root (a git repo)
 DOCS_DIR = SCRIPTS_DIR.parent / "docs"
 QUESTIONS_FILE = SCRIPTS_DIR / "bench_questions.yaml"
 SERVER_PY = SCRIPTS_DIR.parent / "server.py"
+
+# Conversation ids created during a run, deleted in teardown (see feedback_bench_cleanup).
+_created_convs: list[str] = []
 
 
 def get_project_id(project_name: str) -> tuple[str, str]:
@@ -50,7 +57,75 @@ def create_bench_conversation(project_id: str | None = None) -> str:
     payload = {"project_id": project_id or ""}
     resp = requests.post(f"{BASE_URL}/conversations", json=payload, timeout=5)
     resp.raise_for_status()
-    return resp.json()["id"]
+    conv_id = resp.json()["id"]
+    _created_convs.append(conv_id)
+    return conv_id
+
+
+# ── Throwaway git worktree (isolate agentic runs from the live repo) ────────────
+
+def make_worktree(source_repo: Path) -> tuple[Path, Path]:
+    """Create a detached git worktree at HEAD in a temp dir, outside the source repo.
+
+    Returns (tmp_base, worktree_path). The worktree reflects the *committed* HEAD —
+    uncommitted working-tree changes are intentionally excluded (reproducible).
+    """
+    tmp_base = Path(tempfile.mkdtemp(prefix="mira-bench-wt-"))
+    wt = tmp_base / "wt"
+    subprocess.run(
+        ["git", "-C", str(source_repo), "worktree", "add", "--detach", str(wt), "HEAD"],
+        check=True, capture_output=True, text=True,
+    )
+    return tmp_base, wt
+
+
+def register_throwaway_project(local_path: Path) -> tuple[str, str]:
+    """Register a temporary project pointing at the worktree. Returns (id, local_path)."""
+    name = f"bench-wt-{int(time.time())}"
+    resp = requests.post(
+        f"{BASE_URL}/projects",
+        json={"name": name, "local_path": str(local_path)},
+        timeout=5,
+    )
+    resp.raise_for_status()
+    p = resp.json()
+    return p["id"], p.get("local_path", str(local_path))
+
+
+def teardown(source_repo: Path | None, tmp_base: Path | None, wt: Path | None,
+             project_id: str | None) -> None:
+    """Best-effort cleanup — each step is isolated so one failure doesn't block the rest."""
+    for cid in _created_convs:
+        try:
+            requests.delete(f"{BASE_URL}/conversations/{cid}", timeout=5)
+        except Exception as e:
+            print(f"  teardown: failed to delete conversation {cid}: {e}")
+    _created_convs.clear()
+
+    if project_id:
+        try:
+            requests.delete(f"{BASE_URL}/projects/{project_id}", timeout=5)
+        except Exception as e:
+            print(f"  teardown: failed to delete project {project_id}: {e}")
+
+    if source_repo and wt:
+        try:
+            subprocess.run(
+                ["git", "-C", str(source_repo), "worktree", "remove", "--force", str(wt)],
+                check=True, capture_output=True, text=True,
+            )
+        except Exception as e:
+            print(f"  teardown: failed to remove worktree {wt}: {e}")
+    if tmp_base:
+        shutil.rmtree(tmp_base, ignore_errors=True)
+    if source_repo:
+        try:
+            subprocess.run(
+                ["git", "-C", str(source_repo), "worktree", "prune"],
+                check=True, capture_output=True, text=True,
+            )
+        except Exception:
+            pass
 
 
 def load_questions() -> list[dict]:
@@ -334,8 +409,14 @@ def main():
     parser.add_argument("--model", action="append", required=True, help="Model tag(s) to benchmark")
     parser.add_argument("--questions", type=str, default=None, help="Comma-separated question IDs (default: all)")
     parser.add_argument("--project-name", type=str, default=None,
-                        help="Project name to scope agentic questions (enables run_shell/read_file). "
-                             "Must match a project in Mira's project list.")
+                        help="[--no-worktree only] Existing project to scope agentic questions "
+                             "to its live local_path. Ignored in the default worktree mode.")
+    parser.add_argument("--source-repo", type=str, default=str(SOURCE_REPO),
+                        help=f"Repo to snapshot into the throwaway worktree (default: {SOURCE_REPO}). "
+                             "The worktree reflects committed HEAD, not uncommitted changes.")
+    parser.add_argument("--no-worktree", action="store_true",
+                        help="Disable worktree isolation and run agentic questions against the "
+                             "live --project-name repo (WILL mutate it). Explicit opt-in only.")
     args = parser.parse_args()
 
     questions = load_questions()
@@ -351,53 +432,76 @@ def main():
         print(f"ERROR: Mira server not reachable at {BASE_URL}: {e}")
         sys.exit(1)
 
-    # Resolve project for agentic questions
+    has_agentic = any(q.get("tools") or q.get("turns", 1) > 1 for q in questions)
+
+    # Resolve the workspace for agentic questions.
     project_id = None
     workspace_root = ""
-    if args.project_name:
+    source_repo = tmp_base = wt = None  # for teardown
+    if has_agentic and not args.no_worktree:
+        # Default: isolate in a throwaway git worktree — the live repo is never touched.
+        source_repo = Path(args.source_repo).expanduser().resolve()
+        try:
+            tmp_base, wt = make_worktree(source_repo)
+            project_id, workspace_root = register_throwaway_project(wt)
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR: git worktree add failed: {e.stderr or e}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"ERROR: could not provision throwaway worktree: {e}")
+            teardown(source_repo, tmp_base, wt, project_id)
+            sys.exit(1)
+        print(f"Throwaway worktree: {wt}  (project {project_id}, from {source_repo}@HEAD)")
+        if args.project_name:
+            print(f"  Note: --project-name '{args.project_name}' ignored in worktree mode.")
+    elif args.no_worktree and args.project_name:
         try:
             project_id, workspace_root = get_project_id(args.project_name)
-            print(f"Project '{args.project_name}' → id={project_id}")
+            print(f"--no-worktree: running against LIVE project '{args.project_name}' → id={project_id} "
+                  f"(this WILL mutate {workspace_root})")
         except ValueError as e:
             print(f"ERROR: {e}")
             sys.exit(1)
-    else:
-        agentic_qs = [q for q in questions if q.get("tools")]
-        if agentic_qs:
-            print("WARNING: agentic questions present but --project-name not set. "
-                  "Local tools (run_shell, read_file) will be unavailable.")
+    elif has_agentic:
+        print("WARNING: agentic questions present but --no-worktree set without --project-name. "
+              "Local tools (run_shell, read_file) will be unavailable.")
 
-    today = date.today().isoformat()
-    raw_dir = SCRIPTS_DIR
-    docs_dir = DOCS_DIR
-    docs_dir.mkdir(exist_ok=True)
+    try:
+        today = date.today().isoformat()
+        raw_dir = SCRIPTS_DIR
+        docs_dir = DOCS_DIR
+        docs_dir.mkdir(exist_ok=True)
 
-    all_results: dict[str, list[dict]] = {}
+        all_results: dict[str, list[dict]] = {}
 
-    for model in args.model:
-        print(f"\nBenchmarking {model}...")
-        results = run_benchmark(model, questions, project_id=project_id, workspace_root=workspace_root)
-        all_results[model] = results
+        for model in args.model:
+            print(f"\nBenchmarking {model}...")
+            results = run_benchmark(model, questions, project_id=project_id, workspace_root=workspace_root)
+            all_results[model] = results
 
-        raw_path = raw_dir / f"bench_raw_{today}_{model.replace(':', '_').replace('/', '_')}.jsonl"
-        with open(raw_path, "w") as f:
-            for r in results:
-                f.write(json.dumps(r) + "\n")
-        print(f"  Raw results: {raw_path}")
+            raw_path = raw_dir / f"bench_raw_{today}_{model.replace(':', '_').replace('/', '_')}.jsonl"
+            with open(raw_path, "w") as f:
+                for r in results:
+                    f.write(json.dumps(r) + "\n")
+            print(f"  Raw results: {raw_path}")
 
-    # Write markdown results
-    md = format_markdown_table(all_results, questions)
-    results_path = docs_dir / f"bench-results-{today}.md"
+        # Write markdown results
+        md = format_markdown_table(all_results, questions)
+        results_path = docs_dir / f"bench-results-{today}.md"
 
-    if results_path.exists():
-        existing = results_path.read_text()
-        results_path.write_text(existing + "\n\n---\n\n" + md)
-    else:
-        header = f"# Benchmark Results — {today}\n\nHardware: MacBook Pro M5 32GB (backend/model per run — see sections below)\n\n"
-        results_path.write_text(header + md)
+        if results_path.exists():
+            existing = results_path.read_text()
+            results_path.write_text(existing + "\n\n---\n\n" + md)
+        else:
+            header = f"# Benchmark Results — {today}\n\nHardware: MacBook Pro M5 32GB (backend/model per run — see sections below)\n\n"
+            results_path.write_text(header + md)
 
-    print(f"\nResults written to {results_path}")
-    print("\nNext: fill in manual quality scores in the results file.")
+        print(f"\nResults written to {results_path}")
+        print("\nNext: fill in manual quality scores in the results file.")
+    finally:
+        # Always clean up: bench conversations, throwaway project, and the worktree.
+        # (Skip project/worktree teardown in --no-worktree mode where they're the live repo.)
+        teardown(source_repo, tmp_base, wt, project_id if not args.no_worktree else None)
 
 
 if __name__ == "__main__":
