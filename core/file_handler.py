@@ -3,13 +3,22 @@
 import base64
 import io
 import logging
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Dict, Optional
 
 from PIL import Image
 
 logger = logging.getLogger(__name__)
+
+# OCR fallback for scanned PDFs (optional — needs the `tesseract` binary on PATH).
+_OCR_DPI = 200
+_OCR_MAX_PAGES = 50            # cap OCR work on huge scans
+_OCR_PER_PAGE_TIMEOUT = 30     # seconds per page
 
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}
 HEIC_EXTENSIONS = {'.heic', '.heif'}
@@ -155,6 +164,34 @@ def _make_image(name: str, data: bytes) -> Dict:
 
 # ── Extractors ────────────────────────────────────────────────────────────────
 
+def _tesseract_available() -> bool:
+    """True when the optional system `tesseract` binary is on PATH."""
+    return shutil.which("tesseract") is not None
+
+
+def _ocr_page(page) -> str:
+    """OCR a single fitz page via the system tesseract binary. Returns text or ''.
+
+    Renders the page to a PNG, then runs `tesseract <png> stdout` (explicit args list,
+    never shell=True — per CLAUDE.md). Raises subprocess.TimeoutExpired on timeout.
+    """
+    pix = page.get_pixmap(dpi=_OCR_DPI)
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp.write(pix.tobytes("png"))
+        tmp_path = tmp.name
+    try:
+        result = subprocess.run(
+            ["tesseract", tmp_path, "stdout", "-l", "eng"],
+            capture_output=True, text=True, timeout=_OCR_PER_PAGE_TIMEOUT,
+        )
+        return result.stdout if result.returncode == 0 else ""
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 def _extract_pdf(name: str, data: bytes) -> Dict:
     try:
         import fitz  # PyMuPDF
@@ -162,24 +199,50 @@ def _extract_pdf(name: str, data: bytes) -> Dict:
         raise ImportError("pymupdf is required for PDF support: uv add pymupdf")
 
     doc = fitz.open(stream=data, filetype="pdf")
-    pages = [page.get_text() for page in doc]
-    doc.close()
+    try:
+        page_texts = [page.get_text() for page in doc]
 
-    text = '\n\n'.join(pages).strip()
+        # OCR fallback: pages with no extractable text layer (scanned PDFs). Only triggers
+        # on empty pages and only when tesseract is installed; text pages are left untouched
+        # so the output for a normal PDF is identical to before. Mixed PDFs OCR only the
+        # empty pages, merged in order.
+        empty_idx = [i for i, t in enumerate(page_texts) if not t.strip()]
+        ocr_warning = None
+        if empty_idx and _tesseract_available():
+            for i in empty_idx[:_OCR_MAX_PAGES]:
+                try:
+                    page_texts[i] = _ocr_page(doc[i])
+                except subprocess.TimeoutExpired:
+                    logger.warning("OCR timed out on page %d of '%s'; skipping", i + 1, name)
+                    page_texts[i] = ""
+                except Exception as e:
+                    logger.warning("OCR failed on page %d of '%s': %s", i + 1, name, e)
+                    page_texts[i] = ""
+            if len(empty_idx) > _OCR_MAX_PAGES:
+                ocr_warning = (
+                    f"'{name}' has {len(empty_idx)} scanned pages; OCR was limited to the "
+                    f"first {_OCR_MAX_PAGES}."
+                )
+
+        text = '\n\n'.join(page_texts).strip()
+    finally:
+        doc.close()
 
     if not text:
+        hint = (
+            "Install tesseract (brew install tesseract) to enable OCR of scanned PDFs."
+            if not _tesseract_available()
+            else "OCR produced no text — the scan may be too low quality."
+        )
         return {
             "type": "text",
             "name": name,
             "content": "",
-            "warning": (
-                f"'{name}' appears to be a scanned PDF with no extractable text. "
-                "Try attaching individual pages as images instead."
-            ),
+            "warning": f"'{name}' appears to be a scanned PDF with no extractable text. {hint}",
         }
 
     # PDFs always go through RAG regardless of size (consistent behaviour, better accuracy)
-    return {"type": "rag", "name": name, "content": text, "warning": None}
+    return {"type": "rag", "name": name, "content": text, "warning": ocr_warning}
 
 
 def _extract_html(name: str, html: str) -> Dict:
