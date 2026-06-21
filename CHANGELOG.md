@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.9.0 — June 2026
+
+Ships alongside the mobile apps v0.2.0 release.
+
+- **Remote access hardened** — plain HTTP (`:8000`) is now loopback-only, and off-host
+  access is HTTPS-only over Tailscale: the `:8443` listener binds the Tailscale interface
+  (so the socket exists only on your tailnet) and **fails closed to loopback** when
+  Tailscale is down. Added a source-IP allowlist and a constant-time bearer-token check.
+  New **`docs/remote-access.md`** documents the posture, travelling with Tailscale (and the
+  iOS Proton-VPN conflict), and the opt-in plain-LAN escape hatch.
+- **Thinking toggle fixed on omlx** — the per-turn `enable_thinking` flag is now honored on
+  the default omlx backend, so "thinking off" actually takes effect on Qwen3.6 (previously
+  it silently fell back to the model's template default).
+- **Defaults reconciled with the docs** — the code default backend is now `omlx` /
+  `Qwen3.6-35B-A3B` (was `mlx-lm`); `mlx-lm` removed from the default model picker.
+- **Repo cleanup** — pruned stale benchmark logs and internal process docs, refreshed
+  `SECURITY.md` and `architecture.md`, and removed the duplicate legacy issue template.
+
 ## v0.8.3 — June 2026
 
 - **Installer preflight** — `scripts/setup.sh` now runs a disk + memory check before any
