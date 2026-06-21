@@ -52,6 +52,48 @@ What to do:
   Tailscale app. One tunnel does both jobs — encrypted transit out of the café *and* a
   path to your Mac — without Proton.
 
+## Running Tailscale day-to-day
+
+Leaving Tailscale always-on is fine; a few settings keep it healthy and tight.
+
+**On the Mac (the server) — recommended:**
+
+- **Disable key expiry for this node.** Node keys expire (default 180 days) and a lapsed
+  key silently drops the Mac off the tailnet — remote access just stops working. In the
+  Tailscale admin console → *Machines* → the Mac → *Disable key expiry*. Do this so the
+  server is never unreachable mid-trip.
+- **Lock down with ACLs.** By default every device on your tailnet can reach every other
+  device's ports. Restrict access to Mira so only your own devices can hit it. In the
+  admin console *Access controls*, scope it to your own user, e.g.:
+
+  ```jsonc
+  {
+    "acls": [
+      // only this user's devices may reach the Mac's HTTPS port
+      { "action": "accept", "src": ["autogroup:member"], "dst": ["<mac-name>:8443"] }
+    ]
+  }
+  ```
+
+  Tighten `src`/`dst` to taste (tag the Mac, name specific devices). The point: a single
+  compromised or shared tailnet node shouldn't be able to reach the RCE-capable server.
+- The control plane brokers keys only — it never sees your traffic (WireGuard is
+  end-to-end encrypted) — but it does see metadata (which nodes connect).
+
+**On the phone/iPad — always-on tradeoffs:**
+
+- **Battery:** small when idle (WireGuard is low-power UDP); higher only if traffic is
+  relayed via DERP instead of a direct connection, or if you route everything through an
+  exit node. For occasional Mira use it's negligible.
+- **Internet/bandwidth:** no effect on normal traffic — only tailnet (`100.x`) and
+  enabled subnet routes go through the tunnel. No speed tax unless you use an exit node.
+- **DNS / captive portals:** with MagicDNS overriding system DNS, café/hotel sign-in
+  pages and local split-DNS can break until you toggle Tailscale off. If you hit this,
+  turn off **"Override local DNS"** in Tailscale's DNS settings — you keep `*.ts.net`
+  name resolution without hijacking all queries.
+- You don't *have* to leave it on: since you only need it to reach Mira, flipping it on
+  when needed sidesteps the battery/DNS/portal friction entirely. Always-on is also fine.
+
 ## Opt-in: plain-WiFi LAN access (accept the risk)
 
 If you're on the **same Wi-Fi as the Mac** and would rather not run Tailscale, you can
