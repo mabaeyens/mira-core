@@ -15,7 +15,7 @@ Symlink: `/Users/miguel/.local/bin/omlx`
 
 ## Benchmark verdict (2026-06-06, updated)
 
-Model: Qwen3.6-35B-A3B-4bit (same as dflash). Full results: `docs/bench-results-2026-06-06.md`.
+Model: Qwen3.6-35B-A3B-4bit (same as dflash).
 
 | Metric | omlx | dflash |
 |--------|------|--------|
@@ -34,8 +34,6 @@ Model: Qwen3.6-35B-A3B-4bit (same as dflash). Full results: `docs/bench-results-
 - **gemma4-26b**: viable, throughput identical to mlx-lm, wall time 3–4× worse (no-cache required to avoid OOM). No advantage over mlx-lm.
 - **qwen3.6-35b**: not viable. 15–30× TTFT regression vs mlx-lm (5–6s per warm query vs 194–380ms). MoE architecture handled less efficiently by omlx engine.
 - **Memory note**: hot cache (8GB) + gemma4 (15.26GB) exceeds 23.2GB ceiling → OOM on large prompts. Must run `--no-cache --hot-cache-max-size 0` for full benchmark suite.
-
-See `docs/bench-results-2026-05-30.md` — "omlx 0.3.12 Bench — Analysis" section.
 
 ## Architecture
 

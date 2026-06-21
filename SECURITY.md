@@ -29,11 +29,12 @@ prefer to stay anonymous).
 ## Scope
 
 - The server gates all network access behind a shared bearer token — see **Access control**
-  in the [README](README.md). Keep that token out of the repo and out of client config.
-- Inference and data stay on the user's own hardware; the server is intended to be reached
-  over the LAN (Bonjour) or Tailscale (HTTPS), not exposed to the public internet.
+  in the [README](README.md) and [docs/remote-access.md](docs/remote-access.md). Keep that
+  token out of the repo and out of client config.
+- Inference and data stay on the user's own hardware. Off-host access is **HTTPS-only over
+  Tailscale** (the listener binds the tailnet interface); plain HTTP stays loopback-only and
+  the server is never intended to be exposed to the public internet.
 - User input is validated against command injection and path traversal; shell operations use
   `subprocess` with explicit argument lists. Reports of gaps here are especially welcome.
-- `SECURITY_AUDIT.md` in this repo is an internal self-audit record, not a disclosure
-  channel. The native clients are in
-  [mira-apps](https://github.com/mabaeyens/mira-apps) — report client-side issues there.
+- The native clients are in [mira-apps](https://github.com/mabaeyens/mira-apps) — report
+  client-side issues there.

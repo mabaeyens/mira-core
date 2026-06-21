@@ -153,8 +153,8 @@ After the server is confirmed reachable, `_warmup_model(MLX_LM_MODEL)` sends a 1
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| `backend` | `mlx-lm` | `mlx-lm` (default) or `ollama` |
-| `model` | `mlx-community/Qwen3.6-35B-A3B-4bit` | Model identifier |
+| `backend` | `omlx` | `omlx` (default), `dflash`, or `ollama` |
+| `model` | `Qwen3.6-35B-A3B` | Model identifier |
 | `host` | `http://localhost:8080` | LLM server URL |
 | `embed_model` | `nomic-ai/nomic-embed-text-v1.5` | HuggingFace embedding model for RAG (sentence-transformers) |
 | `context_window` | `65536` | Token context window |

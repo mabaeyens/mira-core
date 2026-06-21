@@ -345,15 +345,15 @@ For M5 MacBook: Q4_K_M is optimal for GGUF models; NVFP4 is the format used by Q
 
 ## Bench History
 
-| Date | File | Key finding |
-|------|------|-------------|
-| 2026-05-24 | `bench-results-2026-05-24.md` | gemma4:26b-mlx vs Q4_K_M via Ollama — MLX eliminates cold-load penalty; t/s identical |
-| 2026-05-25 | `bench-results-2026-05-25.md` | qwen3.6:35b-mlx vs gemma4:26b-mlx via Ollama — qwen3.6 +38% quality but 1.8× slower wall time |
-| 2026-05-29 | `bench-results-2026-05-29.md` | omlx 0.3.12 viability test — no advantage over mlx-lm on gemma4; 15–30× TTFT regression on qwen3.6 |
-| 2026-05-30 | `bench-results-2026-05-30.md` | mlx-lm promoted to default — 4–6× wall time improvement over Ollama on agentic tasks; OptiQ and unsloth rejected |
-| 2026-05-31 | `/tmp/mira_benchmark_report_2026-05-31.md` | Latency matrix: Qwen3.6 on mlx-lm wins (307ms warm TTFT, ≤14ms thinking overhead); Ollama cache saves 4.6× on warm prefix; Qwen3 becomes default |
-| 2026-06-06 | `bench-compare-omlx-vs-dflash.md` | omlx 0.4.1 vs dFlash: omlx 4–10× faster TTFT (963ms–4.7s vs 5.4–29.6s); dFlash OOM-safe above 18K KV |
-| 2026-06-07 | *(inline bench)* | TTFT shootout: omlx 0.4.1 (0ms warm) vs ollama 0.30.6 MLX (90ms) vs dFlash (~48s); omlx becomes default |
+| Date | Key finding |
+|------|-------------|
+| 2026-05-24 | gemma4:26b-mlx vs Q4_K_M via Ollama — MLX eliminates cold-load penalty; t/s identical |
+| 2026-05-25 | qwen3.6:35b-mlx vs gemma4:26b-mlx via Ollama — qwen3.6 +38% quality but 1.8× slower wall time |
+| 2026-05-29 | omlx 0.3.12 viability test — no advantage over mlx-lm on gemma4; 15–30× TTFT regression on qwen3.6 |
+| 2026-05-30 | mlx-lm promoted to default — 4–6× wall time improvement over Ollama on agentic tasks; OptiQ and unsloth rejected |
+| 2026-05-31 | Latency matrix: Qwen3.6 on mlx-lm wins (307ms warm TTFT, ≤14ms thinking overhead); Ollama cache saves 4.6× on warm prefix; Qwen3 becomes default |
+| 2026-06-06 | omlx 0.4.1 vs dFlash: omlx 4–10× faster TTFT (963ms–4.7s vs 5.4–29.6s); dFlash OOM-safe above 18K KV |
+| 2026-06-07 | TTFT shootout: omlx 0.4.1 (0ms warm) vs ollama 0.30.6 MLX (90ms) vs dFlash (~48s); omlx becomes default |
 
 ---
 
