@@ -47,12 +47,8 @@ OLLAMA_MODEL = "gemma4:26b"
 OLLAMA_CONTEXT = int(os.environ.get("OLLAMA_CONTEXT_LENGTH", 262144))
 
 PRESETS = {
-    "mlx-lm": {
-        "backend": "mlx-lm",
-        "model": MLX_LM_MODEL,
-        "host": MLX_LM_HOST,
-        "context_window": MLX_LM_CONTEXT,
-    },
+    # mlx-lm is benched out (architecture gap) — not offered in the default picker.
+    # The backend code path remains for anyone who configures it explicitly in mira.yaml.
     "dflash": {
         "backend": "dflash",
         "model": DFLASH_MODEL,

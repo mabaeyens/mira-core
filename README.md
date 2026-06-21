@@ -43,12 +43,14 @@ macOS on Apple Silicon (the inference backends are MLX-based). Everything else �
 
 ## Install
 
-Pick whichever fits; each leaves you with a working backend in one command.
+**Most people want this** — on a fresh machine it clones to `~/mira-core` and sets up a
+working backend in one command:
 
-**Fresh machine** (clones to `~/mira-core`):
 ```bash
 curl -LsSf https://raw.githubusercontent.com/mabaeyens/mira-core/main/install.sh | bash
 ```
+
+<details><summary>Alternatives (already cloned, or installing as a package)</summary>
 
 **Already cloned the repo:**
 ```bash
@@ -60,6 +62,8 @@ make install
 uv tool install --editable .   # run from inside the checkout
 mira setup
 ```
+
+</details>
 
 The installer checks/installs `uv`, runs `uv sync`, and creates `mira.yaml`. Opt into
 the extras with flags (the curl one-liner takes them after `-s --`):
@@ -88,11 +92,18 @@ you have that **plus ~15 GB breathing room** free — otherwise it stops (overri
 resident at once (Mira loads one at a time), and below 24 GB the default model may OOM at
 large context. Run `mira preflight` standalone any time to see the budget.
 
-The one thing the installer **can't** do for you (it's GUI-gated): install the oMLX
-app and load the model. Download from
-[github.com/jundot/omlx/releases](https://github.com/jundot/omlx/releases), drag to
-`/Applications`, open it once to accept the prompts, and load `Qwen3.6-35B-A3B` in its
-model library. Run `mira doctor` (or `make doctor`) any time to see what's still missing.
+### Required: install the oMLX app (the one manual step)
+
+The default backend is **omlx**, a GUI app the installer can't install for you. This
+step is mandatory — without it the server has no model to talk to:
+
+1. Download from [github.com/jundot/omlx/releases](https://github.com/jundot/omlx/releases).
+2. Drag **oMLX** to `/Applications` and open it once to accept the prompts.
+3. In its model library, load **`Qwen3.6-35B-A3B`**.
+
+Run `mira doctor` (or `make doctor`) any time to confirm it's detected and see what else
+is missing. (Prefer a fully headless setup? `--with-ollama` installs an alternative
+backend, but omlx is the default everything else is tuned for.)
 
 > On first use, the `nomic-ai/nomic-embed-text-v1.5` embedding model and
 > `Qwen3-Reranker-0.6B-4bit` reranker download automatically from HuggingFace and cache
@@ -114,17 +125,23 @@ oMLX is started and managed automatically by the server. See
 
 ### Access control
 
-The server exposes tools that **run shell commands and read/write files**, so network
-exposure is gated on a shared secret:
+The server exposes tools that **run shell commands and read/write files**, so a sniffed
+credential = full remote code execution. Network exposure is therefore locked down by
+default and never sends anything sensitive in plaintext:
 
-- **No token set (default):** the server binds **`127.0.0.1` only**. It will *refuse* to
-  bind a non-loopback interface and downgrade to loopback with a warning. Safe for a
-  private machine; not reachable from other devices.
-- **To reach Mira over LAN/Tailscale:** set a token via `auth_token:` in `mira.yaml` or the
-  `MIRA_TOKEN` env var. The server then binds `0.0.0.0` and requires
-  `Authorization: Bearer <token>` on every route except `/health` and the static web UI.
-  The iOS/macOS apps send this header automatically. `MIRA_HOST` can pin a specific
-  interface.
+- **No token set (default):** the server binds **`127.0.0.1` only** and refuses to
+  expose a non-loopback interface. Not reachable from other devices.
+- **With a token** (`auth_token:` in `mira.yaml`, **`chmod 600` it**, or the `MIRA_TOKEN`
+  env var): HTTP `:8000` stays **loopback-only**, and HTTPS `:8443` is served on the
+  **Tailscale interface only** — so the off-host socket exists solely on your tailnet,
+  and the token + payloads are always encrypted. Every route except `/health` and the
+  static UI requires `Authorization: Bearer <token>` (the apps send it automatically),
+  and a source-IP allowlist (loopback + tailnet) is enforced as defense-in-depth. If
+  Tailscale is down at startup, `:8443` **fails closed to loopback** — start Tailscale
+  then restart the server (`/mira-server restart`) to enable remote access.
+
+See **[docs/remote-access.md](docs/remote-access.md)** for the full posture: travelling
+with Tailscale (and why Proton VPN conflicts on iOS), and the opt-in plain-LAN mode.
 
 ## macOS LaunchAgent (optional)
 

@@ -5,10 +5,18 @@
 # ── Access control ─────────────────────────────────────────────────────────────
 # Shared secret required by every API route (sent as `Authorization: Bearer <token>`).
 # Leave unset for a private machine: the server then binds 127.0.0.1 only and refuses
-# to expose a non-loopback interface. To reach Mira over LAN/Tailscale you MUST set a
-# token here (or via the MIRA_TOKEN env var) — the /chat endpoint can run shell
-# commands and read/write files, so an unauthenticated open bind is never allowed.
+# to expose a non-loopback interface. To reach Mira remotely you MUST set a token here
+# (or via the MIRA_TOKEN env var) — the /chat endpoint can run shell commands and
+# read/write files, so an unauthenticated open bind is never allowed.
+# IMPORTANT: this file then holds a secret — `chmod 600 mira.yaml`.
+# Generate one with: openssl rand -hex 32
 # auth_token: "choose-a-long-random-string"
+
+# Source-IP allowlist (defense-in-depth). With a token set, HTTP :8000 stays loopback
+# and HTTPS :8443 binds the Tailscale interface only, so the default list below is all
+# you need. To opt back into plain-WiFi LAN access (PLAINTEXT — sniffable; see
+# docs/remote-access.md), add your LAN subnet here AND set MIRA_HOST=0.0.0.0.
+# allowed_source_cidrs: ["127.0.0.0/8", "::1/128", "100.64.0.0/10"]
 
 # ── LLM backend ──────────────────────────────────────────────────────────────
 # Recommended: omlx (KV cache held in RAM → ~0ms TTFT after startup warm-up)

@@ -28,8 +28,23 @@ def _get(key: str, default):
 # Read from mira.yaml `auth_token:` or the MIRA_TOKEN env var.
 AUTH_TOKEN: str = _get("auth_token", os.getenv("MIRA_TOKEN", ""))
 
-BACKEND: str = _get("backend", "ollama")
-MODEL_NAME: str = _get("model", "gemma4:26b-mlx")
+# Minimum token length we consider safe when binding off-host. A short hand-set
+# token triggers a loud startup warning (see server.py __main__).
+MIN_TOKEN_LENGTH: int = 32
+
+# Source-IP allowlist (defense-in-depth behind the off-host bind). Off-host listeners
+# bind the Tailscale interface, so the socket only exists on the tailnet; this list is
+# a secondary guard (e.g. against a future MIRA_HOST=0.0.0.0 misconfig). Defaults:
+# loopback + the Tailscale CGNAT range. Add a LAN subnet here only to opt back into
+# plain-WiFi access (documented as plaintext/sniffable — see docs/remote-access.md).
+ALLOWED_SOURCE_CIDRS: list = _get(
+    "allowed_source_cidrs", ["127.0.0.0/8", "::1/128", "100.64.0.0/10"]
+)
+
+# omlx is the default backend (see mira.yaml / README). These code defaults must match
+# the docs so a fresh install with no mira.yaml behaves as documented.
+BACKEND: str = _get("backend", "omlx")
+MODEL_NAME: str = _get("model", "Qwen3.6-35B-A3B")
 OLLAMA_HOST: str = _get("host", os.getenv("OLLAMA_HOST", "http://localhost:11434"))
 
 # Named backend presets exposed via GET /backends and shown in the app model picker.

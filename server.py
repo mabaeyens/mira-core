@@ -1,9 +1,12 @@
 """FastAPI server for the ollama Search Tool web interface."""
 
 import asyncio
+import hmac
+import ipaddress
 import json
 import logging
 import os
+import socket
 import threading
 import uuid
 from contextlib import asynccontextmanager
@@ -26,7 +29,7 @@ logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
 import core.db as db
 import core.file_handler as file_handler
-from core.config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT, MODEL_NAME, BACKEND, OLLAMA_HOST, CONTEXT_WINDOW, AUTH_TOKEN
+from core.config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT, MODEL_NAME, BACKEND, OLLAMA_HOST, CONTEXT_WINDOW, AUTH_TOKEN, ALLOWED_SOURCE_CIDRS, MIN_TOKEN_LENGTH
 from core.orchestrator import ChatOrchestrator
 from core.session_manager import SessionManager
 from core import backend_manager as _bm
@@ -158,16 +161,44 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # (clients poll it before they can authenticate) and the static web UI shell.
 _AUTH_OPEN_PATHS = ("/health", "/")
 
+# Parsed once: the source-IP allowlist (defense-in-depth behind the off-host bind).
+_ALLOWED_NETWORKS = []
+for _cidr in ALLOWED_SOURCE_CIDRS:
+    try:
+        _ALLOWED_NETWORKS.append(ipaddress.ip_network(_cidr, strict=False))
+    except ValueError:
+        logger.warning("Ignoring invalid CIDR in ALLOWED_SOURCE_CIDRS: %r", _cidr)
+
+
+def _source_allowed(host: str | None) -> bool:
+    """True if the peer IP falls in the allowlist. We use the real socket peer
+    (request.client.host) and never trust X-Forwarded-For — there is no proxy."""
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(ip in net for net in _ALLOWED_NETWORKS)
+
 
 @app.middleware("http")
 async def _auth_middleware(request: Request, call_next):
-    """Require `Authorization: Bearer <AUTH_TOKEN>` on every route when a token is
-    configured. No-op when AUTH_TOKEN is empty (in that mode the server only binds
-    loopback — see __main__)."""
+    """Two gates, in order: (1) source-IP allowlist — applies to every request
+    including OPTIONS and the otherwise-open paths, so nothing leaks off the
+    allowed networks; (2) shared-secret Bearer token on sensitive routes when a
+    token is configured. The token check is OPTIONS-exempt and skips the open
+    paths; the comparison is constant-time."""
+    # Gate 1 — source IP. Only enforced when a token is set (token-set ⇒ off-host).
+    if AUTH_TOKEN and not _source_allowed(request.client.host if request.client else None):
+        return JSONResponse({"detail": "Forbidden"}, status_code=403)
+
+    # Gate 2 — Bearer token.
     if AUTH_TOKEN and request.method != "OPTIONS":
         path = request.url.path
         is_open = path in _AUTH_OPEN_PATHS or path.startswith("/static")
-        if not is_open and request.headers.get("authorization", "") != f"Bearer {AUTH_TOKEN}":
+        presented = request.headers.get("authorization", "")
+        if not is_open and not hmac.compare_digest(presented, f"Bearer {AUTH_TOKEN}"):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
 
@@ -871,37 +902,108 @@ if __name__ == "__main__":
     ssl_certfile = os.environ.get("SSL_CERTFILE")
     ssl_keyfile  = os.environ.get("SSL_KEYFILE")
 
-    # Bind host policy: never expose a non-loopback interface without a token.
-    # MIRA_HOST overrides the default (0.0.0.0 when a token is set, else 127.0.0.1),
-    # but a non-loopback request without AUTH_TOKEN is downgraded to loopback.
-    _requested_host = os.environ.get("MIRA_HOST", "0.0.0.0" if AUTH_TOKEN else "127.0.0.1")
+    def _discover_tailnet_ip():
+        """Return this Mac's Tailscale (100.64.0.0/10) IPv4 *only if it is actually
+        bound to a local interface and bindable right now*, else None (fail closed).
+
+        We scan interface addresses (`ifconfig`) rather than `tailscale ip -4`: the CLI
+        returns the node's assigned identity IP even when the tunnel is DOWN, and that
+        address is not on any interface, so binding it raises OSError. An address present
+        in `ifconfig` is assigned; we also test-bind it to be certain before committing.
+        Local-only, subprocess arg-list (never shell=True)."""
+        cgnat = ipaddress.ip_network("100.64.0.0/10")
+
+        def _bindable(ip: str) -> bool:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                s.bind((ip, 0))  # port 0 = any free port; just proving the addr is ours
+                return True
+            except OSError:
+                return False
+            finally:
+                s.close()
+
+        try:
+            out = subprocess.run(["/sbin/ifconfig"], capture_output=True, text=True, timeout=5)
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
+            return None
+        for tok in out.stdout.split():
+            try:
+                in_range = ipaddress.ip_address(tok) in cgnat
+            except ValueError:
+                continue
+            if in_range and _bindable(tok):
+                return tok
+        return None
+
+    # ── Secret hygiene warnings ──────────────────────────────────────────────
+    if AUTH_TOKEN:
+        if len(AUTH_TOKEN) < MIN_TOKEN_LENGTH:
+            logger.warning(
+                "Auth token is only %d chars — use at least %d (e.g. `openssl rand -hex 32`).",
+                len(AUTH_TOKEN), MIN_TOKEN_LENGTH,
+            )
+        _yaml = Path(__file__).parent / "mira.yaml"
+        try:
+            if _yaml.exists() and (_yaml.stat().st_mode & 0o077):
+                logger.warning(
+                    "%s is group/other-readable but holds auth_token — run `chmod 600 %s`.",
+                    _yaml, _yaml,
+                )
+        except OSError:
+            pass
+
+    # ── Bind policy ──────────────────────────────────────────────────────────
+    # HTTP :8000 is loopback-only by default — no plaintext token/payload ever leaves
+    # the machine. MIRA_HOST can opt :8000 back onto the LAN (plaintext — see
+    # docs/remote-access.md), but only with a token; off-host without a token is
+    # downgraded to loopback.
     _loopback = {"127.0.0.1", "localhost", "::1"}
-    if _requested_host not in _loopback and not AUTH_TOKEN:
+    http_host = os.environ.get("MIRA_HOST", "127.0.0.1")
+    if http_host not in _loopback and not AUTH_TOKEN:
         logger.warning(
-            "Refusing to bind %s without MIRA_TOKEN set — an open server with shell/"
-            "filesystem tools must not be exposed off-host. Binding 127.0.0.1 instead. "
-            "Set MIRA_TOKEN (or mira.yaml auth_token) to enable LAN/Tailscale access.",
-            _requested_host,
+            "Refusing to bind %s without a token — an open server with shell/filesystem "
+            "tools must not be exposed off-host. Binding 127.0.0.1 instead.", http_host,
         )
-        bind_host = "127.0.0.1"
-    else:
-        bind_host = _requested_host
-    logger.info("Binding %s (auth %s)", bind_host, "enabled" if AUTH_TOKEN else "disabled — loopback only")
+        http_host = "127.0.0.1"
+
+    # HTTPS :8443 binds the Tailscale interface only, so the socket exists solely on the
+    # tailnet. Fail closed when the tailnet is down — off-host HTTPS is simply not served
+    # (never 0.0.0.0, never a useless loopback HTTPS). HTTP :8000 (loopback) always runs.
+    https_host = None
+    if ssl_certfile and ssl_keyfile and AUTH_TOKEN:
+        https_host = _discover_tailnet_ip()
+        if https_host:
+            logger.info("HTTPS :8443 will bind tailnet address %s", https_host)
+        else:
+            logger.warning(
+                "Tailscale not up (no bindable 100.64.0.0/10 address) — off-host HTTPS "
+                "disabled; serving HTTP on loopback only. Start Tailscale and restart "
+                "(`/mira-server restart`) to enable remote access."
+            )
+    logger.info("Binding HTTP :8000 to %s (auth %s)", http_host,
+                "enabled" if AUTH_TOKEN else "disabled — loopback only")
 
     async def _run():
         http_server = uvicorn.Server(
-            uvicorn.Config("server:app", host=bind_host, port=8000, log_level="info")
+            uvicorn.Config("server:app", host=http_host, port=8000, log_level="info")
         )
-        if ssl_certfile and ssl_keyfile:
-            https_cfg = uvicorn.Config(
-                "server:app", host=bind_host, port=8443,
-                ssl_certfile=ssl_certfile, ssl_keyfile=ssl_keyfile,
-                log_level="info",
-            )
-            https_server = uvicorn.Server(https_cfg)
+
+        async def _serve_https():
+            # An HTTPS bind/serve failure must NEVER take down the HTTP listener.
+            https_server = uvicorn.Server(uvicorn.Config(
+                "server:app", host=https_host, port=8443,
+                ssl_certfile=ssl_certfile, ssl_keyfile=ssl_keyfile, log_level="info",
+            ))
             https_server.install_signal_handlers = lambda: None
-            await asyncio.gather(http_server.serve(), https_server.serve())
-        else:
-            await http_server.serve()
+            try:
+                await https_server.serve()
+            except Exception as exc:  # noqa: BLE001 — degrade gracefully, keep HTTP up
+                logger.error("HTTPS :8443 failed (%s) — continuing with HTTP only.", exc)
+
+        coros = [http_server.serve()]
+        if https_host:
+            coros.append(_serve_https())
+        await asyncio.gather(*coros)
 
     asyncio.run(_run())
