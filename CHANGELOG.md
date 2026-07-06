@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.1 — June 2026
+
+- **Inference tuning results documented** — `docs/inference-tuning-2026-06-27.md` records the
+  latest decode-path bench sweep: `burst_decode` (aggressive) adopted for a ~10% throughput
+  gain; DFlash, MTP, and speculative prefill were evaluated and rejected for the Qwen3.6 MoE
+  config (3B-active decode is too cheap to benefit from speculation). No runtime behavior
+  change — documentation only.
+
 ## v0.9.0 — June 2026
 
 Ships alongside the mobile apps v0.2.0 release.
