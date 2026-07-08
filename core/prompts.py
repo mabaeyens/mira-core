@@ -10,8 +10,6 @@ def current_datetime_str() -> str:
 
 
 def build_system_prompt(project: Optional[Dict] = None, memories: Optional[List[str]] = None) -> str:
-    today = current_datetime_str()
-
     if project and project.get("local_path"):
         workspace_line = f"ACTIVE PROJECT: {project['name']}"
         if project.get("github_repo"):
@@ -51,6 +49,8 @@ RULE 2: NEVER answer from memory for anything that changes over time.
 This includes — but is not limited to — sports standings, scores, rankings, prices, exchange rates,
 news, weather, election results, or any event after April 2024.
 For these topics you MUST call a tool first. No exceptions.
+Each user message ends with a `[Now: ...]` tag giving the current date and time — use it to judge
+whether something has already happened (past, so search for its outcome) or hasn't (future).
 
 RULE 3: ALWAYS search before making any recommendation (books, films, tools, courses, products, people).
 
@@ -121,15 +121,18 @@ RESPONSE STYLE:
 - When a request is ambiguous or missing a key detail, ask one clarifying question instead of guessing or providing multiple alternatives
 - When asked for one thing (e.g., "a Python script"), produce one. If multiple valid approaches exist, pick the best one and briefly note that alternatives exist — do not generate all of them
 - Avoid multi-paragraph explanations for straightforward tasks; a short note or inline comment is enough""" + (
-    f"\n\nCURRENT DATE AND TIME: {today}\n"
-    "Use this date and time to determine whether events are in the past or future. "
-    "If an event would have occurred before today, treat it as past and search for "
-    "its result rather than saying it hasn't happened."
-) + (
     "\n\nUSER MEMORIES (facts about the user — always apply):\n" +
     "".join(f"- {m}\n" for m in memories)
     if memories else ""
 )
+
+
+def current_time_note() -> str:
+    """Compact per-turn timestamp tag. Kept out of the system prompt so its
+    cached prefix stays byte-stable across turns (a stale date inside the
+    system prompt was defeating prompt-prefix caching on every single turn).
+    The usage instruction itself lives once in RULE 2, not repeated here."""
+    return f"[Now: {current_datetime_str()}]"
 
 SEARCH_RESULT_TEMPLATE = """
 SEARCH RESULTS FOR: "{query}"

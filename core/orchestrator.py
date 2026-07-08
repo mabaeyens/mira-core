@@ -23,7 +23,7 @@ from .config import (
     THINKING_MODE, MAX_THINKING_TOKENS, TEMP_WORKSPACE_MAX_MB,
 )
 from .tools import TOOLS, GITHUB_TOOLS, _LOCAL_TOOLS, _TEMP_WORKSPACE_TOOLS
-from .prompts import build_system_prompt, current_datetime_str, SEARCH_RESULT_TEMPLATE
+from .prompts import build_system_prompt, current_time_note, SEARCH_RESULT_TEMPLATE
 from .search_engine import SearchEngine
 from .rag_engine import RagEngine
 from . import url_fetcher
@@ -419,14 +419,6 @@ class ChatOrchestrator:
                 if att.get("warning"):
                     yield {"type": "warning", "message": att["warning"]}
 
-        # Refresh timestamp so the model always sees the current time, not the conversation-start time
-        if self.conversation_history and self.conversation_history[0]["role"] == "system":
-            self.conversation_history[0]["content"] = re.sub(
-                r"CURRENT DATE AND TIME: .+",
-                f"CURRENT DATE AND TIME: {current_datetime_str()}",
-                self.conversation_history[0]["content"],
-            )
-
         # Adaptive thinking: heuristic decides when client sends no preference;
         # explicit True/False from the client is always respected as-is.
         if self.thinking_mode == "adaptive":
@@ -526,6 +518,10 @@ class ChatOrchestrator:
         # Inject CURRENT TASK block for multi-step requests to anchor the goal
         if _MULTI_STEP_RE.search(user_message):
             full_message = f"CURRENT TASK: {user_message}\n\n{full_message}"
+
+        # Timestamp lives per-turn (not in the system prompt) so the system
+        # prompt's prefix stays cache-stable across turns.
+        full_message = f"{full_message}\n\n{current_time_note()}"
 
         user_msg: Dict = {"role": "user", "content": full_message}
         if images:
