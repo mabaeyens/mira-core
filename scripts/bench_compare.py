@@ -35,13 +35,26 @@ DOCS_DIR = SCRIPTS_DIR.parent / "docs"
 QUESTIONS_FILE = SCRIPTS_DIR / "bench_questions.yaml"
 SERVER_PY = SCRIPTS_DIR.parent / "server.py"
 
+
+def _auth_headers() -> dict:
+    """Bearer header from mira.yaml's auth_token, when the server has one configured."""
+    try:
+        cfg = yaml.safe_load((SOURCE_REPO / "mira.yaml").read_text())
+        token = cfg.get("auth_token", "")
+    except Exception:
+        token = ""
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+HEADERS = _auth_headers()
+
 # Conversation ids created during a run, deleted in teardown (see feedback_bench_cleanup).
 _created_convs: list[str] = []
 
 
 def get_project_id(project_name: str) -> tuple[str, str]:
     """Look up a project by name. Returns (project_id, local_path). Raises if not found."""
-    resp = requests.get(f"{BASE_URL}/projects", timeout=5)
+    resp = requests.get(f"{BASE_URL}/projects", headers=HEADERS, timeout=5)
     resp.raise_for_status()
     payload = resp.json()
     projects = payload["projects"] if isinstance(payload, dict) else payload
@@ -55,7 +68,7 @@ def get_project_id(project_name: str) -> tuple[str, str]:
 def create_bench_conversation(project_id: str | None = None) -> str:
     """Create a fresh conversation (optionally project-scoped) and return its ID."""
     payload = {"project_id": project_id or ""}
-    resp = requests.post(f"{BASE_URL}/conversations", json=payload, timeout=5)
+    resp = requests.post(f"{BASE_URL}/conversations", json=payload, headers=HEADERS, timeout=5)
     resp.raise_for_status()
     conv_id = resp.json()["id"]
     _created_convs.append(conv_id)
@@ -85,6 +98,7 @@ def register_throwaway_project(local_path: Path) -> tuple[str, str]:
     resp = requests.post(
         f"{BASE_URL}/projects",
         json={"name": name, "local_path": str(local_path)},
+        headers=HEADERS,
         timeout=5,
     )
     resp.raise_for_status()
@@ -101,7 +115,7 @@ def teardown(source_repo: Path | None, tmp_base: Path | None, wt: Path | None,
     """
     for cid in _created_convs:
         try:
-            requests.delete(f"{BASE_URL}/conversations/{cid}", timeout=5)
+            requests.delete(f"{BASE_URL}/conversations/{cid}", headers=HEADERS, timeout=5)
         except Exception as e:
             print(f"  teardown: failed to delete conversation {cid}: {e}")
     _created_convs.clear()
@@ -128,7 +142,7 @@ def teardown(source_repo: Path | None, tmp_base: Path | None, wt: Path | None,
     if project_id:
         # Folder is now gone, so the local_path-exists guard in DELETE /projects passes.
         try:
-            requests.delete(f"{BASE_URL}/projects/{project_id}", timeout=5)
+            requests.delete(f"{BASE_URL}/projects/{project_id}", headers=HEADERS, timeout=5)
         except Exception as e:
             print(f"  teardown: failed to delete project {project_id}: {e}")
 
@@ -179,7 +193,7 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
     eval_tps = None
 
     try:
-        with requests.post(f"{BASE_URL}/chat", data=form_data, stream=True, timeout=120) as resp:
+        with requests.post(f"{BASE_URL}/chat", data=form_data, headers=HEADERS, stream=True, timeout=120) as resp:
             resp.raise_for_status()
             for raw_line in resp.iter_lines():
                 if time.perf_counter() - t_start > WALL_TIMEOUT_S:

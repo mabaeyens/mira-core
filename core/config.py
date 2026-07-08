@@ -96,6 +96,7 @@ _paths = _get("paths", {})
 MLX_LM_CLI: str = _paths.get("mlx_lm_cli", str(Path.home() / ".local" / "bin" / "mlx_lm.server"))
 DFLASH_CLI: str = _paths.get("dflash_cli", str(Path(__file__).parent.parent / ".venv" / "bin" / "dflash"))
 OMLX_CLI: str = _paths.get("omlx_cli", "/Applications/oMLX.app/Contents/MacOS/omlx-cli")
+VLLM_MLX_CLI: str = _paths.get("vllm_mlx_cli", str(Path.home() / ".local" / "bin" / "vllm-mlx"))
 
 # ── Workspace ─────────────────────────────────────────────────────────────────
 WORKSPACE_ROOT = os.getenv("WORKSPACE_ROOT", str(Path.home() / "workspace"))

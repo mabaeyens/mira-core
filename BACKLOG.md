@@ -1,16 +1,29 @@
 # Backlog
 
 ## Done
+- [2026-07-07] Fixed vllm-mlx + Ministral 3 14B end-to-end in Mira — full 13-question bench now passes (previously blocked on every final-turn/agentic-tool-call response). Three stacked bugs found and fixed:
+  1. vllm-mlx issue #628 (natural-EOS `finish_reason` never stamped in `_stream_generate_impl`) — applied the upstream reporter's verified fix as a local commit on the existing fork branch.
+  2. An untested sibling gap in the same file's system-KV-cache path (drives `mlx_lm.stream_generate` directly, same missing `finish_reason` on natural stop) — fixed locally, not yet upstream.
+  3. Mira's own bug: `core/orchestrator.py`'s agent-loop step-budget nudge was appended as a bare `user`-role message, which violates Mistral's strict template rule requiring user/assistant alternation around tool calls. New `_append_step_nudge()` helper folds the nudge into the trailing `tool` message's content instead. Verified no regression on omlx/Qwen3.6 (7 nudge-triggering questions re-benched, divergence guard still fires).
+  Also found and fixed a real latent bug in `core/backend_manager.py`'s `switch_to_model()`: each backend branch stopped every *other* Popen-managed backend but never its own prior process first, so switching to the same backend with a different model could orphan the running process and silently misreport which model was actually active. Fixed by adding each backend's own stop call before restarting it.
+  Full details: memory `project_vllm_mlx_integration.md`, `feedback_backend_switch_self_stop.md`.
 - [2026-07-06] Released v0.9.1 (docs-only: inference tuning results write-up); tag + GitHub release published.
 - [2026-07-06] Stopped attaching a built wheel to GitHub releases — no install path consumes it (users install via `git clone` + `install.sh`/`setup.sh` + `uv`, not `pip install`). Removed the wheel asset from v0.9.1 and updated the `core-release` skill (`~/.claude/skills/core-release/SKILL.md`) to drop the `uv build --wheel` / `gh release upload` step.
 - [2026-07-06] Designed and adversarially reviewed a "fully automated installer" concept (no manual GUI steps). Decision: keep status quo — the one manual step (installing `oMLX.app` and loading `Qwen3.6-35B-A3B` via its in-app model library) is an Apple Gatekeeper/TCC security boundary, not a scripting gap. Rejected scripting around it (quarantine-stripping, driving permission dialogs, reverse-engineering oMLX's undocumented model-store format) as a security-review-failing pattern. Full report: `~/.claude/plans/partitioned-tinkering-deer.md`.
 
 ## Pending
+- vllm-mlx work is uncommitted as of 2026-07-07 end of session (holding per explicit instruction — pick up next time):
+  - `core/orchestrator.py`, `core/backend_manager.py`, `core/config.py`, `server.py`, `scripts/bench_compare.py` all have local changes not yet committed.
+  - Two fixes on the `~/Documents/Projects/vllm-mlx` fork (branch `fix/mistral-args-token-tool-parsing`) are local-only commits, not yet pushed/PR'd upstream: `d408d70` (finish_reason=stop on natural EOS, mirrors upstream PR #629 for issue #628) and `edc07d4` (sibling KV-cache-path gap, flagged as untested by the #629 author — worth submitting as its own PR once #629 merges, or bundled with the existing #631 parser-fix PR).
+  - `docs/bench-results-2026-07-06.md` and `docs/bench-results-2026-07-07.md` are untracked bench output, not yet reviewed/cleaned up or committed.
+  - Consider whether `vllmmlx-ministral3-14b` should get promoted from "experimental preset" to a documented, supported alternative backend in the README now that it's fully working.
 - Ease-of-install follow-ups considered but not started (all optional, low priority given "keep status quo" decision):
   - Retry/resume logic on `ollama pull` in `scripts/setup.sh` (reuse the 3×/10s pattern already in `scripts/prefetch_models.py`).
   - Auto-open the oMLX GitHub Releases page + `/Applications` in Finder during setup, to reduce the manual step to "open the .dmg, drag the icon."
   - A separate, explicitly opt-in **headless/non-interactive install mode** (e.g. `--headless`) using the `dflash-mlx` backend (fully HF-scriptable, no GUI) for automated/remote/CI provisioning only — NOT a change to the interactive default backend, since `dflash` has ~48s TTFT vs. `omlx`'s near-0ms warm TTFT. Would need: port-8080 conflict check between backends, `mira_cli.py` `COMPONENTS`/preflight disk-math update, `mira.yaml.example` default swap for that mode only.
 
 ## Notes
+- `uv tool install --force <local-path>` can silently reuse a cached build and NOT pick up new local commits, even though the command reports success — confirmed by checking the installed file's actual content after a "successful" reinstall still showed the pre-fix code. Full fix requires `uv tool uninstall <pkg> && uv cache clean <pkg>` before reinstalling from a local path with uncommitted-upstream changes; `--force` alone is not sufficient.
+- All local backends (omlx/dflash/mlx-lm/vllm-mlx) share port 8080 — only one runs at a time by design. This means a stale/orphaned process from a previous backend can make `is_backend_ready()`'s health check pass spuriously (it just hits `/v1/models` on the shared port), masking a failed switch. See `feedback_backend_switch_self_stop.md` for the specific bug this caused.
 - `pyproject.toml` stays tag-driven via `hatch-vcs` — the git tag IS the version, never hand-edit. `mira.yaml` is gitignored runtime config, not tracked (confirmed 2026-07-06, no leaked secrets — a local `mira.yaml` with a real token exists only on disk, never committed).
 - Installer already automates nearly everything (uv, Python deps incl. mlx stack, disk/RAM preflight, mira.yaml bootstrap, optional ollama/tesseract/LaunchAgent via brew, doctor health check). The oMLX GUI step is the sole exception and is expected to stay manual indefinitely absent an oMLX-side scriptable install/model API.

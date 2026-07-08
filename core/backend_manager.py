@@ -12,6 +12,7 @@ from pathlib import Path
 from core.config import DFLASH_CLI as _DFLASH_CLI_PATH
 from core.config import DFLASH_DIAGNOSTICS, MLX_LM_CLI as _MLX_LM_CLI_PATH
 from core.config import OMLX_CLI as _OMLX_CLI_PATH, PREFILL_STEP_SIZE
+from core.config import VLLM_MLX_CLI as _VLLM_MLX_CLI_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,12 @@ OLLAMA_HOST = "http://localhost:11434"
 OLLAMA_MODEL = "gemma4:26b"
 OLLAMA_CONTEXT = int(os.environ.get("OLLAMA_CONTEXT_LENGTH", 262144))
 
+VLLM_MLX_CLI = _VLLM_MLX_CLI_PATH
+VLLM_MLX_PORT = 8080
+VLLM_MLX_HOST = f"http://localhost:{VLLM_MLX_PORT}"
+VLLM_MLX_MODEL = "mlx-community/Ministral-3-14B-Instruct-2512-4bit"
+VLLM_MLX_CONTEXT = 65536
+
 PRESETS = {
     # mlx-lm is benched out (architecture gap) — not offered in the default picker.
     # The backend code path remains for anyone who configures it explicitly in mira.yaml.
@@ -67,11 +74,18 @@ PRESETS = {
         "host": OLLAMA_HOST,
         "context_window": OLLAMA_CONTEXT,
     },
+    "vllm-mlx": {
+        "backend": "vllm-mlx",
+        "model": VLLM_MLX_MODEL,
+        "host": VLLM_MLX_HOST,
+        "context_window": VLLM_MLX_CONTEXT,
+    },
 }
 
 _mlx_lm_proc = None
 _dflash_proc = None
 _omlx_proc = None
+_vllm_mlx_proc = None
 
 
 def start_mlx_lm(model: str = MLX_LM_MODEL) -> None:
@@ -92,6 +106,38 @@ def start_mlx_lm(model: str = MLX_LM_MODEL) -> None:
         stderr=subprocess.DEVNULL,
     )
     _wait_for_ready(MLX_LM_HOST + "/v1/models", timeout=120)
+
+
+def start_vllm_mlx(model: str = VLLM_MLX_MODEL) -> None:
+    global _vllm_mlx_proc
+    _vllm_mlx_proc = subprocess.Popen(
+        [
+            VLLM_MLX_CLI, "serve", model,
+            "--host", "127.0.0.1",
+            "--port", str(VLLM_MLX_PORT),
+            # Mistral-family models (Ministral 3, Devstral) need this parser to
+            # correctly extract tool calls from their [TOOL_CALLS]/[ARGS] format.
+            "--enable-auto-tool-choice",
+            "--tool-call-parser", "mistral",
+            # Default (300s) is too short for multi-step agentic turns; align
+            # with the orchestrator's own MAX_AGENT_STEPS budget plus margin.
+            "--timeout", "900",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    _wait_for_ready(VLLM_MLX_HOST + "/v1/models", timeout=120)
+
+
+def stop_vllm_mlx() -> None:
+    global _vllm_mlx_proc
+    if _vllm_mlx_proc and _vllm_mlx_proc.poll() is None:
+        _vllm_mlx_proc.terminate()
+        try:
+            _vllm_mlx_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            _vllm_mlx_proc.kill()
+        _vllm_mlx_proc = None
 
 
 def stop_mlx_lm() -> None:
@@ -215,6 +261,8 @@ def is_backend_ready(backend: str) -> bool:
             urllib.request.urlopen(MLX_LM_HOST + "/v1/models", timeout=2)
         elif backend == "dflash":
             urllib.request.urlopen(DFLASH_HOST + "/v1/models", timeout=2)
+        elif backend == "vllm-mlx":
+            urllib.request.urlopen(VLLM_MLX_HOST + "/v1/models", timeout=2)
         else:
             urllib.request.urlopen(OLLAMA_HOST + "/api/version", timeout=2)
         return True
@@ -273,6 +321,13 @@ def ensure_backend_running(backend: str) -> None:
         except Exception:
             start_omlx()
         _warmup_model(OMLX_MODEL, host=OMLX_HOST, api_key=_omlx_api_key())
+    elif backend == "vllm-mlx":
+        try:
+            urllib.request.urlopen(VLLM_MLX_HOST + "/v1/models", timeout=2)
+            logger.info("vllm-mlx already running")
+        except Exception:
+            start_vllm_mlx()
+        _warmup_model(VLLM_MLX_MODEL, host=VLLM_MLX_HOST)
     else:
         try:
             urllib.request.urlopen(OLLAMA_HOST + "/api/version", timeout=2)
@@ -330,21 +385,31 @@ def switch_to(target: str) -> dict:
         stop_ollama()
         stop_omlx()
         stop_mlx_lm()
+        stop_vllm_mlx()
         start_dflash()
     elif target == "mlx-lm":
         stop_ollama()
         stop_omlx()
         stop_dflash()
+        stop_vllm_mlx()
         start_mlx_lm()
     elif target == "omlx":
         stop_ollama()
         stop_mlx_lm()
         stop_dflash()
+        stop_vllm_mlx()
         start_omlx()
+    elif target == "vllm-mlx":
+        stop_ollama()
+        stop_mlx_lm()
+        stop_dflash()
+        stop_omlx()
+        start_vllm_mlx()
     else:
         stop_mlx_lm()
         stop_dflash()
         stop_omlx()
+        stop_vllm_mlx()
         start_ollama()
     logger.info("Backend switch to %s complete", target)
     return PRESETS[target]
@@ -357,31 +422,48 @@ def switch_to_model(backend: str, model_id: str) -> dict:
     For ollama: switches to ollama and uses model_id as the active model.
     Returns an updated preset dict.
     """
-    if backend not in PRESETS:
+    if backend not in PRESETS and backend != "mlx-lm":
         raise ValueError(f"Unknown backend {backend!r}.")
     logger.info("Switching to model %s on %s", model_id, backend)
     if backend == "dflash":
         stop_ollama()
         stop_omlx()
         stop_mlx_lm()
+        stop_vllm_mlx()
+        stop_dflash()
         start_dflash(model_id)
     elif backend == "mlx-lm":
         stop_ollama()
         stop_omlx()
         stop_dflash()
+        stop_vllm_mlx()
+        stop_mlx_lm()
         start_mlx_lm(model_id)
     elif backend == "omlx":
         stop_ollama()
         stop_mlx_lm()
         stop_dflash()
+        stop_vllm_mlx()
+        stop_omlx()
         start_omlx()
+    elif backend == "vllm-mlx":
+        stop_ollama()
+        stop_mlx_lm()
+        stop_dflash()
+        stop_omlx()
+        stop_vllm_mlx()
+        start_vllm_mlx(model_id)
     else:
         stop_mlx_lm()
         stop_dflash()
         stop_omlx()
+        stop_vllm_mlx()
         start_ollama()
-    preset = dict(PRESETS[backend])
-    preset["model"] = model_id
+    if backend == "mlx-lm":
+        preset = {"backend": "mlx-lm", "model": model_id, "host": MLX_LM_HOST, "context_window": MLX_LM_CONTEXT}
+    else:
+        preset = dict(PRESETS[backend])
+        preset["model"] = model_id
     logger.info("Model switch to %s/%s complete", backend, model_id)
     return preset
 

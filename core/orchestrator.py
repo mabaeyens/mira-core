@@ -174,6 +174,24 @@ def _should_think(message: str, has_attachments: bool = False) -> bool:
     return score >= 4
 
 
+def _append_step_nudge(history: List[Dict], text: str) -> None:
+    """Append an agent-loop nudge, respecting strict tool/assistant alternation.
+
+    Some backends' chat templates (e.g. Mistral family) reject a bare `user`
+    turn immediately following a `tool` result with no intervening `assistant`
+    turn. Fold the nudge into the trailing tool message's content instead of
+    appending a new turn when that's the case; only append as a standalone
+    `user` message when the history already ends on an `assistant` turn.
+    """
+    if history and history[-1].get("role") == "tool":
+        # Reassign (not mutate) the trailing dict — callers may pass a
+        # shallow copy of conversation_history and share dict references
+        # with the original list.
+        history[-1] = {**history[-1], "content": f"{history[-1]['content']}\n\n{text}"}
+    else:
+        history.append({"role": "user", "content": text})
+
+
 class ChatOrchestrator:
     """Manages the conversation loop with tool calling."""
 
@@ -529,34 +547,30 @@ class ChatOrchestrator:
 
             # Soft step limit: warn the model at the halfway point and again near the hard cap.
             if step == MAX_AGENT_STEPS // 2:
-                self.conversation_history.append({
-                    "role": "user",
-                    "content": (
-                        f"[System: You have made {step} tool calls so far. "
-                        f"If your task is complete, call task_done now with a summary. "
-                        f"Otherwise consolidate your remaining work into as few commands as possible — "
-                        f"the hard limit is {MAX_AGENT_STEPS} total steps.]"
-                    ),
-                })
+                _append_step_nudge(
+                    self.conversation_history,
+                    f"[System: You have made {step} tool calls so far. "
+                    f"If your task is complete, call task_done now with a summary. "
+                    f"Otherwise consolidate your remaining work into as few commands as possible — "
+                    f"the hard limit is {MAX_AGENT_STEPS} total steps.]",
+                )
             elif step == MAX_AGENT_STEPS - 3:
-                self.conversation_history.append({
-                    "role": "user",
-                    "content": (
-                        f"[System: URGENT — only {MAX_AGENT_STEPS - step} steps remain before hard cutoff. "
-                        f"You MUST call task_done NOW with a summary of what you have found so far. "
-                        f"Do not make any more tool calls.]"
-                    ),
-                })
+                _append_step_nudge(
+                    self.conversation_history,
+                    f"[System: URGENT — only {MAX_AGENT_STEPS - step} steps remain before hard cutoff. "
+                    f"You MUST call task_done NOW with a summary of what you have found so far. "
+                    f"Do not make any more tool calls.]",
+                )
             elif step == MAX_AGENT_STEPS - 2 and self._total_tool_calls > 0 and not self._task_done:
                 # Hard forced summary: model has been running too long — synthesize a
                 # response from what it has gathered so far.
                 try:
-                    forced = self._llm_chat_sync(
-                        self.conversation_history + [{
-                            "role": "user",
-                            "content": "Summarize what you have accomplished or found so far, in 2-3 sentences.",
-                        }]
+                    forced_history = list(self.conversation_history)
+                    _append_step_nudge(
+                        forced_history,
+                        "Summarize what you have accomplished or found so far, in 2-3 sentences.",
                     )
+                    forced = self._llm_chat_sync(forced_history)
                     if forced:
                         self._mark_task_done(forced)
                         if _thinking_chars:
