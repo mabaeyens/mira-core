@@ -7,6 +7,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+pytest.importorskip("mlx.core")  # mlx is macOS-only (Apple Silicon), absent on Linux CI
+
 from core.inference.disk_prompt_cache import DiskBackedPromptCache
 from core.inference.mira_mlx_server import (
     ChatJob,

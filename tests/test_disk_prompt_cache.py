@@ -6,8 +6,9 @@ max_bytes), and the disk-overflow feature meant to soften that eviction
 instead of discarding the entry outright. All model-free: uses mlx-lm's real
 KVCache with small random tensors, no downloaded model needed.
 """
-import mlx.core as mx
 import pytest
+
+mx = pytest.importorskip("mlx.core")  # mlx is macOS-only (Apple Silicon), absent on Linux CI
 from mlx_lm.models.cache import KVCache
 
 from core.inference.disk_prompt_cache import DiskBackedPromptCache, DiskPromptCacheStore
