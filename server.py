@@ -273,6 +273,9 @@ async def hardware_info(_=Depends(_ready)):
             hw.derive_prompt_cache_max_bytes(model, total_ram) / hw.BYTES_PER_GB, 1
         ),
         "active_context_window": _rt["context_window"],
+        "derived_disk_cache_max_gb": round(
+            hw.derive_disk_cache_max_bytes(_bm.MIRA_MLX_CACHE_DIR) / hw.BYTES_PER_GB, 1
+        ),
     }
 
 

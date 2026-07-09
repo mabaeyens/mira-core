@@ -10,6 +10,7 @@ import time
 import urllib.request
 from pathlib import Path
 
+from core.config import DB_PATH
 from core.config import DFLASH_CLI as _DFLASH_CLI_PATH
 from core.config import DFLASH_DIAGNOSTICS, MLX_LM_CLI as _MLX_LM_CLI_PATH
 from core.config import OMLX_CLI as _OMLX_CLI_PATH, PREFILL_STEP_SIZE
@@ -29,6 +30,7 @@ MIRA_MLX_PORT = 8080
 MIRA_MLX_HOST = f"http://localhost:{MIRA_MLX_PORT}"
 MIRA_MLX_MODEL = "mlx-community/Ministral-3-14B-Instruct-2512-4bit"
 MIRA_MLX_CONTEXT = 65536
+MIRA_MLX_CACHE_DIR = DB_PATH.parent / "mira_mlx_cache"
 
 DFLASH_CLI = _DFLASH_CLI_PATH
 DFLASH_PORT = 8080
@@ -137,6 +139,7 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
     # conversation's ~3.3GB KV cache entry, silently evicting it every time).
     prompt_cache_max_bytes = hardware.derive_prompt_cache_max_bytes(model)
     context_window = hardware.derive_context_window(model, requested_context=MIRA_MLX_CONTEXT)
+    disk_cache_max_bytes = hardware.derive_disk_cache_max_bytes(MIRA_MLX_CACHE_DIR)
 
     _mira_mlx_proc = subprocess.Popen(
         [
@@ -154,6 +157,11 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
             # Mistral-family tokenizers need this regex fix (mlx-lm doesn't
             # default it on); harmless no-op for models that don't need it.
             "--fix-mistral-regex",
+            # Entries evicted from the in-memory cache overflow here instead of
+            # being discarded, surviving both memory-pressure trims and process
+            # restarts (specs/mira-mlx-cache-persistence.md).
+            "--disk-cache-dir", str(MIRA_MLX_CACHE_DIR),
+            "--disk-cache-max-bytes", str(disk_cache_max_bytes),
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

@@ -1,9 +1,15 @@
 """RAM-aware sizing for local inference: total memory detection and per-model
 KV-cache/context budgeting, so the same code behaves sensibly on an 8GB Mac
 and a 128GB Mac Studio instead of using one fixed set of constants everywhere.
+
+A prompt whose own token count is >= the derived max_kv_size ceiling is
+rejected outright by GenerationEngine._start_job (mira_mlx_server.py) with a
+clear ValueError, rather than left to RotatingKVCache's undefined behavior for
+a single over-budget submission.
 """
 import json
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -118,6 +124,22 @@ def derive_context_window(model_id: str, total_ram_bytes: Optional[int] = None,
     available = total_ram_bytes - model_bytes - SAFETY_MARGIN_BYTES
     max_tokens_by_ram = available // kv_bytes_per_token
     return int(max(min(requested_context, max_tokens_by_ram), 1024))
+
+
+def derive_disk_cache_max_bytes(cache_dir: Path, cap_bytes: int = 50 * BYTES_PER_GB) -> int:
+    """Disk-backed prompt-cache budget: min(cap, 10% of free space) at cache_dir's
+    volume — disk is comfortable on most Macs (measured 513GB free/926GB total,
+    3% used, on the 2026-07-09 dev machine) but must still be bounded and re-
+    checked live, not assumed fixed, since free space can drop between calls."""
+    try:
+        probe = cache_dir
+        while not probe.exists():
+            probe = probe.parent
+        free = shutil.disk_usage(probe).free
+    except OSError as exc:
+        logger.warning("Could not stat disk usage at %s (%s); assuming 0 budget", cache_dir, exc)
+        return 0
+    return int(min(cap_bytes, free // 10))
 
 
 def fits_in_memory(model_id: str, total_ram_bytes: Optional[int] = None,

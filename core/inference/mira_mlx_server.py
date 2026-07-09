@@ -24,19 +24,21 @@ import queue
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
 
 import mlx.core as mx
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
 from mlx_lm.generate import BatchGenerator, SequenceStateMachine
-from mlx_lm.models.cache import LRUPromptCache
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_lm.server import ToolCallFormatter
 from mlx_lm.utils import load
+
+from core.inference.disk_prompt_cache import DiskBackedPromptCache, DiskPromptCacheStore
 
 logger = logging.getLogger("mira_mlx_server")
 
@@ -117,6 +119,8 @@ class GenerationEngine:
         max_kv_size: Optional[int] = None,
         fix_mistral_regex: bool = False,
         trust_remote_code: bool = True,
+        disk_cache_dir: Optional[str] = None,
+        disk_cache_max_bytes: int = 0,
     ):
         self.model_path = model_path
         self.max_tokens = max_tokens
@@ -126,6 +130,8 @@ class GenerationEngine:
         self.max_kv_size = max_kv_size
         self.fix_mistral_regex = fix_mistral_regex
         self.trust_remote_code = trust_remote_code
+        self.disk_cache_dir = disk_cache_dir
+        self.disk_cache_max_bytes = disk_cache_max_bytes
 
         self._inbox: "queue.Queue[ChatJob]" = queue.Queue()
         self._pending: dict[int, dict] = {}  # uid -> job bookkeeping
@@ -136,8 +142,19 @@ class GenerationEngine:
         self.model = None
         self.tokenizer = None
         self.batch_generator: Optional[BatchGenerator] = None
-        self.prompt_cache: Optional[LRUPromptCache] = None
+        self.prompt_cache: Optional[DiskBackedPromptCache] = None
         self.state_machine: Optional[SequenceStateMachine] = None
+
+        # Diagnostics only (GET /v1/stats) — mutated on the engine thread, read
+        # cross-thread from the async HTTP layer, so a lock guards both sides.
+        self._stats_lock = threading.Lock()
+        self._start_time = time.time()
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._memory_pressure_trim_events = 0
+        self._total_prompt_tokens = 0
+        self._total_generated_tokens = 0
+        self._recent_latencies_ms: "deque[float]" = deque(maxlen=200)
 
     def start(self) -> None:
         threading.Thread(target=self._run, name="mira-mlx-engine", daemon=True).start()
@@ -171,7 +188,13 @@ class GenerationEngine:
                 max_kv_size=self.max_kv_size,
                 stream=generation_stream,
             )
-            self.prompt_cache = LRUPromptCache(max_bytes=self.prompt_cache_max_bytes)
+            disk_store = None
+            if self.disk_cache_dir and self.disk_cache_max_bytes > 0:
+                from pathlib import Path
+                disk_store = DiskPromptCacheStore(Path(self.disk_cache_dir), self.disk_cache_max_bytes)
+            self.prompt_cache = DiskBackedPromptCache(
+                max_bytes=self.prompt_cache_max_bytes, disk_store=disk_store
+            )
         except BaseException as exc:  # noqa: BLE001 - surface to start()
             self._error = exc
             self._ready.set()
@@ -212,6 +235,40 @@ class GenerationEngine:
         )
         self.prompt_cache.trim_to(n_bytes=target)
         mx.clear_cache()
+        with self._stats_lock:
+            self._memory_pressure_trim_events += 1
+
+    def stats_snapshot(self) -> dict:
+        """Cross-thread read of the diagnostics counters (see GET /v1/stats)."""
+        with self._stats_lock:
+            hits, misses = self._cache_hits, self._cache_misses
+            trims = self._memory_pressure_trim_events
+            prompt_tokens = self._total_prompt_tokens
+            generated_tokens = self._total_generated_tokens
+            latencies = sorted(self._recent_latencies_ms)
+
+        total_requests = hits + misses
+
+        def _percentile(sorted_values, pct):
+            if not sorted_values:
+                return None
+            idx = min(int(len(sorted_values) * pct), len(sorted_values) - 1)
+            return round(sorted_values[idx], 1)
+
+        disk_store = getattr(self.prompt_cache, "disk_store", None)
+        return {
+            "uptime_seconds": round(time.time() - self._start_time, 1),
+            "cache_hits": hits,
+            "cache_misses": misses,
+            "cache_hit_rate": round(hits / total_requests, 3) if total_requests else None,
+            "disk_cache_hits": disk_store.hits if disk_store is not None else 0,
+            "memory_pressure_trim_events": trims,
+            "total_prompt_tokens": prompt_tokens,
+            "total_generated_tokens": generated_tokens,
+            "latency_p50_ms": _percentile(latencies, 0.50),
+            "latency_p95_ms": _percentile(latencies, 0.95),
+            "latency_sample_size": len(latencies),
+        }
 
     def _drain_inbox(self) -> bool:
         drained_any = False
@@ -234,6 +291,18 @@ class GenerationEngine:
             job.out_queue.put(DONE)
             return
 
+        # A single prompt at or beyond max_kv_size leaves no room for even one
+        # generated token, and RotatingKVCache's behavior in that case is
+        # undefined — reject clearly instead of letting it degrade silently.
+        if self.max_kv_size is not None and len(prompt_tokens) >= self.max_kv_size:
+            exc = ValueError(
+                f"prompt is {len(prompt_tokens)} tokens, this machine's context "
+                f"ceiling is {self.max_kv_size} tokens"
+            )
+            job.out_queue.put(exc)
+            job.out_queue.put(DONE)
+            return
+
         _t0 = time.time()
         cache, rest = self.prompt_cache.fetch_nearest_cache(self.model_path, prompt_tokens)
         _t1 = time.time()
@@ -245,6 +314,12 @@ class GenerationEngine:
             len(prompt_tokens),
             _t1 - _t0,
         )
+        with self._stats_lock:
+            if prompt_cache_count > 0:
+                self._cache_hits += 1
+            else:
+                self._cache_misses += 1
+            self._total_prompt_tokens += len(prompt_tokens)
 
         sampler = make_sampler(temp=job.temperature, top_p=job.top_p)
         logits_processors = make_logits_processors()
@@ -270,6 +345,7 @@ class GenerationEngine:
             "in_tool_state": False,
             "prev_state": "normal",
             "created": int(time.time()),
+            "start_time": time.time(),
         }
 
     def _handle_response(self, r) -> None:
@@ -278,6 +354,8 @@ class GenerationEngine:
             return
         job = state["job"]
         state["detokenizer"].add_token(r.token)
+        with self._stats_lock:
+            self._total_generated_tokens += 1
 
         # Buffer raw text while inside a "tool" state segment.
         in_tool_text = r.current_state == "tool" or state["prev_state"] == "tool"
@@ -338,6 +416,8 @@ class GenerationEngine:
                     "insert_cache SKIPPED: prompt_cache=%s all_tokens=%s (finish_reason=%s)",
                     r.prompt_cache is not None, r.all_tokens is not None, r.finish_reason,
                 )
+            with self._stats_lock:
+                self._recent_latencies_ms.append((time.time() - state["start_time"]) * 1000)
             del self._pending[r.uid]
         elif job.stream and text_delta:
             job.out_queue.put(self._chunk(job, delta={"content": text_delta}, finish_reason=None))
@@ -370,6 +450,10 @@ def create_app(engine: GenerationEngine) -> FastAPI:
     async def list_models():
         return {"object": "list", "data": [{"id": engine.model_path, "object": "model"}]}
 
+    @app.get("/v1/stats")
+    async def stats():
+        return engine.stats_snapshot()
+
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request):
         body = await request.json()
@@ -392,7 +476,12 @@ def create_app(engine: GenerationEngine) -> FastAPI:
                         yield {"data": "[DONE]"}
                         break
                     if isinstance(item, BaseException):
-                        yield {"data": json.dumps({"error": str(item)})}
+                        # OpenAI-compatible clients (the openai SDK, orchestrator's
+                        # bc.normalize_oai_stream) expect error.message, not a bare
+                        # string — a bare string here silently becomes the SDK's
+                        # own generic "An error occurred during streaming",
+                        # discarding whatever the real exception said.
+                        yield {"data": json.dumps({"error": {"message": str(item), "type": type(item).__name__}})}
                         break
                     yield {"data": json.dumps(item)}
 
@@ -405,7 +494,11 @@ def create_app(engine: GenerationEngine) -> FastAPI:
             if item is DONE:
                 break
             if isinstance(item, BaseException):
-                raise item
+                # A bare `raise item` here hits FastAPI's default 500 handler,
+                # which discards the exception message entirely (client just
+                # sees "Internal Server Error") — surface it explicitly instead.
+                status = 400 if isinstance(item, ValueError) else 500
+                raise HTTPException(status_code=status, detail=str(item))
             result = item
         return result
 
@@ -431,6 +524,10 @@ def main() -> None:
     parser.add_argument("--max-kv-size", type=int, default=None)
     parser.add_argument("--fix-mistral-regex", action="store_true")
     parser.add_argument("--no-trust-remote-code", action="store_false", dest="trust_remote_code")
+    # Disk overflow for evicted prompt-cache entries. Unset dir or a zero byte
+    # budget disables persistence entirely (in-memory-only, today's behavior).
+    parser.add_argument("--disk-cache-dir", default=None)
+    parser.add_argument("--disk-cache-max-bytes", type=int, default=0)
     args = parser.parse_args()
 
     engine = GenerationEngine(
@@ -442,6 +539,8 @@ def main() -> None:
         max_kv_size=args.max_kv_size,
         fix_mistral_regex=args.fix_mistral_regex,
         trust_remote_code=args.trust_remote_code,
+        disk_cache_dir=args.disk_cache_dir,
+        disk_cache_max_bytes=args.disk_cache_max_bytes,
     )
     engine.start()
 
