@@ -253,6 +253,29 @@ async def info():
     return result
 
 
+@app.get("/hardware")
+async def hardware_info(_=Depends(_ready)):
+    """RAM-aware sizing for the active model — why a given machine got the
+    context window / cache budget it did (see core/hardware.py)."""
+    from core import hardware as hw
+
+    total_ram = hw.get_total_ram_bytes()
+    model = _rt["model"]
+    kv_bytes_per_token = hw.estimate_kv_bytes_per_token(model)
+    model_bytes = hw.estimate_model_weight_bytes(model)
+    return {
+        "total_ram_gb": round(total_ram / hw.BYTES_PER_GB, 1),
+        "model": model,
+        "model_weight_gb": round(model_bytes / hw.BYTES_PER_GB, 1) if model_bytes else None,
+        "kv_bytes_per_token": kv_bytes_per_token,
+        "derived_context_window": hw.derive_context_window(model, total_ram, _rt["context_window"]),
+        "derived_prompt_cache_max_gb": round(
+            hw.derive_prompt_cache_max_bytes(model, total_ram) / hw.BYTES_PER_GB, 1
+        ),
+        "active_context_window": _rt["context_window"],
+    }
+
+
 @app.get("/backend")
 async def get_backend(_=Depends(_ready)):
     return {
@@ -275,8 +298,8 @@ async def switch_backend(request: Request, _=Depends(_ready)):
     global _ollama_ready
     body = await request.json()
     target = body.get("backend", "")
-    if target not in ("ollama", "omlx", "mlx-lm", "dflash", "vllm-mlx"):
-        raise HTTPException(status_code=400, detail="backend must be 'ollama', 'omlx', 'mlx-lm', 'dflash', or 'vllm-mlx'")
+    if target not in ("ollama", "omlx", "mlx-lm", "dflash", "vllm-mlx", "mira-mlx"):
+        raise HTTPException(status_code=400, detail="backend must be 'ollama', 'omlx', 'mlx-lm', 'dflash', 'vllm-mlx', or 'mira-mlx'")
     if target == _rt["backend"]:
         return {"status": "ok", "backend": target, "message": "already active"}
     _ollama_ready = False
@@ -313,8 +336,8 @@ async def switch_model(request: Request, _=Depends(_ready)):
     body = await request.json()
     backend = body.get("backend", "")
     model_id = body.get("model_id", "")
-    if backend not in ("ollama", "mlx-lm", "omlx", "dflash", "vllm-mlx"):
-        raise HTTPException(status_code=400, detail="backend must be 'ollama', 'mlx-lm', 'omlx', 'dflash', or 'vllm-mlx'")
+    if backend not in ("ollama", "mlx-lm", "omlx", "dflash", "vllm-mlx", "mira-mlx"):
+        raise HTTPException(status_code=400, detail="backend must be 'ollama', 'mlx-lm', 'omlx', 'dflash', 'vllm-mlx', or 'mira-mlx'")
     if not model_id:
         raise HTTPException(status_code=400, detail="model_id is required")
     if backend == _rt["backend"] and model_id == _rt["model"]:

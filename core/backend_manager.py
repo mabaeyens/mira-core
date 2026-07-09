@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -21,6 +22,13 @@ MLX_LM_PORT = 8080
 MLX_LM_HOST = f"http://localhost:{MLX_LM_PORT}"
 MLX_LM_MODEL = "mlx-community/Qwen3.6-35B-A3B-4bit"
 MLX_LM_CONTEXT = 65536
+
+# mira-mlx: Mira's own thin server over mlx-lm's primitives (core/inference/mira_mlx_server.py).
+# In-repo module, not an external binary — launched via `python -m`, no `paths:` entry needed.
+MIRA_MLX_PORT = 8080
+MIRA_MLX_HOST = f"http://localhost:{MIRA_MLX_PORT}"
+MIRA_MLX_MODEL = "mlx-community/Ministral-3-14B-Instruct-2512-4bit"
+MIRA_MLX_CONTEXT = 65536
 
 DFLASH_CLI = _DFLASH_CLI_PATH
 DFLASH_PORT = 8080
@@ -80,12 +88,19 @@ PRESETS = {
         "host": VLLM_MLX_HOST,
         "context_window": VLLM_MLX_CONTEXT,
     },
+    "mira-mlx": {
+        "backend": "mira-mlx",
+        "model": MIRA_MLX_MODEL,
+        "host": MIRA_MLX_HOST,
+        "context_window": MIRA_MLX_CONTEXT,
+    },
 }
 
 _mlx_lm_proc = None
 _dflash_proc = None
 _omlx_proc = None
 _vllm_mlx_proc = None
+_mira_mlx_proc = None
 
 
 def start_mlx_lm(model: str = MLX_LM_MODEL) -> None:
@@ -106,6 +121,55 @@ def start_mlx_lm(model: str = MLX_LM_MODEL) -> None:
         stderr=subprocess.DEVNULL,
     )
     _wait_for_ready(MLX_LM_HOST + "/v1/models", timeout=120)
+
+
+def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
+    global _mira_mlx_proc
+    from core import hardware
+
+    ok, reason = hardware.fits_in_memory(model)
+    if not ok:
+        raise RuntimeError(f"mira-mlx preflight check failed: {reason}")
+
+    # Derived per-machine, not a flat constant: a fixed cache-pool size that's
+    # comfortable on a 32GB Mac can itself exceed total RAM on an 8-16GB one
+    # (found 2026-07-09 — a fixed 3GB cap was smaller than a single long
+    # conversation's ~3.3GB KV cache entry, silently evicting it every time).
+    prompt_cache_max_bytes = hardware.derive_prompt_cache_max_bytes(model)
+    context_window = hardware.derive_context_window(model, requested_context=MIRA_MLX_CONTEXT)
+
+    _mira_mlx_proc = subprocess.Popen(
+        [
+            sys.executable, "-m", "core.inference.mira_mlx_server",
+            "--model", model,
+            "--host", "127.0.0.1",
+            "--port", str(MIRA_MLX_PORT),
+            "--max-tokens", "4096",
+            "--prefill-step-size", str(PREFILL_STEP_SIZE),
+            "--prompt-cache-max-bytes", str(prompt_cache_max_bytes),
+            # Bounds a single conversation's own KV cache regardless of length —
+            # without this, a very long conversation can alone exhaust RAM on
+            # tight machines even with a well-sized cache pool.
+            "--max-kv-size", str(context_window),
+            # Mistral-family tokenizers need this regex fix (mlx-lm doesn't
+            # default it on); harmless no-op for models that don't need it.
+            "--fix-mistral-regex",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    _wait_for_ready(MIRA_MLX_HOST + "/v1/models", timeout=120)
+
+
+def stop_mira_mlx() -> None:
+    global _mira_mlx_proc
+    if _mira_mlx_proc and _mira_mlx_proc.poll() is None:
+        _mira_mlx_proc.terminate()
+        try:
+            _mira_mlx_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            _mira_mlx_proc.kill()
+        _mira_mlx_proc = None
 
 
 def start_vllm_mlx(model: str = VLLM_MLX_MODEL) -> None:
@@ -263,6 +327,8 @@ def is_backend_ready(backend: str) -> bool:
             urllib.request.urlopen(DFLASH_HOST + "/v1/models", timeout=2)
         elif backend == "vllm-mlx":
             urllib.request.urlopen(VLLM_MLX_HOST + "/v1/models", timeout=2)
+        elif backend == "mira-mlx":
+            urllib.request.urlopen(MIRA_MLX_HOST + "/v1/models", timeout=2)
         else:
             urllib.request.urlopen(OLLAMA_HOST + "/api/version", timeout=2)
         return True
@@ -328,6 +394,13 @@ def ensure_backend_running(backend: str) -> None:
         except Exception:
             start_vllm_mlx()
         _warmup_model(VLLM_MLX_MODEL, host=VLLM_MLX_HOST)
+    elif backend == "mira-mlx":
+        try:
+            urllib.request.urlopen(MIRA_MLX_HOST + "/v1/models", timeout=2)
+            logger.info("mira-mlx already running")
+        except Exception:
+            start_mira_mlx()
+        _warmup_model(MIRA_MLX_MODEL, host=MIRA_MLX_HOST)
     else:
         try:
             urllib.request.urlopen(OLLAMA_HOST + "/api/version", timeout=2)
@@ -386,30 +459,42 @@ def switch_to(target: str) -> dict:
         stop_omlx()
         stop_mlx_lm()
         stop_vllm_mlx()
+        stop_mira_mlx()
         start_dflash()
     elif target == "mlx-lm":
         stop_ollama()
         stop_omlx()
         stop_dflash()
         stop_vllm_mlx()
+        stop_mira_mlx()
         start_mlx_lm()
     elif target == "omlx":
         stop_ollama()
         stop_mlx_lm()
         stop_dflash()
         stop_vllm_mlx()
+        stop_mira_mlx()
         start_omlx()
     elif target == "vllm-mlx":
         stop_ollama()
         stop_mlx_lm()
         stop_dflash()
         stop_omlx()
+        stop_mira_mlx()
         start_vllm_mlx()
+    elif target == "mira-mlx":
+        stop_ollama()
+        stop_mlx_lm()
+        stop_dflash()
+        stop_omlx()
+        stop_vllm_mlx()
+        start_mira_mlx()
     else:
         stop_mlx_lm()
         stop_dflash()
         stop_omlx()
         stop_vllm_mlx()
+        stop_mira_mlx()
         start_ollama()
     logger.info("Backend switch to %s complete", target)
     return PRESETS[target]
@@ -422,7 +507,7 @@ def switch_to_model(backend: str, model_id: str) -> dict:
     For ollama: switches to ollama and uses model_id as the active model.
     Returns an updated preset dict.
     """
-    if backend not in PRESETS and backend != "mlx-lm":
+    if backend not in PRESETS and backend not in ("mlx-lm", "mira-mlx"):
         raise ValueError(f"Unknown backend {backend!r}.")
     logger.info("Switching to model %s on %s", model_id, backend)
     if backend == "dflash":
@@ -430,6 +515,7 @@ def switch_to_model(backend: str, model_id: str) -> dict:
         stop_omlx()
         stop_mlx_lm()
         stop_vllm_mlx()
+        stop_mira_mlx()
         stop_dflash()
         start_dflash(model_id)
     elif backend == "mlx-lm":
@@ -437,6 +523,7 @@ def switch_to_model(backend: str, model_id: str) -> dict:
         stop_omlx()
         stop_dflash()
         stop_vllm_mlx()
+        stop_mira_mlx()
         stop_mlx_lm()
         start_mlx_lm(model_id)
     elif backend == "omlx":
@@ -444,6 +531,7 @@ def switch_to_model(backend: str, model_id: str) -> dict:
         stop_mlx_lm()
         stop_dflash()
         stop_vllm_mlx()
+        stop_mira_mlx()
         stop_omlx()
         start_omlx()
     elif backend == "vllm-mlx":
@@ -451,16 +539,30 @@ def switch_to_model(backend: str, model_id: str) -> dict:
         stop_mlx_lm()
         stop_dflash()
         stop_omlx()
+        stop_mira_mlx()
         stop_vllm_mlx()
         start_vllm_mlx(model_id)
+    elif backend == "mira-mlx":
+        stop_ollama()
+        stop_mlx_lm()
+        stop_dflash()
+        stop_omlx()
+        stop_vllm_mlx()
+        stop_mira_mlx()
+        start_mira_mlx(model_id)
     else:
         stop_mlx_lm()
         stop_dflash()
         stop_omlx()
         stop_vllm_mlx()
+        stop_mira_mlx()
         start_ollama()
     if backend == "mlx-lm":
         preset = {"backend": "mlx-lm", "model": model_id, "host": MLX_LM_HOST, "context_window": MLX_LM_CONTEXT}
+    elif backend == "mira-mlx":
+        from core import hardware
+        actual_context = hardware.derive_context_window(model_id, requested_context=MIRA_MLX_CONTEXT)
+        preset = {"backend": "mira-mlx", "model": model_id, "host": MIRA_MLX_HOST, "context_window": actual_context}
     else:
         preset = dict(PRESETS[backend])
         preset["model"] = model_id
