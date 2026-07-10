@@ -996,17 +996,7 @@ if __name__ == "__main__":
     # HTTPS :8443 binds the Tailscale interface only, so the socket exists solely on the
     # tailnet. Fail closed when the tailnet is down — off-host HTTPS is simply not served
     # (never 0.0.0.0, never a useless loopback HTTPS). HTTP :8000 (loopback) always runs.
-    https_host = None
-    if ssl_certfile and ssl_keyfile and AUTH_TOKEN:
-        https_host = _discover_tailnet_ip()
-        if https_host:
-            logger.info("HTTPS :8443 will bind tailnet address %s", https_host)
-        else:
-            logger.warning(
-                "Tailscale not up (no bindable 100.64.0.0/10 address) — off-host HTTPS "
-                "disabled; serving HTTP on loopback only. Start Tailscale and restart "
-                "(`/mira-server restart`) to enable remote access."
-            )
+    https_enabled = bool(ssl_certfile and ssl_keyfile and AUTH_TOKEN)
     logger.info("Binding HTTP :8000 to %s (auth %s)", http_host,
                 "enabled" if AUTH_TOKEN else "disabled — loopback only")
 
@@ -1016,7 +1006,25 @@ if __name__ == "__main__":
         )
 
         async def _serve_https():
-            # An HTTPS bind/serve failure must NEVER take down the HTTP listener.
+            # Tailscale may still be connecting when the server starts (e.g. right after
+            # login/boot) — poll instead of checking once, so a late tailnet connection is
+            # picked up without requiring a manual `/mira-server restart`. An HTTPS
+            # bind/serve failure must NEVER take down the HTTP listener.
+            retry_interval = 15
+            warned = False
+            https_host = await asyncio.to_thread(_discover_tailnet_ip)
+            while not https_host:
+                if not warned:
+                    logger.warning(
+                        "Tailscale not up (no bindable 100.64.0.0/10 address) — off-host "
+                        "HTTPS disabled for now; retrying every %ds until Tailscale connects.",
+                        retry_interval,
+                    )
+                    warned = True
+                await asyncio.sleep(retry_interval)
+                https_host = await asyncio.to_thread(_discover_tailnet_ip)
+
+            logger.info("HTTPS :8443 will bind tailnet address %s", https_host)
             https_server = uvicorn.Server(uvicorn.Config(
                 "server:app", host=https_host, port=8443,
                 ssl_certfile=ssl_certfile, ssl_keyfile=ssl_keyfile, log_level="info",
@@ -1028,7 +1036,7 @@ if __name__ == "__main__":
                 logger.error("HTTPS :8443 failed (%s) — continuing with HTTP only.", exc)
 
         coros = [http_server.serve()]
-        if https_host:
+        if https_enabled:
             coros.append(_serve_https())
         await asyncio.gather(*coros)
 
