@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.9.2 — July 2026
+
+- **mira-mlx is now the default backend** — Mira's own MLX inference server
+  (`core/inference/mira_mlx_server.py`) replaces omlx as the default, with RAM-aware
+  sizing, a disk-backed prompt cache, and a `/v1/stats` endpoint. No separate GUI app to
+  install for new setups; omlx remains fully supported as an alternative backend.
+- **Mistral-family models fully supported**, including tool-calling — Ministral 3 14B
+  joins Qwen3.6 as a first-class model option, servable via mira-mlx, omlx, vllm-mlx,
+  ollama, or mlx-lm.
+- **Fixed: Qwen3.6 wouldn't call tools on mira-mlx** — agentic actions (running shell
+  commands, editing files, etc.) silently failed to fire on mira-mlx while working fine
+  on omlx. Fixed three stacked bugs; re-verified 7/7 on the full agentic bench suite.
+- **mira-mlx Apple Silicon tuning** — live memory stats surfaced via `/v1/stats`,
+  automatic Metal cache-limit tuning, and a startup check confirming M-series GPU
+  acceleration is active.
+- **vllm-mlx wired end-to-end** for the Mistral family, with an agent-loop fix for
+  Mistral's strict user/assistant role-alternation requirement.
+- Docs (README, architecture, dev reference, model comparison) updated throughout to
+  match the above.
+
 ## v0.9.1 — June 2026
 
 - **Inference tuning results documented** — `docs/inference-tuning-2026-06-27.md` records the
