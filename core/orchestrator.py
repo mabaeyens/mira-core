@@ -955,13 +955,13 @@ class ChatOrchestrator:
             if self.backend == "dflash":
                 restart_dflash_if_dead(self.model)
             extra: dict = {}
-            if self.backend in ("mlx-lm", "dflash", "omlx") and (
+            if self.backend in ("mlx-lm", "dflash", "omlx", "mira-mlx") and (
                 "Qwen3" in self.model or "qwen3" in self.model.lower()
             ):
                 # Qwen3's chat template controls thinking via the enable_thinking
-                # kwarg, which the OpenAI-compatible servers (mlx-lm, dflash, omlx)
-                # only honor when nested under chat_template_kwargs. omlx is the
-                # default backend, so it MUST be included here — otherwise the
+                # kwarg, which the OpenAI-compatible servers (mlx-lm, dflash, omlx,
+                # mira-mlx) only honor when nested under chat_template_kwargs. omlx is
+                # the default backend, so it MUST be included here — otherwise the
                 # per-turn thinking toggle silently falls through to the model's
                 # template default (thinking ON) and "off" never takes effect.
                 # Other models (gemma4, etc.) don't have this variable — skip it.

@@ -104,6 +104,7 @@ class ChatJob:
     max_tokens: int
     temperature: float
     top_p: float
+    chat_template_kwargs: Optional[dict] = None
     out_queue: "queue.Queue" = field(default_factory=queue.Queue)
     request_id: str = field(default_factory=lambda: f"chatcmpl-{uuid.uuid4().hex[:24]}")
 
@@ -321,8 +322,10 @@ class GenerationEngine:
 
     def _start_job(self, job: ChatJob) -> None:
         try:
+            ckwargs = job.chat_template_kwargs or {}
             prompt_tokens = self.tokenizer.apply_chat_template(
-                _prepare_messages(job.messages), tools=job.tools, add_generation_prompt=True, tokenize=True
+                _prepare_messages(job.messages), tools=job.tools, add_generation_prompt=True,
+                tokenize=True, **ckwargs
             )
         except BaseException as exc:  # noqa: BLE001
             job.out_queue.put(exc)
@@ -424,7 +427,17 @@ class GenerationEngine:
             # EOS is the only way out of "tool" state and it clears prev_state,
             # so gating the flush on prev_state == "tool" silently drops it.
             if state["tool_text"]:
-                state["tool_calls_raw"].append(state["tool_text"])
+                # For two-sided markers (e.g. Qwen's <tool_call>...</tool_call>),
+                # the trailing prev_state=="tool" fallback above (needed for
+                # Mistral's one-sided marker) also captures the closing marker
+                # token itself, leaving a literal "</tool_call>" tail that
+                # breaks tool_parsers expecting the call to end at "</function>".
+                # Strip it — a no-op for Mistral, which has no tool_call_end.
+                tool_text = state["tool_text"]
+                end_marker = self.tokenizer.tool_call_end
+                if end_marker and tool_text.endswith(end_marker):
+                    tool_text = tool_text[: -len(end_marker)]
+                state["tool_calls_raw"].append(tool_text)
                 state["made_tool_call"] = True
 
             finish_reason = r.finish_reason
@@ -502,6 +515,7 @@ def create_app(engine: GenerationEngine) -> FastAPI:
             max_tokens=body.get("max_tokens") or engine.max_tokens,
             temperature=body.get("temperature", 0.0) or 0.0,
             top_p=body.get("top_p", 0.0) or 0.0,
+            chat_template_kwargs=body.get("chat_template_kwargs"),
         )
         loop = asyncio.get_event_loop()
         engine.submit(job)
