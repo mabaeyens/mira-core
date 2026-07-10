@@ -155,6 +155,10 @@ class GenerationEngine:
         self._total_prompt_tokens = 0
         self._total_generated_tokens = 0
         self._recent_latencies_ms: "deque[float]" = deque(maxlen=200)
+        self._active_memory_bytes = 0
+        self._cache_memory_bytes = 0
+        self._peak_memory_bytes = 0
+        self._wired_limit_bytes = 0
 
     def start(self) -> None:
         threading.Thread(target=self._run, name="mira-mlx-engine", daemon=True).start()
@@ -200,11 +204,30 @@ class GenerationEngine:
             self._ready.set()
             return
 
-        logger.info("mira-mlx engine ready: %s", self.model_path)
-        self._ready.set()
-
         from core import hardware
         self._memory_ceiling_bytes = hardware.get_total_ram_bytes() - hardware.SAFETY_MARGIN_BYTES
+
+        # BatchGenerator's own __init__ already calls mx.set_wired_limit() to the
+        # GPU driver's recommended working set (confirmed in mlx_lm.generate) —
+        # this is that same value, recorded for /v1/stats rather than re-set here.
+        # A NAX-capable Metal 4 GPU (M5+) reports this via device_info(); logging
+        # the architecture is a cheap regression guard if a future mlx build ever
+        # silently loses that acceleration path.
+        device_info = mx.device_info() if mx.metal.is_available() else {}
+        with self._stats_lock:
+            self._wired_limit_bytes = device_info.get("max_recommended_working_set_size", 0)
+
+        cache_limit_bytes = hardware.derive_cache_limit_bytes()
+        mx.set_cache_limit(cache_limit_bytes)
+
+        logger.info(
+            "mira-mlx engine ready: %s (gpu=%s wired_limit=%.2fGB cache_limit=%.2fGB)",
+            self.model_path,
+            device_info.get("architecture", "unknown"),
+            self._wired_limit_bytes / (1024**3),
+            cache_limit_bytes / (1024**3),
+        )
+        self._ready.set()
 
         while not self._shutdown:
             drained = self._drain_inbox()
@@ -225,7 +248,14 @@ class GenerationEngine:
         approaching the machine's ceiling — catches pressure from the active
         generation's own live KV cache, which sits outside prompt_cache's own
         byte budget and isn't covered by its self-contained eviction alone."""
-        used = mx.get_active_memory() + mx.get_cache_memory()
+        active = mx.get_active_memory()
+        cache = mx.get_cache_memory()
+        with self._stats_lock:
+            self._active_memory_bytes = active
+            self._cache_memory_bytes = cache
+            self._peak_memory_bytes = mx.get_peak_memory()
+
+        used = active + cache
         if used <= self._memory_ceiling_bytes:
             return
         target = max(self.prompt_cache.nbytes // 2, 0)
@@ -246,6 +276,10 @@ class GenerationEngine:
             prompt_tokens = self._total_prompt_tokens
             generated_tokens = self._total_generated_tokens
             latencies = sorted(self._recent_latencies_ms)
+            active_memory_bytes = self._active_memory_bytes
+            cache_memory_bytes = self._cache_memory_bytes
+            peak_memory_bytes = self._peak_memory_bytes
+            wired_limit_bytes = self._wired_limit_bytes
 
         total_requests = hits + misses
 
@@ -268,6 +302,10 @@ class GenerationEngine:
             "latency_p50_ms": _percentile(latencies, 0.50),
             "latency_p95_ms": _percentile(latencies, 0.95),
             "latency_sample_size": len(latencies),
+            "active_memory_bytes": active_memory_bytes,
+            "cache_memory_bytes": cache_memory_bytes,
+            "peak_memory_bytes": peak_memory_bytes,
+            "wired_limit_bytes": wired_limit_bytes,
         }
 
     def _drain_inbox(self) -> bool:

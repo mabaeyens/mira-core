@@ -142,6 +142,16 @@ def derive_disk_cache_max_bytes(cache_dir: Path, cap_bytes: int = 50 * BYTES_PER
     return int(min(cap_bytes, free // 10))
 
 
+def derive_cache_limit_bytes(total_ram_bytes: Optional[int] = None) -> int:
+    """Metal allocator reuse-cache cap: a small slice of the same ceiling
+    `_check_memory_pressure` already trims against, so the *reactive* clear
+    there stays a rare fallback instead of doing the routine work of keeping
+    the reuse cache in check."""
+    total_ram_bytes = total_ram_bytes if total_ram_bytes is not None else get_total_ram_bytes()
+    ceiling = total_ram_bytes - SAFETY_MARGIN_BYTES
+    return int(max(ceiling // 8, 256 * 1024 * 1024))
+
+
 def fits_in_memory(model_id: str, total_ram_bytes: Optional[int] = None,
                     min_context: int = 4096) -> tuple[bool, str]:
     """Preflight check: would this model + a minimum usable context even fit?"""

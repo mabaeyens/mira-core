@@ -140,6 +140,10 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
     prompt_cache_max_bytes = hardware.derive_prompt_cache_max_bytes(model)
     context_window = hardware.derive_context_window(model, requested_context=MIRA_MLX_CONTEXT)
     disk_cache_max_bytes = hardware.derive_disk_cache_max_bytes(MIRA_MLX_CACHE_DIR)
+    # A single response can't usefully exceed the machine's own derived context
+    # ceiling — on a smaller machine than this one, a flat 4096 could exceed
+    # what --max-kv-size (context_window, below) actually allows.
+    max_tokens = min(4096, context_window)
 
     _mira_mlx_proc = subprocess.Popen(
         [
@@ -147,7 +151,7 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
             "--model", model,
             "--host", "127.0.0.1",
             "--port", str(MIRA_MLX_PORT),
-            "--max-tokens", "4096",
+            "--max-tokens", str(max_tokens),
             "--prefill-step-size", str(PREFILL_STEP_SIZE),
             "--prompt-cache-max-bytes", str(prompt_cache_max_bytes),
             # Bounds a single conversation's own KV cache regardless of length —
