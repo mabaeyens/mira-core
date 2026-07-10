@@ -66,12 +66,22 @@ def get_project_id(project_name: str) -> tuple[str, str]:
 
 
 def create_bench_conversation(project_id: str | None = None) -> str:
-    """Create a fresh conversation (optionally project-scoped) and return its ID."""
+    """Create a fresh conversation (optionally project-scoped) and return its ID.
+
+    Force-titled "bench-<ts>-<id6>" immediately (never left as "New conversation") so any
+    conversation that survives a crashed run — teardown never ran, no project_id to key off —
+    is still trivially identifiable as bench debris on the next sweep. See [[feedback_bench_cleanup]].
+    """
     payload = {"project_id": project_id or ""}
     resp = requests.post(f"{BASE_URL}/conversations", json=payload, headers=HEADERS, timeout=5)
     resp.raise_for_status()
     conv_id = resp.json()["id"]
     _created_convs.append(conv_id)
+    title = f"bench-{int(time.time())}-{conv_id[:6]}"
+    try:
+        requests.patch(f"{BASE_URL}/conversations/{conv_id}", json={"title": title}, headers=HEADERS, timeout=5)
+    except Exception as e:
+        print(f"  warning: failed to force-title bench conversation {conv_id}: {e}")
     return conv_id
 
 
@@ -90,6 +100,57 @@ def make_worktree(source_repo: Path) -> tuple[Path, Path]:
         check=True, capture_output=True, text=True,
     )
     return tmp_base, wt
+
+
+def sweep_orphaned_bench_projects() -> None:
+    """Delete leftover bench debris (conversations + bench-wt-* projects) from prior runs
+    that never reached teardown (e.g. SIGKILL, terminal closed, crash before the outer
+    try/finally).
+
+    Runs at the very start of main(), before this run creates anything of its own — so
+    every conversation titled "bench-*" and every "bench-wt-*" project seen here belongs
+    to a previous, unfinished run and is safe to delete unconditionally.
+    """
+    try:
+        conversations = requests.get(f"{BASE_URL}/conversations", headers=HEADERS, timeout=5).json()["conversations"]
+    except Exception as e:
+        print(f"  sweep: could not list conversations, skipping: {e}")
+        conversations = []
+
+    orphan_convs = [c for c in conversations if c["title"].startswith("bench-")]
+    if orphan_convs:
+        print(f"Sweeping {len(orphan_convs)} orphaned bench conversation(s) from interrupted runs...")
+        for c in orphan_convs:
+            try:
+                requests.delete(f"{BASE_URL}/conversations/{c['id']}", headers=HEADERS, timeout=5)
+            except Exception as e:
+                print(f"  sweep: failed to delete conversation {c['id']}: {e}")
+
+    try:
+        projects = requests.get(f"{BASE_URL}/projects", headers=HEADERS, timeout=5).json()["projects"]
+    except Exception as e:
+        print(f"  sweep: could not list projects, skipping: {e}")
+        return
+
+    orphan_projects = [
+        p for p in projects
+        if p["name"].startswith("bench-wt-") and not Path(p["local_path"]).exists()
+    ]
+    if not orphan_projects:
+        return
+
+    print(f"Sweeping {len(orphan_projects)} orphaned bench-wt-* project(s) from interrupted runs...")
+    for p in orphan_projects:
+        for c in conversations:
+            if c.get("project_id") == p["id"]:
+                try:
+                    requests.delete(f"{BASE_URL}/conversations/{c['id']}", headers=HEADERS, timeout=5)
+                except Exception as e:
+                    print(f"  sweep: failed to delete conversation {c['id']}: {e}")
+        try:
+            requests.delete(f"{BASE_URL}/projects/{p['id']}", headers=HEADERS, timeout=5)
+        except Exception as e:
+            print(f"  sweep: failed to delete project {p['id']}: {e}")
 
 
 def register_throwaway_project(local_path: Path) -> tuple[str, str]:
@@ -450,6 +511,8 @@ def main():
     except Exception as e:
         print(f"ERROR: Mira server not reachable at {BASE_URL}: {e}")
         sys.exit(1)
+
+    sweep_orphaned_bench_projects()
 
     has_agentic = any(q.get("tools") or q.get("turns", 1) > 1 for q in questions)
 
