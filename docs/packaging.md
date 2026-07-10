@@ -119,6 +119,23 @@ source = "vcs"                 # the git tag is the single source of truth
 include = ["core", "mira_cli.py", "main.py", "server.py"]
 ```
 
+`include = ["core", ...]` is a directory include, so `core/inference/` (mira-mlx's own server,
+`mira_mlx_server.py` and `disk_prompt_cache.py`) and `core/hardware.py` ship automatically — no
+change needed there when adding new modules under `core/`.
+
+**Pinned git dependency:** `mlx-lm` is pinned to a mira-owned fork rather than the PyPI release,
+carrying a Mistral tool-call-flush fix (tracks upstream `ml-explore/mlx-lm#1373`):
+
+```toml
+[tool.uv.sources]
+mlx-lm = { git = "https://github.com/mabaeyens/mlx-lm.git", branch = "mira-mistral-tool-call-fix" }
+```
+
+This is a deliberate deviation from "only PyPI-released dependencies" — same tradeoff logic as
+this project's own not-on-PyPI decision above: correct upstream (mlx-lm) behavior for Mistral
+tool-calling didn't exist in a released version yet, so pinning a branch was the pragmatic fix
+rather than waiting on or vendoring the patch. Revisit once the fix lands upstream and is released.
+
 ## TL;DR
 
 We picked the **most-correct version strategy that exists** (tag-driven, zero-drift) and the

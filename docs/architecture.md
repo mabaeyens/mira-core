@@ -10,7 +10,7 @@ main.py (CLI)     server.py (FastAPI + SSE)
                  │
       core/orchestrator.py → ChatOrchestrator
             │  stream_chat(user_message, attachments=None, thinking_enabled=True) → yields events
-            ├── _call_llm() → openai.chat.completions.create() (omlx/dflash/mlx-lm, OpenAI-compatible; ollama via ollama client)
+            ├── _call_llm() → openai.chat.completions.create() (mira-mlx/omlx/dflash/mlx-lm/vllm-mlx, OpenAI-compatible; ollama via ollama client)
             ├── core/search_engine.py → SearchEngine → Brave API (primary, if keyed) / ddgs.text() (fallback)
             ├── core/url_fetcher.py → fetch_url() → BeautifulSoup, Jina Reader fallback
             └── core/rag_engine.py → RagEngine
@@ -113,7 +113,8 @@ This is transparent to clients — the next turn proceeds normally with a shorte
 | `GET` | `/conversations/{id}/messages` | Full message history |
 | `GET` | `/info` | Model name, backend, host, context_window, hardware |
 | `GET` | `/backend` | Current backend/model/host/context_window |
-| `POST` | `/backend` | Switch inference backend (`{"backend": "ollama"}`); blocks until ready |
+| `POST` | `/backend` | Switch inference backend, keeping that backend's default model (`{"backend": "mira-mlx"}`); blocks until ready |
+| `POST` | `/models/switch` | Switch to a specific backend + model (`{"backend": "mira-mlx", "model_id": "mlx-community/Ministral-3-14B-Instruct-2512-4bit"}`); blocks until ready |
 | `GET` | `/backends` | Named backend presets from `mira.yaml` `backends:` list, with `active` flag; populates app model picker |
 | `GET` | `/rag/documents` | List indexed RAG documents |
 | `DELETE` | `/rag/documents/{name}` | Remove a RAG document |
@@ -143,9 +144,19 @@ See `mira-apps/OllamaSearch/Shared/Networking/` for client implementation.
 
 ## Backend startup
 
-On Mira startup, `backend_manager.ensure_backend_running()` launches mlx-lm automatically if not already running (binary at `~/.local/bin/mlx_lm.server`, port 8080). The app's `/health` endpoint returns `backend_ready: false` until the inference server is reachable with the configured model, and the iOS/macOS chat view shows a banner with a "Start" button during that time. Ollama (port 11434) is optional — no longer required for RAG embeddings (sentence-transformers runs locally); start manually only when using Ollama as an inference fallback.
+On Mira startup, `backend_manager.ensure_backend_running()` launches whichever backend `mira.yaml` configures (default: **mira-mlx**, port 8080 — `core/inference/mira_mlx_server.py`, spawned as `python -m core.inference.mira_mlx_server`; other options are omlx, dflash, mlx-lm, vllm-mlx, or ollama). The app's `/health` endpoint returns `backend_ready: false` until the inference server is reachable with the configured model, and the iOS/macOS chat view shows a banner with a "Start" button during that time. Ollama (port 11434) is optional — no longer required for RAG embeddings (sentence-transformers runs locally); start manually only when using Ollama as an inference fallback.
 
-After the server is confirmed reachable, `_warmup_model(MLX_LM_MODEL)` sends a 1-token completion request (non-streaming) to force the model into GPU memory. This eliminates the 29–34 s first-request penalty that occurs when mlx-lm must load a new model into VRAM. The warmup runs in the background startup thread — both on fresh start and when the server was already running.
+After the server is confirmed reachable, `_warmup_model(...)` sends a 1-token completion request (non-streaming) to force the model into GPU memory. This eliminates the first-request penalty that occurs when a backend must load a new model into VRAM (mira-mlx: RAM-aware sizing already derives context/cache budgets at spawn time via `core/hardware.py`, so this is mainly relevant for backends that lazy-load). The warmup runs in the background startup thread — both on fresh start and when the server was already running.
+
+### mira-mlx specifics
+
+`core/inference/mira_mlx_server.py` is Mira's own MLX inference server (built on `mlx-lm`'s `BatchGenerator` continuous batching), promoted to the default backend on 2026-07-09. It runs in a single dedicated "engine thread" per process — MLX streams are thread-local, so HTTP handlers only tokenize and hand work off through a `queue.Queue`; they never touch MLX directly. Notable pieces:
+
+- `core/hardware.py` — derives per-machine RAM-aware budgets (prompt-cache pool size, context window ceiling, disk-cache size) so the same code behaves sensibly from an 8 GB Mac to a 128 GB Mac Studio; also computes a proactive Metal cache limit and confirms M-series GPU acceleration (Metal-4/NAX) is active at startup.
+- `core/inference/disk_prompt_cache.py` — evicted prompt-cache entries overflow to disk (content-addressed, safetensors) instead of being discarded, surviving both memory-pressure trims and process restarts.
+- `GET /v1/stats` on the mira-mlx port — cache hit/miss rate, disk-cache hits, memory-pressure trim events, latency percentiles, and live MLX memory (active/cache/peak/wired-limit bytes).
+- Oversized single prompts (≥ the derived context ceiling) are rejected with a clear `ValueError` rather than left to `RotatingKVCache`'s undefined behavior.
+- mlx-lm itself is pinned to a mira-owned fork (`github.com/mabaeyens/mlx-lm`, branch `mira-mistral-tool-call-fix`) carrying a Mistral tool-call-flush fix (tracks upstream `ml-explore/mlx-lm#1373`).
 
 ## Configuration reference
 
@@ -153,8 +164,8 @@ After the server is confirmed reachable, `_warmup_model(MLX_LM_MODEL)` sends a 1
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| `backend` | `omlx` | `omlx` (default), `dflash`, or `ollama` |
-| `model` | `Qwen3.6-35B-A3B` | Model identifier |
+| `backend` | `mira-mlx` | `mira-mlx` (default), `omlx`, `dflash`, `mlx-lm`, `vllm-mlx`, or `ollama` |
+| `model` | `mlx-community/Qwen3.6-35B-A3B-4bit` | Model identifier — mlx-community repo id for mira-mlx/dflash/mlx-lm/vllm-mlx (e.g. `mlx-community/Ministral-3-14B-Instruct-2512-4bit` for the Mistral family), omlx's own model name for `backend: omlx` |
 | `host` | `http://localhost:8080` | LLM server URL |
 | `embed_model` | `nomic-ai/nomic-embed-text-v1.5` | HuggingFace embedding model for RAG (sentence-transformers) |
 | `context_window` | `65536` | Token context window |
@@ -171,6 +182,9 @@ Behaviours that are intentional and must not be removed:
 - **Gemma4 (Ollama) thinking:** when `think=True`, Ollama yields thinking text in `chunk.message.thinking` (separate from `chunk.message.content`). The streaming loop checks this field and emits `thinking` events.
 - **Qwen3.6 (mlx-lm) thinking:** controlled per-request via `extra_body={"chat_template_kwargs": {"enable_thinking": True/False}}`; thinking tokens stream in the `reasoning` field of SSE delta chunks; the orchestrator emits them as `thinking` events and strips thinking markers before emitting the final content. Overhead on mlx-lm is ≤14 ms warm — negligible.
 - **`_NEVER_THINK` / `_ANALYTICAL_WITH_ATTACHMENT`:** `_should_think()` uses a scoring heuristic (threshold 4). `_NEVER_THINK` short-circuits to False for time/date queries and "fix file.ext" patterns. Bare attachments score +1; analytical verbs (explain, analyze, review, debug, refactor…) combined with an attachment add a further +2.
+- **Qwen3.6 thinking toggle must be threaded through per-backend:** `_call_llm()` (`core/orchestrator.py`) gates the `enable_thinking`/`chat_template_kwargs` override behind an explicit backend allow-list — every OpenAI-compatible backend that honors it (`mlx-lm`, `dflash`, `omlx`, `mira-mlx`) must be listed there, or that backend silently falls back to the model's chat-template default (thinking always on) regardless of the per-turn toggle. Found and fixed 2026-07-10 when `mira-mlx` was missing from the tuple.
+- **Mistral/Ministral tool calls (mira-mlx):** Mistral's chat template uses a one-sided `[TOOL_CALLS]` marker (no closing token — the model relies on EOS to end the call), while Qwen's uses a two-sided `<tool_call>...</tool_call>` marker. `mira_mlx_server.py`'s tool-text buffering has a `prev_state == "tool"` fallback to still capture the last chunk before EOS for Mistral's one-sided case — but for two-sided markers this same fallback also captures the closing marker token itself, corrupting the parser's input. The closing marker is stripped before parsing (no-op for Mistral, which has none).
+- **Mistral agent-loop role alternation (vllm-mlx):** Mistral-family chat templates require strict user/assistant role alternation; the agent tool-call loop's message construction was fixed to satisfy this when Mistral is the active model.
 
 ## Test patterns
 

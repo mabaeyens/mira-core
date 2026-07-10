@@ -1,6 +1,46 @@
 # Model Comparison: MacBook Pro M5 (32GB RAM) Performance Guide
 
-## Current Verdict (2026-06-07)
+## Current Verdict (2026-07-10)
+
+**Winner: mira-mlx (Mira's own inference server) — Qwen3.6-35B-A3B as the normal default model**
+
+mira-mlx (`core/inference/mira_mlx_server.py`) was promoted to the default backend on
+2026-07-09, replacing omlx as the primary path — it's bundled (no separate GUI app), has
+RAM-aware sizing, a disk-backed prompt cache, and `/v1/stats` visibility. omlx remains
+fully supported as an alternative backend.
+
+**2026-07-10 bench results** (`scripts/bench_standard.py` throughput + `scripts/bench_compare.py`
+13-question quality/agentic suite, both via mira-mlx):
+
+| Model | Decode t/s | pp1024 t/s | Agentic (7 questions) |
+|-------|-----------|-----------|------------------------|
+| Qwen3.6-35B-A3B-4bit | 56–66 t/s | ~880 t/s | 7/7 tool calls firing correctly (after fix below) |
+| Ministral-3-14B-4bit | 19.5–21 t/s | ~2900 t/s (warm) | 6/7 (one bench-harness path-scoping edge case, not a mira-mlx defect) |
+
+Qwen3.6's decode throughput on mira-mlx is 3× Ministral's, as expected for a 3B-active MoE
+vs. a 14B dense model. Both are usable defaults; Qwen3.6 stays the "normal" default model,
+Ministral is the temporary default (per explicit request) while evaluating the Mistral family.
+
+**Tool-calling regression, found and fixed same day:** Qwen3.6 initially fired **0/7** tool
+calls on mira-mlx (while Ministral got 6/7 and omlx's Qwen3.6 got 7/7) — three stacked bugs:
+(1) `core/orchestrator.py`'s Qwen3-thinking backend allow-list omitted `mira-mlx`, so it never
+received an explicit `enable_thinking` value; (2) mira-mlx's HTTP handler silently dropped
+`chat_template_kwargs` even when sent; (3) the tool-text buffering logic (needed for Mistral's
+one-sided `[TOOL_CALLS]` marker) also captured Qwen's closing `</tool_call>` marker, breaking
+the parser's end-anchored regex. All three fixed 2026-07-10 — see `docs/architecture.md`
+"Model quirks" for details. Full writeup: `docs/bench-results-2026-07-10.md`.
+
+**Current `mira.yaml`:**
+```yaml
+backend: mira-mlx
+model: mlx-community/Qwen3.6-35B-A3B-4bit   # or mlx-community/Ministral-3-14B-Instruct-2512-4bit
+host: http://localhost:8080
+context_window: 65536
+```
+
+---
+
+## Previous Verdict (2026-06-07, superseded by mira-mlx above — omlx itself is unchanged and still fully supported)
 
 **Winner: oMLX 0.4.1 + `Qwen3.6-35B-A3B`**
 
@@ -62,7 +102,8 @@ context_window: 65536
 
 | Option | Sustained t/s | Warm TTFT | Memory | Quality (SWE) | Verdict |
 |--------|--------------|-----------|--------|---------------|---------|
-| **Qwen3.6-35B-A3B-4bit (mlx-lm)** | **~52–55 t/s** | **300–450ms** | ⚠️ 18GB | **58.7%** | **⭐ Current Mira default** |
+| **Qwen3.6-35B-A3B-4bit (mira-mlx)** | **56–66 t/s** | **~1.1–1.2s pp1024** | ⚠️ 18GB | **58.7%** | **⭐ Current Mira default backend — see "Current Verdict" above** |
+| Qwen3.6-35B-A3B-4bit (mlx-lm) | ~52–55 t/s | 300–450ms | ⚠️ 18GB | 58.7% | Historical entry below (2026-05); superseded by mira-mlx |
 | **qwen3.6:35b-mlx** (Ollama) | **~43 t/s** | **~60–245ms** | ⚠️ 21GB | **58.7%** | Quality leader (Ollama; benched 2026-05-25) |
 | **gemma-4-26b-a4b-it-4bit (mlx-lm)** | **~36 t/s** | **250–505ms** | ✅ 17GB | 42.3% | Manual fallback (demoted 2026-05-31) |
 | gemma4:26b-mlx (Ollama) | ~39 t/s | ~970–1,200ms | ✅ 17GB | 42.3% | Superseded by mlx-lm (2026-05-30) |
@@ -71,16 +112,19 @@ context_window: 65536
 | qwen3.6:latest Q4_K_M (Ollama) | ~1.5–2 t/s | 14s | ❌ 24GB | — | Avoid |
 | oMLX | — | — | ❌ OOM | — | Dead end — do not revisit |
 
-**Current Mira config**: mlx-lm 0.31.3 + `Qwen3.6-35B-A3B-4bit` (port 8080). Ollama remains available as an optional inference backend (switchable via the in-app model browser); Gemma4 available as a manual fallback for workflows that need its 75% MLX Community leaderboard score.
+**Current Mira config (2026-07-10)**: mira-mlx + `Qwen3.6-35B-A3B-4bit` (port 8080) — see "Current Verdict" at the top of this file. mlx-lm entries below are historical (2026-05); mira-mlx is built on the same mlx-lm continuous-batching primitives but as Mira's own server, with RAM-aware sizing and a disk-backed prompt cache. Ollama remains available as an optional inference backend (switchable via the in-app model browser); Gemma4 available as a manual fallback for workflows that need its leaderboard score.
 
 ### Backends Evaluated
 
 | Backend | Status | Notes |
 |---------|--------|-------|
+| mira-mlx | ✅ Default (2026-07-09) | Mira-owned MLX server (`core/inference/mira_mlx_server.py`); Qwen3.6 and Mistral/Ministral both supported, incl. tool-calling |
+| omlx | 🔄 Alternative backend | Still fully supported; ~0ms warm TTFT after startup warm-up |
+| vllm-mlx | 🔄 Alternative backend | Patched Mistral tool-call parser; used for Ministral-3-14B evaluation |
 | Ollama 0.24.0 | 🔄 Optional fallback | Switchable via in-app model browser |
-| mlx-lm 0.31.3 | ✅ Default | Thinking controlled per-request via `chat_template_kwargs`; warmup on startup |
+| mlx-lm 0.31.3 | 🔄 Alternative backend | Historical default (2026-05); superseded by mira-mlx. Thinking controlled per-request via `chat_template_kwargs`; warmup on startup |
 | llama.cpp b9260 | 🔧 Optional | Works but manual setup; no GPU sharing with Ollama |
-| oMLX v0.3.9 | ❌ Dead end | OOM crash on 32GB M5 |
+| oMLX v0.3.9 | ❌ Dead end (historical) | OOM crash on 32GB M5 — fixed in 0.4.1, see "Previous Verdict" below |
 
 ---
 

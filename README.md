@@ -2,7 +2,7 @@
 
 A local AI assistant with autonomous web search, file attachments (PDF/HTML/images/text), and RAG for large documents. Available as a CLI tool and a local web interface with streaming markdown responses.
 
-Runs on a local inference backend ([oMLX](https://omlx.ai)) — no cloud APIs, no API keys. RAG embeddings use `sentence-transformers` (`nomic-ai/nomic-embed-text-v1.5`) locally — no external services required.
+Runs entirely on local inference — no cloud APIs, no API keys. The default backend is **mira-mlx**, Mira's own MLX-based inference server (bundled, no extra app to install); [oMLX](https://omlx.ai), dflash, mlx-lm, vllm-mlx, and Ollama are also supported as alternative backends. RAG embeddings use `sentence-transformers` (`nomic-ai/nomic-embed-text-v1.5`) locally — no external services required.
 
 See [CHANGELOG.md](CHANGELOG.md) for recent changes.
 
@@ -31,6 +31,7 @@ in [Issues](https://github.com/mabaeyens/mira-core/issues/new/choose). I read bo
 - **File attachments**: PDFs (RAG), HTML, images (multimodal vision), text/code files — attach a screenshot and ask about it; tested with books up to 34 MB
 - **RAG**: Large documents chunked, embedded, reranked with Qwen3-Reranker-0.6B-4bit (mlx, in-process) — retrieved automatically on every turn, with hallucination guard for meta-queries (summarize, translate)
 - **Adaptive thinking**: Qwen3.6-35B uses extended reasoning on complex questions; suppressed automatically for trivial queries — zero overhead (≤14ms warm)
+- **Multiple model families**: Qwen3.6 (MoE, the primary default) and Mistral-family models (Ministral 3 14B) both fully supported, including tool-calling — pick per-conversation from the model picker
 - **Conversation search**: Search past conversations by content — model can call `search_conversations()` or use the `/conversations/search` API endpoint
 - **Scheduled reminders**: Set reminders in natural language; delivered via macOS Notification Center
 - **Temp workspace**: Model can read and write files in a per-session temp directory when no project is open
@@ -92,18 +93,21 @@ you have that **plus ~15 GB breathing room** free — otherwise it stops (overri
 resident at once (Mira loads one at a time), and below 24 GB the default model may OOM at
 large context. Run `mira preflight` standalone any time to see the budget.
 
-### Required: install the oMLX app (the one manual step)
+### No extra app required
 
-The default backend is **omlx**, a GUI app the installer can't install for you. This
-step is mandatory — without it the server has no model to talk to:
+The default backend is **mira-mlx**, Mira's own inference server — it's a bundled
+Python module (`core/inference/mira_mlx_server.py`) built on `mlx-lm`, started and
+managed automatically by the server. `uv sync` pulls its dependencies as part of the
+normal install; there's no separate GUI app to download or model library to configure.
 
-1. Download from [github.com/jundot/omlx/releases](https://github.com/jundot/omlx/releases).
-2. Drag **oMLX** to `/Applications` and open it once to accept the prompts.
-3. In its model library, load **`Qwen3.6-35B-A3B`**.
+If you'd rather use [oMLX](https://omlx.ai) instead (a separate GUI app with its own
+model library, `~0ms` TTFT after warm-up), it's still fully supported — download it
+from [github.com/jundot/omlx/releases](https://github.com/jundot/omlx/releases), load
+a model in its library, and set `backend: omlx` in `mira.yaml`.
 
-Run `mira doctor` (or `make doctor`) any time to confirm it's detected and see what else
-is missing. (Prefer a fully headless setup? `--with-ollama` installs an alternative
-backend, but omlx is the default everything else is tuned for.)
+Run `mira doctor` (or `make doctor`) any time to confirm your configured backend is
+detected and see what else is missing. (`--with-ollama` installs Ollama as another
+alternative backend.)
 
 > On first use, the `nomic-ai/nomic-embed-text-v1.5` embedding model and
 > `Qwen3-Reranker-0.6B-4bit` reranker download automatically from HuggingFace and cache
@@ -120,8 +124,9 @@ mira chat      # interactive CLI                    (or: make chat)
 For remote access (iPad via Tailscale), the server also listens on HTTPS port **8443** —
 install with `--with-tailscale <host>` and connect to `https://<mac-hostname>:8443`.
 
-oMLX is started and managed automatically by the server. See
-`docs/model-comparison-m5-macbook.md` for benchmarks and model alternatives.
+Whichever backend is configured in `mira.yaml` is started and managed automatically by
+the server. See `docs/model-comparison-m5-macbook.md` for benchmarks and model
+alternatives.
 
 ### Access control
 
@@ -218,8 +223,8 @@ RAG documents persist in the session index across turns — no need to re-attach
 Copy `mira.yaml.example` to `mira.yaml` and edit. All fields are optional — omit any to keep the built-in default.
 
 ```yaml
-backend: omlx
-model: Qwen3.6-35B-A3B
+backend: mira-mlx
+model: mlx-community/Qwen3.6-35B-A3B-4bit
 host: http://localhost:8080
 
 embed_model: nomic-ai/nomic-embed-text-v1.5
@@ -229,8 +234,8 @@ context_window: 65536
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `backend` | `omlx` | Inference backend (`omlx`, `dflash`, `mlx-lm`, or `ollama`) |
-| `model` | `Qwen3.6-35B-A3B` | Model identifier (omlx name; use `mlx-community/Qwen3.6-35B-A3B-4bit` for dflash/mlx-lm) |
+| `backend` | `mira-mlx` | Inference backend (`mira-mlx`, `omlx`, `dflash`, `mlx-lm`, `vllm-mlx`, or `ollama`) |
+| `model` | `mlx-community/Qwen3.6-35B-A3B-4bit` | Model identifier — an mlx-community repo id for mira-mlx/dflash/mlx-lm/vllm-mlx (e.g. `mlx-community/Ministral-3-14B-Instruct-2512-4bit` for the Mistral family), or omlx's own model name (`Qwen3.6-35B-A3B`) when `backend: omlx` |
 | `host` | `http://localhost:8080` | Backend host URL |
 | `embed_model` | `nomic-ai/nomic-embed-text-v1.5` | HuggingFace embedding model for RAG |
 | `context_window` | `65536` | Token context window |

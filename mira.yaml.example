@@ -19,21 +19,37 @@
 # allowed_source_cidrs: ["127.0.0.0/8", "::1/128", "100.64.0.0/10"]
 
 # ── LLM backend ──────────────────────────────────────────────────────────────
-# Recommended: omlx (KV cache held in RAM → ~0ms TTFT after startup warm-up)
+# Recommended: mira-mlx (Mira's own inference server — bundled, no separate app to
+# install; RAM-aware sizing, disk-backed prompt cache). Supports Qwen3.6 (MoE, the
+# primary default) and Mistral-family models (e.g. Ministral 3 14B), incl. tool-calling.
 # Alternatives:
+#   - omlx: separate GUI app with its own model library; KV cache held in RAM → ~0ms TTFT
+#   - vllm-mlx: patched Mistral tool-call parser; another option for the Mistral family
+#   - mlx-lm: stock mlx-lm server, no mira-mlx extras (RAM-aware sizing, disk cache, stats)
 #   - dflash: higher throughput for long responses; SSD prefix cache (slower TTFT ~48s)
 #   - ollama: fallback; gemma4:26b-mlx is fast but quality is lower than Qwen3.6
-backend: omlx                # omlx | dflash | ollama
-model: Qwen3.6-35B-A3B       # omlx model name (dflash: mlx-community/Qwen3.6-35B-A3B-4bit)
-host: http://localhost:8080  # omlx and dflash default port
+backend: mira-mlx             # mira-mlx | omlx | dflash | mlx-lm | vllm-mlx | ollama
+model: mlx-community/Qwen3.6-35B-A3B-4bit   # mlx-community repo id (mira-mlx/dflash/mlx-lm/vllm-mlx);
+                                             # omlx wants its own model name instead, e.g. Qwen3.6-35B-A3B
+host: http://localhost:8080  # default port for all local backends except ollama
 
 # ── Model picker presets ──────────────────────────────────────────────────────
 # Named backend+model combinations shown in the iOS/macOS model picker.
 # Edit freely — the app reads this list on every picker open (no app update needed).
 # Omit this section to fall back to the built-in preset list.
 backends:
+  - id: mira-mlx-qwen3
+    label: "Qwen3.6 35B (mira-mlx)"
+    backend: mira-mlx
+    model: mlx-community/Qwen3.6-35B-A3B-4bit
+    context_window: 65536
+  - id: mira-mlx-ministral3-14b
+    label: "Ministral 3 14B (mira-mlx)"
+    backend: mira-mlx
+    model: mlx-community/Ministral-3-14B-Instruct-2512-4bit
+    context_window: 65536
   - id: omlx-qwen3
-    label: "Qwen3.6 35B"
+    label: "Qwen3.6 35B (omlx)"
     backend: omlx
     model: Qwen3.6-35B-A3B
     context_window: 131072
@@ -85,7 +101,7 @@ brave_api_key: "your-brave-search-api-key-here"
 #   dflash_cli: /path/to/.venv/bin/dflash      # e.g. <project>/.venv/bin/dflash
 #   omlx_cli: /Applications/oMLX.app/Contents/MacOS/omlx-cli  # same for all macOS
 
-# ── Inference tuning (dflash and mlx-lm only — ignored by omlx) ─────────────
+# ── Inference tuning (mira-mlx, dflash, and mlx-lm only — ignored by omlx) ──
 # prefill_step_size: tokens processed per prefill chunk.
 # Valid powers of 2: 256 | 512 | 1024 | 2048 (2048 is experimental on 32GB RAM).
 prefill_step_size: 1024
