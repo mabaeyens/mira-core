@@ -10,7 +10,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from core.config import DB_PATH
+from core.config import CONTEXT_WINDOW, DB_PATH
 from core.config import DFLASH_CLI as _DFLASH_CLI_PATH
 from core.config import DFLASH_DIAGNOSTICS, MLX_LM_CLI as _MLX_LM_CLI_PATH
 from core.config import MIRA_MLX_KV_BITS, MIRA_MLX_KV_GROUP_SIZE
@@ -30,7 +30,10 @@ MLX_LM_CONTEXT = 65536
 MIRA_MLX_PORT = 8080
 MIRA_MLX_HOST = f"http://localhost:{MIRA_MLX_PORT}"
 MIRA_MLX_MODEL = "mlx-community/Ministral-3-14B-Instruct-2512-4bit"
-MIRA_MLX_CONTEXT = 65536
+# Follows mira.yaml's `context_window:` (config.CONTEXT_WINDOW) so the requested
+# value actually reaches --max-kv-size below, instead of silently staying at a
+# stale flat default (found 2026-07-18 while testing a context_window bump).
+MIRA_MLX_CONTEXT = CONTEXT_WINDOW
 MIRA_MLX_CACHE_DIR = DB_PATH.parent / "mira_mlx_cache"
 
 DFLASH_CLI = _DFLASH_CLI_PATH
