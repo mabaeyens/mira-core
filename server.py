@@ -8,6 +8,7 @@ import logging
 import os
 import socket
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -138,7 +139,7 @@ async def lifespan(app: FastAPI):
             if not os.getenv("MIRA_TESTING"):
                 threading.Thread(
                     target=_bm.ensure_backend_running,
-                    args=(BACKEND,),
+                    args=(BACKEND, MODEL_NAME),
                     daemon=True,
                 ).start()
             from core import scheduler as _scheduler
@@ -333,6 +334,28 @@ async def list_models():
     return result
 
 
+async def _reconcile_stale_switch_failure(backend: str, model_id: str, grace_seconds: int = 60) -> Optional[dict]:
+    """A switch can raise from a slow-but-successful readiness check — the
+    target backend's own internal load can outlast backend_manager's external
+    wait_for_ready timeout while still coming up healthy moments later
+    (confirmed 2026-07-18: a Qwen3.6->Gemma4 switch under memory pressure hit
+    this — see core/backend_manager.py's start_mira_mlx comment). Rather than
+    leave `_rt` permanently pointed at the old model while the new one is
+    actually live, poll briefly for the target to become ready before giving
+    up. Returns the preset dict if it recovers within grace_seconds, else None."""
+    loop = asyncio.get_event_loop()
+    deadline = time.time() + grace_seconds
+    while time.time() < deadline:
+        try:
+            ready = await loop.run_in_executor(None, _bm.is_backend_ready, backend)
+        except Exception:
+            ready = False
+        if ready:
+            return await loop.run_in_executor(None, _bm.get_preset_for, backend, model_id)
+        await asyncio.sleep(2)
+    return None
+
+
 @app.post("/models/switch")
 async def switch_model(request: Request, _=Depends(_ready)):
     global _ollama_ready
@@ -357,7 +380,24 @@ async def switch_model(request: Request, _=Depends(_ready)):
         )
         _rt.update(preset)
     except Exception as e:
-        logger.error("Model switch failed: %s", e)
+        logger.error("Model switch to %s/%s failed: %s — checking whether it actually succeeded", backend, model_id, e)
+        recovered_preset = await _reconcile_stale_switch_failure(backend, model_id)
+        if recovered_preset is not None:
+            logger.warning(
+                "Model switch to %s/%s reported failure but the backend is actually healthy "
+                "(slow cold load outlasted the readiness timeout) — resyncing instead of "
+                "leaving state stale", backend, model_id,
+            )
+            await sessions.reinitialize_all(
+                backend=recovered_preset["backend"], model=recovered_preset["model"],
+                host=recovered_preset["host"], context_window=recovered_preset["context_window"],
+            )
+            _rt.update(recovered_preset)
+            _ollama_ready = True
+            return {
+                "status": "ok", "backend": _rt["backend"], "model": _rt["model"],
+                "message": "recovered from a slow readiness check",
+            }
         _ollama_ready = True
         raise HTTPException(status_code=500, detail=str(e))
     _ollama_ready = True

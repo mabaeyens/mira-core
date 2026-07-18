@@ -9,6 +9,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+from typing import Optional
 
 from core.config import CONTEXT_WINDOW, DB_PATH
 from core.config import DFLASH_CLI as _DFLASH_CLI_PATH
@@ -195,7 +196,19 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    _wait_for_ready(MIRA_MLX_HOST + "/v1/models", timeout=120)
+    # GenerationEngine.start() (mira_mlx_server.py) itself waits up to 180s for
+    # its own engine thread to finish loading before raising — this external
+    # readiness poll must allow strictly more than that, or a legitimately-slow
+    # but successful cold load (large model, memory pressure right after
+    # killing a previous backend) raises TimeoutError here while the process
+    # keeps loading in the background and becomes healthy moments later,
+    # leaving callers (server.py's /models/switch) reporting failure for a
+    # switch that actually succeeded. Confirmed 2026-07-18: a Qwen3.6->Gemma4
+    # switch hit exactly this — /v1/models came up healthy well within 3
+    # minutes of the process starting, after this 120s timeout had already
+    # fired and left server.py's _rt state stale (see server.py's
+    # `_reconcile_stale_switch_failure`).
+    _wait_for_ready(MIRA_MLX_HOST + "/v1/models", timeout=200)
 
 
 def stop_mira_mlx() -> None:
@@ -401,8 +414,17 @@ def _warmup_model(model: str, host: str = MLX_LM_HOST, api_key: str = "") -> Non
         logger.warning("warmup failed (non-fatal): %s", exc)
 
 
-def ensure_backend_running(backend: str) -> None:
-    """Start the backend if not already reachable. Safe to call on every startup."""
+def ensure_backend_running(backend: str, model: Optional[str] = None) -> None:
+    """Start the backend if not already reachable. Safe to call on every startup.
+
+    `model` overrides the backend's own hardcoded default constant (e.g.
+    MIRA_MLX_MODEL) — pass core.config.MODEL_NAME (mira.yaml's configured
+    model) here, or the backend silently ignores mira.yaml and starts with
+    whatever placeholder model that constant happens to hold (confirmed
+    2026-07-18: server.py startup was calling this with no model, so every
+    fresh process cold-started mira-mlx into MIRA_MLX_MODEL's hardcoded
+    Ministral default instead of mira.yaml's configured Qwen3.6, silently
+    diverging from the configured model on every restart)."""
     if backend == "dflash":
         try:
             urllib.request.urlopen(DFLASH_HOST + "/v1/models", timeout=2)
@@ -432,12 +454,13 @@ def ensure_backend_running(backend: str) -> None:
             start_vllm_mlx()
         _warmup_model(VLLM_MLX_MODEL, host=VLLM_MLX_HOST)
     elif backend == "mira-mlx":
+        target_model = model or MIRA_MLX_MODEL
         try:
             urllib.request.urlopen(MIRA_MLX_HOST + "/v1/models", timeout=2)
             logger.info("mira-mlx already running")
         except Exception:
-            start_mira_mlx()
-        _warmup_model(MIRA_MLX_MODEL, host=MIRA_MLX_HOST)
+            start_mira_mlx(target_model)
+        _warmup_model(target_model, host=MIRA_MLX_HOST)
     else:
         try:
             urllib.request.urlopen(OLLAMA_HOST + "/api/version", timeout=2)
@@ -537,6 +560,29 @@ def switch_to(target: str) -> dict:
     return PRESETS[target]
 
 
+def get_preset_for(backend: str, model_id: str) -> dict:
+    """Compute the runtime preset dict for an already-running backend/model,
+    without starting or stopping anything. Used both by switch_to_model()'s own
+    return value and by server.py's reconciliation path (a switch that raised
+    from a slow-but-successful readiness check can still call this once the
+    backend is confirmed healthy, to resync without repeating the stop/start)."""
+    if backend == "mlx-lm":
+        return {"backend": "mlx-lm", "model": model_id, "host": MLX_LM_HOST, "context_window": MLX_LM_CONTEXT}
+    elif backend == "mira-mlx":
+        from core import hardware
+        actual_context = hardware.derive_context_window(
+            model_id,
+            requested_context=MIRA_MLX_CONTEXT,
+            kv_bits=MIRA_MLX_KV_BITS,
+            kv_group_size=MIRA_MLX_KV_GROUP_SIZE,
+        )
+        return {"backend": "mira-mlx", "model": model_id, "host": MIRA_MLX_HOST, "context_window": actual_context}
+    else:
+        preset = dict(PRESETS[backend])
+        preset["model"] = model_id
+        return preset
+
+
 def switch_to_model(backend: str, model_id: str) -> dict:
     """Switch to a specific model on the given backend.
 
@@ -594,20 +640,7 @@ def switch_to_model(backend: str, model_id: str) -> dict:
         stop_vllm_mlx()
         stop_mira_mlx()
         start_ollama()
-    if backend == "mlx-lm":
-        preset = {"backend": "mlx-lm", "model": model_id, "host": MLX_LM_HOST, "context_window": MLX_LM_CONTEXT}
-    elif backend == "mira-mlx":
-        from core import hardware
-        actual_context = hardware.derive_context_window(
-            model_id,
-            requested_context=MIRA_MLX_CONTEXT,
-            kv_bits=MIRA_MLX_KV_BITS,
-            kv_group_size=MIRA_MLX_KV_GROUP_SIZE,
-        )
-        preset = {"backend": "mira-mlx", "model": model_id, "host": MIRA_MLX_HOST, "context_window": actual_context}
-    else:
-        preset = dict(PRESETS[backend])
-        preset["model"] = model_id
+    preset = get_preset_for(backend, model_id)
     logger.info("Model switch to %s/%s complete", backend, model_id)
     return preset
 

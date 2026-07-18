@@ -25,7 +25,22 @@
     re-enable for a longer real-usage window if a more representative sample is wanted before starting spec 02.
   Specs: `specs/moe-expert-offload-01-profiling.md` (done), `specs/moe-expert-offload-02-runtime-cache.md`
   (next — no longer blocked).
-
+- [2026-07-18] Fixed two `core/backend_manager.py`/`server.py` bugs found while switching mira-mlx between
+  models during the expert-offloading profiling run above: (1) `ensure_backend_running("mira-mlx")` always
+  called `start_mira_mlx()` with no model argument, silently defaulting to its own hardcoded `MIRA_MLX_MODEL`
+  constant (Ministral) instead of `core.config.MODEL_NAME` (mira.yaml's configured Qwen3.6) — every
+  `server.py` cold start was silently ignoring the configured model. Fixed: `ensure_backend_running` now
+  accepts an explicit `model` param; `server.py`'s startup thread passes `MODEL_NAME`. (2) `start_mira_mlx()`'s
+  internal `_wait_for_ready` timeout (120s) was shorter than `GenerationEngine.start()`'s own internal
+  readiness budget (180s) — a legitimately-slow-but-successful cold load (large model, memory pressure right
+  after killing a previous backend) could raise `TimeoutError` in `switch_to_model()` while the process kept
+  loading in the background and became healthy moments later, leaving `server.py`'s `_rt` state permanently
+  stale (reported the old model while the new one was actually live and serving). Fixed: bumped the timeout
+  to 200s, and added `_reconcile_stale_switch_failure()` in `server.py` — on any switch failure, briefly poll
+  whether the target backend actually came up before giving up, so a switch that succeeds late is never
+  permanently misreported as failed. Reproduced live (Qwen3.6→Gemma4 switch under memory pressure), fixed,
+  and verified end-to-end (clean restart correctly booted Qwen3.6 per `mira.yaml`, `_rt`/`/backend` correctly
+  reflected reality, no more `--profile-experts` on the process args after disabling it).
 - [2026-07-18] KV-cache quantization, isolated timing re-bench (resolves the Phase C timing caveat above): re-ran the 13-question suite four times with no other apps/processes running (Safari helper processes only, idle CPU) — Ministral 3 14B and Qwen3.6-35B-A3B, each once with `kv_bits=8` and once fully unquantized (temporarily unset `mira_mlx_kv_bits` in `mira.yaml`, confirmed via the running subprocess's args each time, restored to `kv_bits=8` afterward). Correctness held again in all four runs (same tool-call/`task_done` pattern as every prior run).
   - **TTFT (first-token latency) is the cleanest metric** — unaffected by output length or agentic tool-call-round-trip count. On the five non-agentic questions (Q1–Q5, most directly comparable across runs), the quantized-vs-unquantized delta was within ±30ms for both models — indistinguishable from run-to-run noise. **Conclusion: KV-cache quantization has no measurable prefill/TTFT cost.**
   - **Wall-clock totals are not a clean signal for this bench harness**: agentic questions (Q6–Q13) have a variable number of tool-call round trips run-to-run even with identical prompts (e.g. Ministral Q6 was 1 tool call in one run, 2 in another) — each extra round trip adds a full decode+prefill cycle to wall time, swamping any quantization-specific effect. The multi-turn long-context question (Q10, the one exercising the largest KV cache in the suite) showed the biggest swings, but in **opposite directions per model** (Ministral: quantized 222s vs unquantized 119s, ~1.9x slower; Qwen3.6: quantized 67s vs unquantized 98s, ~1.5x *faster*) — a real per-token compute cost from quantization would show the same direction on both models, so this is more consistent with cache-hit/reuse variance across the four separate server restarts (fresh in-memory cache each time) than with quantization overhead.
