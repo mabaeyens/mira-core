@@ -56,9 +56,15 @@ include = ["core", "mira_cli.py", "main.py", "server.py"]
 [tool.uv]
 package = true
 
-# Pinned to a fork branch carrying the ml-explore/mlx-lm#1373 tool-call-flush
-# fix (upstream PR open, not yet merged) — needed for Mistral-family tool
-# calling (empty tool_call_end_tokens defeats the stock EOS flush check).
-# Switch back to the plain PyPI release once #1373 lands upstream.
+# Pinned to a dedicated stable branch (decoupled from mira-mistral-tool-call-fix,
+# which gets rebased/force-pushed for upstream PR prep and isn't safe to track
+# directly) carrying: the Mistral tool-call-flush fix (needed for Mistral-family
+# tool calling — empty tool_call_end_tokens defeats the stock EOS flush check;
+# upstream's own PR #1373 for this was closed, not merged) and KV-cache
+# quantization for the continuous-batching path (specs/mira-mlx-kv-quant.md).
+# Do NOT bump this to a newer upstream-rebased commit without first verifying
+# mira_mlx_server.py's SequenceStateMachine import still resolves — upstream's
+# 2026-07 "Text-based state machine for tool/reasoning parsing" refactor
+# (PR #1501) renamed/replaced it with TextStateMachine, a different API.
 [tool.uv.sources]
-mlx-lm = { git = "https://github.com/mabaeyens/mlx-lm.git", branch = "mira-mistral-tool-call-fix" }
+mlx-lm = { git = "https://github.com/mabaeyens/mlx-lm.git", branch = "mira-core-pin" }
