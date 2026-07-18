@@ -329,3 +329,113 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | 12 | hard | agentic-edit-file | — |
 | 13 | expert | agentic-divergence-guard | — |
 | 10 | expert | multi-turn-long-context | — |
+
+---
+
+## Benchmark Results — 2026-07-18
+
+### Timing
+
+| Q | Difficulty | Category | ministral3-14b-mira-mlx-mlxtune:ministral3-14b-mira-mlx-mlxtune TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 1 | easy | baseline | 8414ms | 8.5s | — |
+| 2 | easy | code-no-tools | 402ms | 41.2s | — |
+| 3 | medium | reasoning | 387ms | 86.7s | — |
+| 4 | medium | long-output | 413ms | 39.6s | — |
+| 5 | medium | thinking-toggle | 260ms | 87.3s | — |
+| 6 | hard | agentic-single-tool | 11671ms | 13.5s | — |
+| 7 | hard | agentic-multi-step | 11171ms | 14.4s | — |
+| 8 | hard | agentic-read-reason | 555ms | 4.1s | — |
+| 9 | expert | agentic-task-done | 5080ms | 7.6s | — |
+| 11 | hard | agentic-write-file | 4306ms | 6.4s | — |
+| 12 | hard | agentic-edit-file | 5986ms | 7.4s | — |
+| 13 | expert | agentic-divergence-guard | 16574ms | 20.2s | — |
+| 10 | expert | multi-turn-long-context | 37376ms | 183.5s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | ministral3-14b-mira-mlx-mlxtune calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | run_shell | YES |
+| 7 | agentic-multi-step | 2 | run_shell | YES |
+| 8 | agentic-read-reason | 1 | none | no |
+| 9 | agentic-task-done | 3 | run_shell, run_shell | YES |
+| 11 | agentic-write-file | 2 | write_file, read_file | YES |
+| 12 | agentic-edit-file | 3 | write_file, edit_file, read_file | YES |
+| 13 | agentic-divergence-guard | 3 | run_shell, run_shell, run_shell, run_shell | YES |
+| 10 | multi-turn-long-context | 0 | none | no |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | ministral3-14b-mira-mlx-mlxtune score |
+|---|-----------|---------|---|
+| 1 | easy | baseline | — |
+| 2 | easy | code-no-tools | — |
+| 3 | medium | reasoning | — |
+| 4 | medium | long-output | — |
+| 5 | medium | thinking-toggle | — |
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | — |
+| 8 | hard | agentic-read-reason | — |
+| 9 | expert | agentic-task-done | — |
+| 11 | hard | agentic-write-file | — |
+| 12 | hard | agentic-edit-file | — |
+| 13 | expert | agentic-divergence-guard | — |
+| 10 | expert | multi-turn-long-context | — |
+
+---
+
+## Benchmark Results — 2026-07-18
+
+### Timing
+
+| Q | Difficulty | Category | ministral3-14b-mira-mlx-mlxtune-baseline:ministral3-14b-mira-mlx-mlxtune-baseline TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 1 | easy | baseline | 8105ms | 8.2s | — |
+| 2 | easy | code-no-tools | 410ms | 25.5s | — |
+| 3 | medium | reasoning | 404ms | 102.4s | — |
+| 4 | medium | long-output | 403ms | 44.7s | — |
+| 5 | medium | thinking-toggle | 274ms | 67.4s | — |
+| 6 | hard | agentic-single-tool | 18167ms | 19.9s | — |
+| 7 | hard | agentic-multi-step | 23007ms | 57.6s | — |
+| 8 | hard | agentic-read-reason | 575ms | 3.9s | — |
+| 9 | expert | agentic-task-done | 5108ms | 7.7s | — |
+| 11 | hard | agentic-write-file | 4358ms | 6.5s | — |
+| 12 | hard | agentic-edit-file | 6097ms | 7.5s | — |
+| 13 | expert | agentic-divergence-guard | 16653ms | 20.9s | — |
+| 10 | expert | multi-turn-long-context | 45451ms | 192.6s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | ministral3-14b-mira-mlx-mlxtune-baseline calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | run_shell, run_shell | YES |
+| 7 | agentic-multi-step | 2 | run_shell, run_shell, list_files, run_shell | YES |
+| 8 | agentic-read-reason | 1 | none | no |
+| 9 | agentic-task-done | 3 | run_shell, run_shell | YES |
+| 11 | agentic-write-file | 2 | write_file, read_file | YES |
+| 12 | agentic-edit-file | 3 | write_file, edit_file, read_file | YES |
+| 13 | agentic-divergence-guard | 3 | run_shell, run_shell, run_shell, run_shell | YES |
+| 10 | multi-turn-long-context | 0 | none | no |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | ministral3-14b-mira-mlx-mlxtune-baseline score |
+|---|-----------|---------|---|
+| 1 | easy | baseline | — |
+| 2 | easy | code-no-tools | — |
+| 3 | medium | reasoning | — |
+| 4 | medium | long-output | — |
+| 5 | medium | thinking-toggle | — |
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | — |
+| 8 | hard | agentic-read-reason | — |
+| 9 | expert | agentic-task-done | — |
+| 11 | hard | agentic-write-file | — |
+| 12 | hard | agentic-edit-file | — |
+| 13 | expert | agentic-divergence-guard | — |
+| 10 | expert | multi-turn-long-context | — |
