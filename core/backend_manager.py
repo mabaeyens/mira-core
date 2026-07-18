@@ -13,6 +13,7 @@ from pathlib import Path
 from core.config import DB_PATH
 from core.config import DFLASH_CLI as _DFLASH_CLI_PATH
 from core.config import DFLASH_DIAGNOSTICS, MLX_LM_CLI as _MLX_LM_CLI_PATH
+from core.config import MIRA_MLX_KV_BITS, MIRA_MLX_KV_GROUP_SIZE
 from core.config import OMLX_CLI as _OMLX_CLI_PATH, PREFILL_STEP_SIZE
 from core.config import VLLM_MLX_CLI as _VLLM_MLX_CLI_PATH
 
@@ -134,7 +135,7 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
     global _mira_mlx_proc
     from core import hardware
 
-    ok, reason = hardware.fits_in_memory(model)
+    ok, reason = hardware.fits_in_memory(model, kv_bits=MIRA_MLX_KV_BITS, kv_group_size=MIRA_MLX_KV_GROUP_SIZE)
     if not ok:
         raise RuntimeError(f"mira-mlx preflight check failed: {reason}")
 
@@ -142,36 +143,47 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
     # comfortable on a 32GB Mac can itself exceed total RAM on an 8-16GB one
     # (found 2026-07-09 — a fixed 3GB cap was smaller than a single long
     # conversation's ~3.3GB KV cache entry, silently evicting it every time).
-    prompt_cache_max_bytes = hardware.derive_prompt_cache_max_bytes(model)
-    context_window = hardware.derive_context_window(model, requested_context=MIRA_MLX_CONTEXT)
+    prompt_cache_max_bytes = hardware.derive_prompt_cache_max_bytes(
+        model, kv_bits=MIRA_MLX_KV_BITS, kv_group_size=MIRA_MLX_KV_GROUP_SIZE
+    )
+    context_window = hardware.derive_context_window(
+        model,
+        requested_context=MIRA_MLX_CONTEXT,
+        kv_bits=MIRA_MLX_KV_BITS,
+        kv_group_size=MIRA_MLX_KV_GROUP_SIZE,
+    )
     disk_cache_max_bytes = hardware.derive_disk_cache_max_bytes(MIRA_MLX_CACHE_DIR)
     # A single response can't usefully exceed the machine's own derived context
     # ceiling — on a smaller machine than this one, a flat 4096 could exceed
     # what --max-kv-size (context_window, below) actually allows.
     max_tokens = min(4096, context_window)
 
+    args = [
+        sys.executable, "-m", "core.inference.mira_mlx_server",
+        "--model", model,
+        "--host", "127.0.0.1",
+        "--port", str(MIRA_MLX_PORT),
+        "--max-tokens", str(max_tokens),
+        "--prefill-step-size", str(PREFILL_STEP_SIZE),
+        "--prompt-cache-max-bytes", str(prompt_cache_max_bytes),
+        # Bounds a single conversation's own KV cache regardless of length —
+        # without this, a very long conversation can alone exhaust RAM on
+        # tight machines even with a well-sized cache pool.
+        "--max-kv-size", str(context_window),
+        # Mistral-family tokenizers need this regex fix (mlx-lm doesn't
+        # default it on); harmless no-op for models that don't need it.
+        "--fix-mistral-regex",
+        # Entries evicted from the in-memory cache overflow here instead of
+        # being discarded, surviving both memory-pressure trims and process
+        # restarts (specs/mira-mlx-cache-persistence.md).
+        "--disk-cache-dir", str(MIRA_MLX_CACHE_DIR),
+        "--disk-cache-max-bytes", str(disk_cache_max_bytes),
+    ]
+    if MIRA_MLX_KV_BITS is not None:
+        args += ["--kv-bits", str(MIRA_MLX_KV_BITS), "--kv-group-size", str(MIRA_MLX_KV_GROUP_SIZE)]
+
     _mira_mlx_proc = subprocess.Popen(
-        [
-            sys.executable, "-m", "core.inference.mira_mlx_server",
-            "--model", model,
-            "--host", "127.0.0.1",
-            "--port", str(MIRA_MLX_PORT),
-            "--max-tokens", str(max_tokens),
-            "--prefill-step-size", str(PREFILL_STEP_SIZE),
-            "--prompt-cache-max-bytes", str(prompt_cache_max_bytes),
-            # Bounds a single conversation's own KV cache regardless of length —
-            # without this, a very long conversation can alone exhaust RAM on
-            # tight machines even with a well-sized cache pool.
-            "--max-kv-size", str(context_window),
-            # Mistral-family tokenizers need this regex fix (mlx-lm doesn't
-            # default it on); harmless no-op for models that don't need it.
-            "--fix-mistral-regex",
-            # Entries evicted from the in-memory cache overflow here instead of
-            # being discarded, surviving both memory-pressure trims and process
-            # restarts (specs/mira-mlx-cache-persistence.md).
-            "--disk-cache-dir", str(MIRA_MLX_CACHE_DIR),
-            "--disk-cache-max-bytes", str(disk_cache_max_bytes),
-        ],
+        args,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -578,7 +590,12 @@ def switch_to_model(backend: str, model_id: str) -> dict:
         preset = {"backend": "mlx-lm", "model": model_id, "host": MLX_LM_HOST, "context_window": MLX_LM_CONTEXT}
     elif backend == "mira-mlx":
         from core import hardware
-        actual_context = hardware.derive_context_window(model_id, requested_context=MIRA_MLX_CONTEXT)
+        actual_context = hardware.derive_context_window(
+            model_id,
+            requested_context=MIRA_MLX_CONTEXT,
+            kv_bits=MIRA_MLX_KV_BITS,
+            kv_group_size=MIRA_MLX_KV_GROUP_SIZE,
+        )
         preset = {"backend": "mira-mlx", "model": model_id, "host": MIRA_MLX_HOST, "context_window": actual_context}
     else:
         preset = dict(PRESETS[backend])

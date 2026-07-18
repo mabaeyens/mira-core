@@ -160,6 +160,75 @@ def test_no_max_kv_size_never_rejects():
         engine._start_job(job)
 
 
+# -- kv_bits/kv_group_size/quantized_kv_start CLI threading ------------------
+
+def test_generation_engine_kv_bits_defaults_preserve_unquantized_behavior():
+    """Default construction (no kv_bits passed, matching --kv-bits' argparse
+    default of None) must produce the exact same engine state as before this
+    parameter existed."""
+    engine = GenerationEngine(model_path="fake/model")
+    assert engine.kv_bits is None
+    assert engine.kv_group_size == 64
+    assert engine.quantized_kv_start == 0
+
+
+def test_generation_engine_stores_kv_bits_settings():
+    engine = GenerationEngine(model_path="fake/model", kv_bits=8, kv_group_size=32, quantized_kv_start=0)
+    assert engine.kv_bits == 8
+    assert engine.kv_group_size == 32
+    assert engine.quantized_kv_start == 0
+
+
+def test_main_cli_kv_bits_default_is_none(monkeypatch):
+    import sys
+    from core.inference import mira_mlx_server
+
+    captured = {}
+
+    class _StubEngine:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def start(self):
+            raise SystemExit("stop before uvicorn.run")
+
+    monkeypatch.setattr(mira_mlx_server, "GenerationEngine", _StubEngine)
+    monkeypatch.setattr(sys, "argv", ["mira_mlx_server", "--model", "fake/model"])
+
+    with pytest.raises(SystemExit):
+        mira_mlx_server.main()
+
+    assert captured["kv_bits"] is None
+    assert captured["kv_group_size"] == 64
+    assert captured["quantized_kv_start"] == 0
+
+
+def test_main_cli_kv_bits_threaded_through(monkeypatch):
+    import sys
+    from core.inference import mira_mlx_server
+
+    captured = {}
+
+    class _StubEngine:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def start(self):
+            raise SystemExit("stop before uvicorn.run")
+
+    monkeypatch.setattr(mira_mlx_server, "GenerationEngine", _StubEngine)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["mira_mlx_server", "--model", "fake/model", "--kv-bits", "8", "--kv-group-size", "32"],
+    )
+
+    with pytest.raises(SystemExit):
+        mira_mlx_server.main()
+
+    assert captured["kv_bits"] == 8
+    assert captured["kv_group_size"] == 32
+
+
 # -- stats_snapshot (specs/mira-mlx-stats-endpoint.md) -----------------------
 
 def test_stats_snapshot_counts_a_cache_miss():

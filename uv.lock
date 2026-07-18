@@ -1066,7 +1066,7 @@ wheels = [
 [[package]]
 name = "mlx-lm"
 version = "0.31.3"
-source = { git = "https://github.com/mabaeyens/mlx-lm.git?branch=mira-mistral-tool-call-fix#2a3a696fb6739fb5932205fdfd3e59ab46efaaa9" }
+source = { git = "https://github.com/mabaeyens/mlx-lm.git?branch=mira-mistral-tool-call-fix#bbd849640c7fd5f6fd86f37064fb8f0ed0092f08" }
 dependencies = [
     { name = "jinja2" },
     { name = "mlx", marker = "sys_platform == 'darwin'" },

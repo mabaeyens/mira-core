@@ -127,6 +127,9 @@ class GenerationEngine:
         completion_batch_size: int = 1,
         prompt_cache_max_bytes: int = 12 * 1024**3,
         max_kv_size: Optional[int] = None,
+        kv_bits: Optional[int] = None,
+        kv_group_size: int = 64,
+        quantized_kv_start: int = 0,
         fix_mistral_regex: bool = False,
         trust_remote_code: bool = True,
         disk_cache_dir: Optional[str] = None,
@@ -138,6 +141,9 @@ class GenerationEngine:
         self.completion_batch_size = completion_batch_size
         self.prompt_cache_max_bytes = prompt_cache_max_bytes
         self.max_kv_size = max_kv_size
+        self.kv_bits = kv_bits
+        self.kv_group_size = kv_group_size
+        self.quantized_kv_start = quantized_kv_start
         self.fix_mistral_regex = fix_mistral_regex
         self.trust_remote_code = trust_remote_code
         self.disk_cache_dir = disk_cache_dir
@@ -200,12 +206,20 @@ class GenerationEngine:
                 completion_batch_size=self.completion_batch_size,
                 prefill_step_size=self.prefill_step_size,
                 max_kv_size=self.max_kv_size,
+                kv_bits=self.kv_bits,
+                kv_group_size=self.kv_group_size,
+                quantized_kv_start=self.quantized_kv_start,
                 stream=generation_stream,
             )
             disk_store = None
             if self.disk_cache_dir and self.disk_cache_max_bytes > 0:
                 from pathlib import Path
-                disk_store = DiskPromptCacheStore(Path(self.disk_cache_dir), self.disk_cache_max_bytes)
+                disk_store = DiskPromptCacheStore(
+                    Path(self.disk_cache_dir),
+                    self.disk_cache_max_bytes,
+                    kv_bits=self.kv_bits,
+                    kv_group_size=self.kv_group_size,
+                )
             self.prompt_cache = DiskBackedPromptCache(
                 max_bytes=self.prompt_cache_max_bytes, disk_store=disk_store
             )
@@ -583,6 +597,15 @@ def main() -> None:
     # (fine on high-RAM machines; backend_manager.py derives a real value
     # per-machine for normal use).
     parser.add_argument("--max-kv-size", type=int, default=None)
+    # KV-cache quantization (opt-in; None = today's unquantized fp16 behavior).
+    # 8-bit is the only numerically-validated setting (fork's own test suite,
+    # rtol=4e-2); 4-bit is unproven anywhere in this codebase.
+    parser.add_argument("--kv-bits", type=int, default=None)
+    parser.add_argument("--kv-group-size", type=int, default=64)
+    # Delayed quantization (quantize only after this many tokens) is unsupported
+    # on the batching path — BatchGenerator raises if this is nonzero alongside
+    # kv_bits. Left as a CLI arg for parity with mlx-lm's single-sequence API.
+    parser.add_argument("--quantized-kv-start", type=int, default=0)
     parser.add_argument("--fix-mistral-regex", action="store_true")
     parser.add_argument("--no-trust-remote-code", action="store_false", dest="trust_remote_code")
     # Disk overflow for evicted prompt-cache entries. Unset dir or a zero byte
@@ -598,6 +621,9 @@ def main() -> None:
         completion_batch_size=args.completion_batch_size,
         prompt_cache_max_bytes=args.prompt_cache_max_bytes,
         max_kv_size=args.max_kv_size,
+        kv_bits=args.kv_bits,
+        kv_group_size=args.kv_group_size,
+        quantized_kv_start=args.quantized_kv_start,
         fix_mistral_regex=args.fix_mistral_regex,
         trust_remote_code=args.trust_remote_code,
         disk_cache_dir=args.disk_cache_dir,

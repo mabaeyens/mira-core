@@ -56,15 +56,20 @@ def _find_cached_config(model_id: str) -> Optional[Path]:
     return None
 
 
-def estimate_kv_bytes_per_token(model_id: str) -> Optional[int]:
+def estimate_kv_bytes_per_token(
+    model_id: str, kv_bits: Optional[int] = None, kv_group_size: int = 64
+) -> Optional[int]:
     """KV cache bytes for one token of context, derived from the model's own config.
 
     Formula (validated 2026-07-09 against a live measurement of Ministral 3 14B —
     computed 163,840 B/token vs. a measured 163,820 B/token): for each of K and V,
     one value per layer per KV head per head-dim element, at KV_DTYPE_BYTES each
-    (KV cache stays fp16 even for a 4-bit-quantized model — quantization only
-    applies to weights unless mlx-lm's separate kv_bits option is explicitly used,
-    which mira-mlx does not yet support — see the low-RAM plan's non-goals).
+    (KV cache stays fp16 by default regardless of model quantization).
+
+    kv_bits: when set (mira-mlx's --kv-bits), each element instead costs
+    bits/8 packed bytes plus a per-group fp16 scale+bias amortized across
+    kv_group_size elements — mirrors mlx_lm.models.cache.QuantizedKVCache's
+    own packing (mx.quantize), not an independent guess.
     """
     config_path = _find_cached_config(model_id)
     if config_path is None:
@@ -84,7 +89,12 @@ def estimate_kv_bytes_per_token(model_id: str) -> Optional[int]:
     except KeyError:
         return None
 
-    return 2 * num_layers * num_kv_heads * head_dim * KV_DTYPE_BYTES
+    if kv_bits is not None:
+        bytes_per_element = kv_bits / 8 + (2 * KV_DTYPE_BYTES) / kv_group_size
+    else:
+        bytes_per_element = KV_DTYPE_BYTES
+
+    return int(2 * num_layers * num_kv_heads * head_dim * bytes_per_element)
 
 
 def estimate_model_weight_bytes(model_id: str) -> Optional[int]:
@@ -99,7 +109,12 @@ def estimate_model_weight_bytes(model_id: str) -> Optional[int]:
     return total or None
 
 
-def derive_prompt_cache_max_bytes(model_id: str, total_ram_bytes: Optional[int] = None) -> int:
+def derive_prompt_cache_max_bytes(
+    model_id: str,
+    total_ram_bytes: Optional[int] = None,
+    kv_bits: Optional[int] = None,
+    kv_group_size: int = 64,
+) -> int:
     """Safe prompt-cache pool size: whatever's left after the model, KV working
     set, and a fixed safety margin, floored so it's never negative/degenerate."""
     total_ram_bytes = total_ram_bytes if total_ram_bytes is not None else get_total_ram_bytes()
@@ -112,12 +127,13 @@ def derive_prompt_cache_max_bytes(model_id: str, total_ram_bytes: Optional[int] 
 
 
 def derive_context_window(model_id: str, total_ram_bytes: Optional[int] = None,
-                           requested_context: int = 65536) -> int:
+                           requested_context: int = 65536,
+                           kv_bits: Optional[int] = None, kv_group_size: int = 64) -> int:
     """Cap a requested context window to what this machine can actually hold in
     KV cache for a single active generation, without touching the cache pool."""
     total_ram_bytes = total_ram_bytes if total_ram_bytes is not None else get_total_ram_bytes()
     model_bytes = estimate_model_weight_bytes(model_id) or 8 * BYTES_PER_GB
-    kv_bytes_per_token = estimate_kv_bytes_per_token(model_id)
+    kv_bytes_per_token = estimate_kv_bytes_per_token(model_id, kv_bits=kv_bits, kv_group_size=kv_group_size)
     if kv_bytes_per_token is None:
         return requested_context  # unknown architecture — don't guess, use the caller's value
 
@@ -153,14 +169,15 @@ def derive_cache_limit_bytes(total_ram_bytes: Optional[int] = None) -> int:
 
 
 def fits_in_memory(model_id: str, total_ram_bytes: Optional[int] = None,
-                    min_context: int = 4096) -> tuple[bool, str]:
+                    min_context: int = 4096,
+                    kv_bits: Optional[int] = None, kv_group_size: int = 64) -> tuple[bool, str]:
     """Preflight check: would this model + a minimum usable context even fit?"""
     total_ram_bytes = total_ram_bytes if total_ram_bytes is not None else get_total_ram_bytes()
     model_bytes = estimate_model_weight_bytes(model_id)
     if model_bytes is None:
         return True, "model not yet downloaded — cannot preflight, allowing"
 
-    kv_bytes_per_token = estimate_kv_bytes_per_token(model_id) or 0
+    kv_bytes_per_token = estimate_kv_bytes_per_token(model_id, kv_bits=kv_bits, kv_group_size=kv_group_size) or 0
     required = model_bytes + kv_bytes_per_token * min_context + SAFETY_MARGIN_BYTES
     if required > total_ram_bytes:
         return False, (

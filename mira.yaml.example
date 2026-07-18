@@ -110,6 +110,17 @@ prefill_step_size: 1024
 # Values: off | basic (request/cache logs) | full (+memory waterfall). Default: off.
 dflash_diagnostics: off
 
+# mira_mlx_kv_bits: quantize mira-mlx's KV cache to this many bits (opt-in;
+# unset/null = today's unquantized fp16 cache). Only 8 is numerically validated
+# (mlx-lm fork's own test suite, rtol=4e-2) — trades a small amount of accuracy
+# for ~1.6-2x more usable context window / concurrent-request headroom on
+# RAM-constrained Macs. 4-bit is unproven anywhere in this codebase; treat as
+# experimental if you try it.
+# mira_mlx_kv_bits: 8
+
+# mira_mlx_kv_group_size: quantization group size for mira_mlx_kv_bits (default 64).
+mira_mlx_kv_group_size: 64
+
 # ── Performance Tips ─────────────────────────────────────────────────────────
 # For best performance with Ollama on MacBook Pro M5, add to ~/.zprofile:
 #   export OLLAMA_CONTEXT_LENGTH=65536

@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Optional
 
 # ── mira.yaml override loader ─────────────────────────────────────────────────
 def _load_yaml_config() -> dict:
@@ -111,3 +112,8 @@ COMPRESS_THRESHOLD: int = _get("compress_threshold", 70)   # context_pct % at wh
 COMPRESS_KEEP_RECENT: int = max(2, _get("compress_keep_recent", 6))  # number of recent messages kept verbatim (min 2)
 PREFILL_STEP_SIZE: int = _get("prefill_step_size", 1024)  # tokens per prefill chunk; must be power of 2 (256/512/1024/2048)
 DFLASH_DIAGNOSTICS: str = _get("dflash_diagnostics", "off")  # off | basic | full; basic=request/cache logs, full=+memory waterfall
+# mira-mlx only. None (default) = unquantized fp16 KV cache, today's behavior.
+# 8 is the only numerically-validated bit width (mlx-lm fork's own test suite,
+# rtol=4e-2); 4-bit is unproven anywhere in this codebase.
+MIRA_MLX_KV_BITS: Optional[int] = _get("mira_mlx_kv_bits", None)
+MIRA_MLX_KV_GROUP_SIZE: int = _get("mira_mlx_kv_group_size", 64)

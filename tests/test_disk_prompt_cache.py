@@ -88,6 +88,27 @@ def test_cross_model_entries_never_collide(tmp_path):
     assert hit is None
 
 
+def test_quantized_and_unquantized_entries_never_collide(tmp_path):
+    """Regression: a quantized cache and an unquantized cache for the same
+    model+tokens must not overwrite/shadow each other — different cache class,
+    different array shapes/dtypes. Simulates a server restart that flips
+    --kv-bits while pointed at the same disk_cache_dir."""
+    unquantized_store = DiskPromptCacheStore(cache_dir=tmp_path, max_bytes=10 * 1024 * 1024, kv_bits=None)
+    one_entry = sum(c.nbytes for c in make_kv_cache())
+    unquantized_cache = DiskBackedPromptCache(
+        max_size=10, max_bytes=int(one_entry * 1.5), disk_store=unquantized_store
+    )
+    unquantized_cache.insert_cache("model", list(range(200, 210)), make_kv_cache())
+    unquantized_cache.insert_cache("model", list(range(100)), make_kv_cache())  # forces the disk persist
+
+    # A "restart" with kv_bits=8 now, same directory.
+    quantized_store = DiskPromptCacheStore(cache_dir=tmp_path, max_bytes=10 * 1024 * 1024, kv_bits=8, kv_group_size=64)
+    quantized_cache = DiskBackedPromptCache(max_size=10, max_bytes=1, disk_store=quantized_store)
+
+    hit, rest = quantized_cache.fetch_nearest_cache("model", list(range(200, 210)))
+    assert hit is None, "a quantized store must not load an unquantized entry's disk file"
+
+
 def test_persist_skipped_when_disk_budget_is_zero(tmp_path):
     store = DiskPromptCacheStore(cache_dir=tmp_path, max_bytes=0)
     one_entry = sum(c.nbytes for c in make_kv_cache())

@@ -1,5 +1,6 @@
 """Unit tests for core/hardware.py's RAM/disk-derived sizing (all pure functions —
 no model download, no running server)."""
+import json
 import subprocess
 
 import pytest
@@ -53,13 +54,36 @@ def test_estimate_kv_bytes_per_token_malformed_config(tmp_path, monkeypatch):
     assert hardware.estimate_kv_bytes_per_token("fake/model") is None
 
 
+def test_estimate_kv_bytes_per_token_kv_bits_none_unchanged(tmp_path, monkeypatch):
+    """kv_bits=None (the default) must reproduce today's unquantized formula exactly."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(MINISTRAL_3_14B_CONFIG))
+    monkeypatch.setattr(hardware, "_find_cached_config", lambda model_id: config_path)
+
+    assert hardware.estimate_kv_bytes_per_token("fake/model", kv_bits=None) == 163840
+
+
+def test_estimate_kv_bytes_per_token_quantized_smaller_than_unquantized(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(MINISTRAL_3_14B_CONFIG))
+    monkeypatch.setattr(hardware, "_find_cached_config", lambda model_id: config_path)
+
+    unquantized = hardware.estimate_kv_bytes_per_token("fake/model")
+    quantized = hardware.estimate_kv_bytes_per_token("fake/model", kv_bits=8, kv_group_size=64)
+    assert quantized < unquantized
+    # bits/8 + (2*KV_DTYPE_BYTES)/group_size per element = 1 + 4/64 = 1.0625 B/element
+    expected_bytes_per_element = 8 / 8 + (2 * hardware.KV_DTYPE_BYTES) / 64
+    expected = int(2 * 40 * 8 * 128 * expected_bytes_per_element)
+    assert quantized == expected
+
+
 # -- derive_context_window / derive_prompt_cache_max_bytes across RAM tiers -
 
 @pytest.fixture
 def fixed_model(monkeypatch):
     """8GB model weights, 163840 B/token KV cache (Ministral-3-14B's real figure)."""
     monkeypatch.setattr(hardware, "estimate_model_weight_bytes", lambda model_id: 8 * GB)
-    monkeypatch.setattr(hardware, "estimate_kv_bytes_per_token", lambda model_id: 163840)
+    monkeypatch.setattr(hardware, "estimate_kv_bytes_per_token", lambda model_id, **kwargs: 163840)
 
 
 @pytest.mark.parametrize("ram_gb,expect_context", [
@@ -73,9 +97,31 @@ def test_derive_context_window_scales_with_ram(fixed_model, ram_gb, expect_conte
     assert hardware.derive_context_window("fake/model", ram_gb * GB, requested_context=65536) == expect_context
 
 
+def test_derive_context_window_kv_bits_none_matches_no_kv_bits_arg(fixed_model):
+    """Passing kv_bits=None explicitly must be indistinguishable from omitting it."""
+    with_none = hardware.derive_context_window("fake/model", 16 * GB, requested_context=65536, kv_bits=None)
+    without_arg = hardware.derive_context_window("fake/model", 16 * GB, requested_context=65536)
+    assert with_none == without_arg
+
+
+def test_derive_context_window_kv_bits_set_forwards_to_estimate(monkeypatch):
+    """kv_bits/kv_group_size must reach estimate_kv_bytes_per_token, not be dropped."""
+    monkeypatch.setattr(hardware, "estimate_model_weight_bytes", lambda model_id: 8 * GB)
+    captured = {}
+
+    def fake_estimate(model_id, kv_bits=None, kv_group_size=64):
+        captured["kv_bits"] = kv_bits
+        captured["kv_group_size"] = kv_group_size
+        return 163840
+
+    monkeypatch.setattr(hardware, "estimate_kv_bytes_per_token", fake_estimate)
+    hardware.derive_context_window("fake/model", 16 * GB, requested_context=65536, kv_bits=8, kv_group_size=32)
+    assert captured == {"kv_bits": 8, "kv_group_size": 32}
+
+
 def test_derive_context_window_unknown_architecture_returns_requested(monkeypatch):
     monkeypatch.setattr(hardware, "estimate_model_weight_bytes", lambda model_id: 8 * GB)
-    monkeypatch.setattr(hardware, "estimate_kv_bytes_per_token", lambda model_id: None)
+    monkeypatch.setattr(hardware, "estimate_kv_bytes_per_token", lambda model_id, **kwargs: None)
     assert hardware.derive_context_window("fake/model", 32 * GB, requested_context=65536) == 65536
 
 

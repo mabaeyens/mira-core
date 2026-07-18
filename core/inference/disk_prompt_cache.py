@@ -26,18 +26,26 @@ from mlx_lm.models.cache import LRUPromptCache, PromptTrie, load_prompt_cache, s
 logger = logging.getLogger(__name__)
 
 
-def _key(model: Any, tokens: List[int]) -> str:
+def _key(model: Any, tokens: List[int], kv_bits: Optional[int] = None, kv_group_size: int = 64) -> str:
     h = hashlib.sha256()
     h.update(str(model).encode())
     h.update(b"\x00")
     h.update(",".join(map(str, tokens)).encode())
+    # A quantized and unquantized entry for the same model+tokens are NOT
+    # interchangeable (different cache class, different array shapes/dtypes) —
+    # fold kv_bits/kv_group_size in so a config change (or a restart that
+    # flips --kv-bits) can never load the wrong entry for a hash collision.
+    h.update(b"\x00")
+    h.update(f"{kv_bits}:{kv_group_size}".encode())
     return h.hexdigest()
 
 
 class DiskPromptCacheStore:
-    def __init__(self, cache_dir: Path, max_bytes: int):
+    def __init__(self, cache_dir: Path, max_bytes: int, kv_bits: Optional[int] = None, kv_group_size: int = 64):
         self.cache_dir = Path(cache_dir)
         self.max_bytes = max_bytes
+        self.kv_bits = kv_bits
+        self.kv_group_size = kv_group_size
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._index: dict[str, dict] = {}
         self.hits = 0  # diagnostics only (GET /v1/stats)
@@ -81,7 +89,7 @@ class DiskPromptCacheStore:
             return
 
         self._evict_to_fit(nbytes)
-        key = _key(model, tokens)
+        key = _key(model, tokens, self.kv_bits, self.kv_group_size)
         path = self.cache_dir / f"{key}.safetensors"
         try:
             save_prompt_cache(str(path), prompt_cache, metadata={"model": str(model)})
@@ -95,7 +103,7 @@ class DiskPromptCacheStore:
         self._index[key] = {"path": path, "nbytes": actual_bytes, "mtime": time.time()}
 
     def load(self, model: Any, tokens: List[int]) -> Optional[List[Any]]:
-        key = _key(model, tokens)
+        key = _key(model, tokens, self.kv_bits, self.kv_group_size)
         meta = self._index.get(key)
         if meta is None:
             return None
