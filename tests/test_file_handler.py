@@ -1,4 +1,6 @@
 """Tests for PDF extraction + scanned-PDF OCR fallback (core/file_handler)."""
+import base64
+
 import pytest
 
 from core import file_handler
@@ -56,3 +58,42 @@ def test_scanned_pdf_with_ocr_recovers_text(monkeypatch):
     result = file_handler._extract_pdf("scan.pdf", _blank_pdf())
     assert result["type"] == "rag"
     assert result["content"] == "RECOVERED TEXT"
+
+
+# -- ocr_image_from_base64 -----------------------------------------------------
+
+def _b64(data: bytes = b"\x89PNG\r\n\x1a\nfakepngbytes") -> str:
+    return base64.b64encode(data).decode("utf-8")
+
+
+def test_ocr_image_returns_none_without_tesseract(monkeypatch):
+    monkeypatch.setattr(file_handler, "_tesseract_available", lambda: False)
+    assert file_handler.ocr_image_from_base64(_b64()) is None
+
+
+def test_ocr_image_returns_extracted_text(monkeypatch):
+    monkeypatch.setattr(file_handler, "_tesseract_available", lambda: True)
+    monkeypatch.setattr(
+        file_handler, "_run_tesseract_on_bytes",
+        lambda data, suffix, timeout: "Error: disk full\n",
+    )
+    assert file_handler.ocr_image_from_base64(_b64()) == "Error: disk full"
+
+
+def test_ocr_image_returns_none_when_no_text_found(monkeypatch):
+    monkeypatch.setattr(file_handler, "_tesseract_available", lambda: True)
+    monkeypatch.setattr(
+        file_handler, "_run_tesseract_on_bytes", lambda data, suffix, timeout: "   "
+    )
+    assert file_handler.ocr_image_from_base64(_b64()) is None
+
+
+def test_ocr_image_returns_none_on_timeout(monkeypatch):
+    import subprocess
+
+    def _boom(data, suffix, timeout):
+        raise subprocess.TimeoutExpired(cmd="tesseract", timeout=timeout)
+
+    monkeypatch.setattr(file_handler, "_tesseract_available", lambda: True)
+    monkeypatch.setattr(file_handler, "_run_tesseract_on_bytes", _boom)
+    assert file_handler.ocr_image_from_base64(_b64()) is None

@@ -41,10 +41,10 @@ ALLOWED_SOURCE_CIDRS: list = _get(
     "allowed_source_cidrs", ["127.0.0.0/8", "::1/128", "100.64.0.0/10"]
 )
 
-# omlx is the default backend (see mira.yaml / README). These code defaults must match
-# the docs so a fresh install with no mira.yaml behaves as documented.
-BACKEND: str = _get("backend", "omlx")
-MODEL_NAME: str = _get("model", "Qwen3.6-35B-A3B")
+# mira-mlx is the default backend (see mira.yaml / README). These code defaults must
+# match mira.yaml.example so a fresh install with no mira.yaml behaves as documented.
+BACKEND: str = _get("backend", "mira-mlx")
+MODEL_NAME: str = _get("model", "mlx-community/Qwen3.6-35B-A3B-4bit")
 OLLAMA_HOST: str = _get("host", os.getenv("OLLAMA_HOST", "http://localhost:11434"))
 
 # Named backend presets exposed via GET /backends and shown in the app model picker.

@@ -71,30 +71,35 @@ PRESETS = {
         "model": DFLASH_MODEL,
         "host": DFLASH_HOST,
         "context_window": DFLASH_CONTEXT,
+        "vision": False,
     },
     "omlx": {
         "backend": "omlx",
         "model": OMLX_MODEL,
         "host": OMLX_HOST,
         "context_window": OMLX_CONTEXT,
+        "vision": True,
     },
     "ollama": {
         "backend": "ollama",
         "model": OLLAMA_MODEL,
         "host": OLLAMA_HOST,
         "context_window": OLLAMA_CONTEXT,
+        "vision": False,
     },
     "vllm-mlx": {
         "backend": "vllm-mlx",
         "model": VLLM_MLX_MODEL,
         "host": VLLM_MLX_HOST,
         "context_window": VLLM_MLX_CONTEXT,
+        "vision": False,
     },
     "mira-mlx": {
         "backend": "mira-mlx",
         "model": MIRA_MLX_MODEL,
         "host": MIRA_MLX_HOST,
         "context_window": MIRA_MLX_CONTEXT,
+        "vision": False,
     },
 }
 

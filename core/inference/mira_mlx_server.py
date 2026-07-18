@@ -56,8 +56,17 @@ def _prepare_messages(messages: list) -> list:
     prepared = []
     for message in messages:
         message = dict(message)
-        if message.get("content") is None:
+        content = message.get("content")
+        if content is None:
             message["content"] = ""
+        elif isinstance(content, list) and any(
+            isinstance(part, dict) and part.get("type") in ("image_url", "image")
+            for part in content
+        ):
+            raise ValueError(
+                "mira-mlx does not support image inputs yet; switch to the omlx "
+                "backend for vision requests"
+            )
         if tool_calls := message.get("tool_calls"):
             message["tool_calls"] = [dict(tc) for tc in tool_calls]
             for tc in message["tool_calls"]:

@@ -58,6 +58,18 @@ def test_prepare_messages_does_not_mutate_input():
     assert original["content"] is None  # _prepare_messages must copy, not mutate
 
 
+def test_prepare_messages_rejects_image_content():
+    msg = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "what's in this image?"},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc"}},
+        ],
+    }
+    with pytest.raises(ValueError, match="does not support image inputs"):
+        _prepare_messages([msg])
+
+
 # -- _build_state_machine -----------------------------------------------------
 
 class FakeTokenizer:

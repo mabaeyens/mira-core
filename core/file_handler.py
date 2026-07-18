@@ -169,20 +169,19 @@ def _tesseract_available() -> bool:
     return shutil.which("tesseract") is not None
 
 
-def _ocr_page(page) -> str:
-    """OCR a single fitz page via the system tesseract binary. Returns text or ''.
+def _run_tesseract_on_bytes(image_bytes: bytes, suffix: str, timeout: float) -> str:
+    """OCR raw image bytes via the system tesseract binary. Returns text or ''.
 
-    Renders the page to a PNG, then runs `tesseract <png> stdout` (explicit args list,
+    Writes to a tempfile, then runs `tesseract <path> stdout` (explicit args list,
     never shell=True — per CLAUDE.md). Raises subprocess.TimeoutExpired on timeout.
     """
-    pix = page.get_pixmap(dpi=_OCR_DPI)
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-        tmp.write(pix.tobytes("png"))
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(image_bytes)
         tmp_path = tmp.name
     try:
         result = subprocess.run(
             ["tesseract", tmp_path, "stdout", "-l", "eng"],
-            capture_output=True, text=True, timeout=_OCR_PER_PAGE_TIMEOUT,
+            capture_output=True, text=True, timeout=timeout,
         )
         return result.stdout if result.returncode == 0 else ""
     finally:
@@ -190,6 +189,33 @@ def _ocr_page(page) -> str:
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+def _ocr_page(page) -> str:
+    """OCR a single fitz page via the system tesseract binary. Returns text or ''."""
+    pix = page.get_pixmap(dpi=_OCR_DPI)
+    return _run_tesseract_on_bytes(pix.tobytes("png"), suffix=".png", timeout=_OCR_PER_PAGE_TIMEOUT)
+
+
+def ocr_image_from_base64(b64_content: str) -> Optional[str]:
+    """OCR a standalone image attachment (screenshot of an error/menu, not a PDF page)
+    via the system tesseract binary. Returns extracted text, or None if tesseract isn't
+    installed or no readable text was found — callers should treat None as "OCR didn't
+    help" and fall back to their own no-vision handling.
+    """
+    if not _tesseract_available():
+        return None
+    data = base64.b64decode(b64_content)
+    suffix = ".png" if data[:8] == _MAGIC_PNG else ".jpg"
+    try:
+        text = _run_tesseract_on_bytes(data, suffix=suffix, timeout=_OCR_PER_PAGE_TIMEOUT).strip()
+    except subprocess.TimeoutExpired:
+        logger.warning("OCR timed out on attached image")
+        return None
+    except Exception as e:
+        logger.warning("OCR failed on attached image: %s", e)
+        return None
+    return text or None
 
 
 def _extract_pdf(name: str, data: bytes) -> Dict:

@@ -28,7 +28,8 @@ from .search_engine import SearchEngine
 from .rag_engine import RagEngine
 from . import url_fetcher
 from . import tool_registry
-from .backend_manager import restart_dflash_if_dead
+from .backend_manager import restart_dflash_if_dead, PRESETS
+from . import file_handler
 from .thinking_stripper import ThinkingStripper
 from . import backend_client as bc
 from . import context_manager as ctxmgr
@@ -489,7 +490,31 @@ class ChatOrchestrator:
                 for att in attachments
                 if att["type"] == "text" and att["content"]
             ]
-            images = [att["content"] for att in attachments if att["type"] == "image"]
+            images = [att for att in attachments if att["type"] == "image"]
+            if images and not PRESETS.get(self.backend, {}).get("vision", False):
+                ocr_parts = []
+                for att in images:
+                    ocr_text = file_handler.ocr_image_from_base64(att["content"])
+                    if ocr_text:
+                        ocr_parts.append(
+                            f"[OCR text extracted from screenshot '{att['name']}']\n{ocr_text}\n---"
+                        )
+                if ocr_parts:
+                    text_parts.extend(ocr_parts)
+                    images = []
+                else:
+                    yield {
+                        "type": "error",
+                        "message": (
+                            f"The active backend ({self.backend}) doesn't support image "
+                            "inputs, and OCR found no readable text in the attached "
+                            "image(s) — switch to omlx in Settings for photos/diagrams, "
+                            "or install tesseract (`brew install tesseract`) for "
+                            "text-heavy screenshots."
+                        ),
+                    }
+                    return
+            images = [att["content"] for att in images]
             if text_parts:
                 full_message = '\n\n'.join(text_parts) + '\n\n' + full_message
 

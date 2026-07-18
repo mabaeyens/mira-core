@@ -319,6 +319,50 @@ def test_rag_score_threshold_bypassed_for_same_turn_attachment(orchestrator):
             "score_threshold must be -inf when RAG files indexed this turn"
 
 
+# --- Non-vision backend image handling (OCR fallback) ---
+
+_IMAGE_ATTACHMENT = [{
+    "type": "image",
+    "name": "error-dialog.png",
+    "content": "ZmFrZS1wbmctYnl0ZXM=",  # base64, contents irrelevant (OCR is mocked)
+    "warning": None,
+}]
+
+
+def test_image_attachment_ocr_text_folded_into_message(orchestrator):
+    """On a non-vision backend, an image that OCRs cleanly should be folded into the
+    prompt as text — no error, no raw image sent to the backend."""
+    assert not orchestrator.backend == "omlx"  # mira-mlx (default) has no vision support
+
+    with patch.object(orchestrator, '_call_llm', return_value=_final_stream("It says disk full.")) as mock_llm, \
+         patch('core.orchestrator.file_handler.ocr_image_from_base64', return_value="Error: disk full"):
+        events, content = _consume(
+            orchestrator.stream_chat("What does this say?", attachments=_IMAGE_ATTACHMENT)
+        )
+
+    assert not any(e["type"] == "error" for e in events)
+    assert content == "It says disk full."
+    sent_messages = mock_llm.call_args[0][0]
+    user_msg = next(m for m in sent_messages if m["role"] == "user")
+    assert "Error: disk full" in user_msg["content"]
+    assert "images" not in user_msg
+
+
+def test_image_attachment_no_ocr_text_yields_error(orchestrator):
+    """On a non-vision backend, an image with no readable text (photo/diagram, or no
+    tesseract installed) must surface a clear error instead of silently dropping it."""
+    with patch.object(orchestrator, '_call_llm', return_value=_final_stream("unused")) as mock_llm, \
+         patch('core.orchestrator.file_handler.ocr_image_from_base64', return_value=None):
+        events, _ = _consume(
+            orchestrator.stream_chat("What does this say?", attachments=_IMAGE_ATTACHMENT)
+        )
+
+    error_events = [e for e in events if e["type"] == "error"]
+    assert len(error_events) == 1
+    assert "doesn't support image" in error_events[0]["message"]
+    mock_llm.assert_not_called()
+
+
 # ── Stats event tests ────────────────────────────────────────────────────────
 
 def test_stats_event_emitted_before_done(orchestrator):
