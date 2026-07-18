@@ -1,7 +1,12 @@
 # Changelog
 
-## Unreleased
+## v0.9.3 — July 2026
 
+- **`context_window` in `mira.yaml` now actually reaches mira-mlx** — the top-level
+  `context_window:` key was only used for orchestrator bookkeeping; the mira-mlx subprocess's
+  `--max-kv-size` was silently pinned to a separate hardcoded constant. Bumped and stability-
+  tested up to 128K tokens on Ministral 3 14B (single-shot prompts through ~29.5K tokens and a
+  realistic two-turn ~42K-char injected-file scenario all completed cleanly).
 - **KV-cache quantization wired into mira-mlx, bench-validated** — `kv_bits`/`kv_group_size`/
   `quantized_kv_start` now thread end-to-end (CLI args, `mira.yaml`, disk prompt cache key)
   on top of the mlx-lm fork's quantized rotating cache. Confirmed no regression on the full
