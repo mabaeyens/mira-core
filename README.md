@@ -28,7 +28,7 @@ in [Issues](https://github.com/mabaeyens/mira-core/issues/new/choose). I read bo
 - **Autonomous Search**: Model searches the web via Brave Search and fetches full page content when snippets aren't enough (Jina fallback for JS-rendered pages) — sources are shown as clickable links
 - **Streaming responses**: Tokens buffered and rendered as formatted markdown
 - **Two interfaces**: Rich CLI and local web UI (FastAPI + SSE)
-- **File attachments**: PDFs (RAG), HTML, images (multimodal vision), text/code files — attach a screenshot and ask about it; tested with books up to 34 MB
+- **File attachments**: PDFs (RAG), HTML, images, text/code files — attach a screenshot and ask about it; tested with books up to 34 MB. Backends with real multimodal vision (e.g. omlx) read images directly; mira-mlx (the default) has no vision seam, so it OCRs the image and folds the recovered text into the prompt instead
 - **RAG**: Large documents chunked, embedded, reranked with Qwen3-Reranker-0.6B-4bit (mlx, in-process) — retrieved automatically on every turn, with hallucination guard for meta-queries (summarize, translate)
 - **Adaptive thinking**: Qwen3.6-35B uses extended reasoning on complex questions; suppressed automatically for trivial queries — zero overhead (≤14ms warm)
 - **Multiple model families**: Qwen3.6 (MoE, the primary default) and Mistral-family models (Ministral 3 14B) both fully supported, including tool-calling — pick per-conversation from the model picker
@@ -142,8 +142,9 @@ default and never sends anything sensitive in plaintext:
   and the token + payloads are always encrypted. Every route except `/health` and the
   static UI requires `Authorization: Bearer <token>` (the apps send it automatically),
   and a source-IP allowlist (loopback + tailnet) is enforced as defense-in-depth. If
-  Tailscale is down at startup, `:8443` **fails closed to loopback** — start Tailscale
-  then restart the server (`/mira-server restart`) to enable remote access.
+  Tailscale isn't up yet, `:8443` **fails closed to loopback** and the server retries the
+  bind every 15s until Tailscale comes up — no manual restart needed. A monthly LaunchAgent
+  auto-renews the 90-day Tailscale HTTPS cert.
 
 See **[docs/remote-access.md](docs/remote-access.md)** for the full posture: travelling
 with Tailscale (and why Proton VPN conflicts on iOS), and the opt-in plain-LAN mode.

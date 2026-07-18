@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- **KV-cache quantization wired into mira-mlx, bench-validated** — `kv_bits`/`kv_group_size`/
+  `quantized_kv_start` now thread end-to-end (CLI args, `mira.yaml`, disk prompt cache key)
+  on top of the mlx-lm fork's quantized rotating cache. Confirmed no regression on the full
+  13-question bench suite (Ministral 3 14B, Qwen3.6-35B-A3B), ~1.88x KV-cache compression, and a
+  clean rotation past `max_kv_size` on a real production model. `mira_mlx_kv_bits: 8` is now
+  the local default.
+- **OCR fallback for image attachments on mira-mlx** — mira-mlx has no real vision seam, so
+  attached images are now OCR'd via the existing tesseract path and the recovered text is
+  folded into the prompt, instead of just being rejected. Falls back to a clear error when
+  OCR is unavailable or finds no text.
+- **Fixed: mira-mlx fallback defaults were stale** — `config.py`'s defaults (used when
+  `mira.yaml` omits a key) still pointed at the old omlx-era model naming even though
+  mira-mlx has been the default backend since v0.9.2.
+- **Fixed: Tailscale HTTPS remote access could stay dead after a reboot** — the server only
+  checked once at startup for a bindable Tailscale address; now it polls every 15s until
+  Tailscale comes up. Added a monthly cert-renewal LaunchAgent for the 90-day Let's Encrypt
+  Tailscale HTTPS cert (previously had no auto-renewal, so an expired cert could break iOS
+  Safari access).
+
 ## v0.9.2 — July 2026
 
 - **mira-mlx is now the default backend** — Mira's own MLX inference server
