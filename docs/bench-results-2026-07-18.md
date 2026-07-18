@@ -549,3 +549,27 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | 12 | hard | agentic-edit-file | — |
 | 13 | expert | agentic-divergence-guard | — |
 | 10 | expert | multi-turn-long-context | — |
+
+---
+
+## Benchmark Results — 2026-07-18
+
+### Timing
+
+| Q | Difficulty | Category | ministral3-14b-mira-mlx-ctx128k:ministral3-14b-mira-mlx-ctx128k TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 10 | expert | multi-turn-long-context | 39847ms | 199.5s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | ministral3-14b-mira-mlx-ctx128k calls | task_done |
+|---|---------|----------------|---|---|
+| 10 | multi-turn-long-context | 0 | none | no |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | ministral3-14b-mira-mlx-ctx128k score |
+|---|-----------|---------|---|
+| 10 | expert | multi-turn-long-context | — |
