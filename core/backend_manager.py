@@ -14,6 +14,7 @@ from core.config import CONTEXT_WINDOW, DB_PATH
 from core.config import DFLASH_CLI as _DFLASH_CLI_PATH
 from core.config import DFLASH_DIAGNOSTICS, MLX_LM_CLI as _MLX_LM_CLI_PATH
 from core.config import MIRA_MLX_KV_BITS, MIRA_MLX_KV_GROUP_SIZE
+from core.config import MIRA_MLX_PROFILE_EXPERTS, MIRA_MLX_EXPERT_PROFILE_PATH
 from core.config import OMLX_CLI as _OMLX_CLI_PATH, PREFILL_STEP_SIZE
 from core.config import VLLM_MLX_CLI as _VLLM_MLX_CLI_PATH
 
@@ -184,6 +185,10 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
     ]
     if MIRA_MLX_KV_BITS is not None:
         args += ["--kv-bits", str(MIRA_MLX_KV_BITS), "--kv-group-size", str(MIRA_MLX_KV_GROUP_SIZE)]
+    if MIRA_MLX_PROFILE_EXPERTS:
+        args += ["--profile-experts"]
+        if MIRA_MLX_EXPERT_PROFILE_PATH:
+            args += ["--expert-profile-path", MIRA_MLX_EXPERT_PROFILE_PATH]
 
     _mira_mlx_proc = subprocess.Popen(
         args,

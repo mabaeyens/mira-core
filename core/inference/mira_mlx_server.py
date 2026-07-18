@@ -26,6 +26,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 import mlx.core as mx
@@ -134,6 +135,8 @@ class GenerationEngine:
         trust_remote_code: bool = True,
         disk_cache_dir: Optional[str] = None,
         disk_cache_max_bytes: int = 0,
+        profile_experts: bool = False,
+        expert_profile_path: Optional[str] = None,
     ):
         self.model_path = model_path
         self.max_tokens = max_tokens
@@ -148,6 +151,8 @@ class GenerationEngine:
         self.trust_remote_code = trust_remote_code
         self.disk_cache_dir = disk_cache_dir
         self.disk_cache_max_bytes = disk_cache_max_bytes
+        self.profile_experts = profile_experts
+        self.expert_profile_path = expert_profile_path
 
         self._inbox: "queue.Queue[ChatJob]" = queue.Queue()
         self._pending: dict[int, dict] = {}  # uid -> job bookkeeping
@@ -160,6 +165,7 @@ class GenerationEngine:
         self.batch_generator: Optional[BatchGenerator] = None
         self.prompt_cache: Optional[DiskBackedPromptCache] = None
         self.state_machine: Optional[SequenceStateMachine] = None
+        self.expert_profiler = None  # ExpertProfiler, only set when profile_experts=True
 
         # Diagnostics only (GET /v1/stats) — mutated on the engine thread, read
         # cross-thread from the async HTTP layer, so a lock guards both sides.
@@ -195,6 +201,20 @@ class GenerationEngine:
             if self.fix_mistral_regex:
                 tokenizer_config["fix_mistral_regex"] = True
             self.model, self.tokenizer = load(self.model_path, tokenizer_config=tokenizer_config)
+            if self.profile_experts:
+                from core.inference.expert_profiler import ExpertProfiler
+                from core.inference.expert_profiler import install as install_expert_profiler
+
+                if self.expert_profile_path:
+                    profile_path = Path(self.expert_profile_path)
+                else:
+                    from core.config import DB_PATH
+                    profile_path = DB_PATH.parent / "expert_profile" / f"{int(time.time())}.jsonl"
+                self.expert_profiler = ExpertProfiler(
+                    profile_path,
+                    active_job_ids_fn=lambda: [str(uid) for uid in self._pending.keys()],
+                )
+                install_expert_profiler(self.model, self.expert_profiler)
             self.state_machine = _build_state_machine(self.tokenizer)
             self._eos_ids = set(self.tokenizer.eos_token_ids)
             # Capture this thread's stream so every later insert/next call is
@@ -213,7 +233,6 @@ class GenerationEngine:
             )
             disk_store = None
             if self.disk_cache_dir and self.disk_cache_max_bytes > 0:
-                from pathlib import Path
                 disk_store = DiskPromptCacheStore(
                     Path(self.disk_cache_dir),
                     self.disk_cache_max_bytes,
@@ -612,6 +631,11 @@ def main() -> None:
     # budget disables persistence entirely (in-memory-only, today's behavior).
     parser.add_argument("--disk-cache-dir", default=None)
     parser.add_argument("--disk-cache-max-bytes", type=int, default=0)
+    # Opt-in MoE expert-activation logging for the offloading go/no-go decision
+    # (specs/moe-expert-offload-01-profiling.md). No-op on dense models; zero
+    # overhead unless explicitly set. See core/inference/expert_profiler.py.
+    parser.add_argument("--profile-experts", action="store_true")
+    parser.add_argument("--expert-profile-path", default=None)
     args = parser.parse_args()
 
     engine = GenerationEngine(
@@ -628,6 +652,8 @@ def main() -> None:
         trust_remote_code=args.trust_remote_code,
         disk_cache_dir=args.disk_cache_dir,
         disk_cache_max_bytes=args.disk_cache_max_bytes,
+        profile_experts=args.profile_experts,
+        expert_profile_path=args.expert_profile_path,
     )
     engine.start()
 

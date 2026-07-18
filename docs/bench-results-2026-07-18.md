@@ -573,3 +573,113 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | Q | Difficulty | Category | ministral3-14b-mira-mlx-ctx128k score |
 |---|-----------|---------|---|
 | 10 | expert | multi-turn-long-context | — |
+
+---
+
+## Benchmark Results — 2026-07-18
+
+### Timing
+
+| Q | Difficulty | Category | qwen3.6-mira-mlx-expert-profile:qwen3.6-mira-mlx-expert-profile TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 1 | easy | baseline | 11040ms | 11.1s | — |
+| 2 | easy | code-no-tools | 3025ms | 7.9s | — |
+| 3 | medium | reasoning | 3037ms | 37.9s | — |
+| 4 | medium | long-output | 3242ms | 19.1s | — |
+| 5 | medium | thinking-toggle | 2983ms | 30.3s | — |
+| 6 | hard | agentic-single-tool | 9281ms | 9.4s | — |
+| 7 | hard | agentic-multi-step | 12803ms | 27.7s | — |
+| 8 | hard | agentic-read-reason | 25032ms | 46.3s | — |
+| 9 | expert | agentic-task-done | 8131ms | 9.0s | — |
+| 11 | hard | agentic-write-file | 7418ms | 8.3s | — |
+| 12 | hard | agentic-edit-file | 8836ms | 9.7s | — |
+| 13 | expert | agentic-divergence-guard | 4599ms | 31.6s | — |
+| 10 | expert | multi-turn-long-context | 35095ms | 115.2s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | qwen3.6-mira-mlx-expert-profile calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | run_shell, run_shell | YES |
+| 7 | agentic-multi-step | 2 | run_shell, run_shell | YES |
+| 8 | agentic-read-reason | 1 | read_file | YES |
+| 9 | agentic-task-done | 3 | run_shell, run_shell | YES |
+| 11 | agentic-write-file | 2 | write_file, read_file | YES |
+| 12 | agentic-edit-file | 3 | write_file, edit_file, read_file | YES |
+| 13 | agentic-divergence-guard | 3 | run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell | no |
+| 10 | multi-turn-long-context | 0 | none | no |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | qwen3.6-mira-mlx-expert-profile score |
+|---|-----------|---------|---|
+| 1 | easy | baseline | — |
+| 2 | easy | code-no-tools | — |
+| 3 | medium | reasoning | — |
+| 4 | medium | long-output | — |
+| 5 | medium | thinking-toggle | — |
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | — |
+| 8 | hard | agentic-read-reason | — |
+| 9 | expert | agentic-task-done | — |
+| 11 | hard | agentic-write-file | — |
+| 12 | hard | agentic-edit-file | — |
+| 13 | expert | agentic-divergence-guard | — |
+| 10 | expert | multi-turn-long-context | — |
+
+---
+
+## Benchmark Results — 2026-07-18
+
+### Timing
+
+| Q | Difficulty | Category | gemma4-mira-mlx-expert-profile:gemma4-mira-mlx-expert-profile TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 1 | easy | baseline | 3676ms | 3.7s | — |
+| 2 | easy | code-no-tools | 2755ms | 8.2s | — |
+| 3 | medium | reasoning | 2724ms | 24.9s | — |
+| 4 | medium | long-output | 2712ms | 16.8s | — |
+| 5 | medium | thinking-toggle | 45255ms | 76.7s | 49.6 |
+| 6 | hard | agentic-single-tool | 17129ms | 17.3s | — |
+| 7 | hard | agentic-multi-step | 13073ms | 27.4s | — |
+| 8 | hard | agentic-read-reason | 32701ms | 54.9s | — |
+| 9 | expert | agentic-task-done | 11103ms | 13.7s | — |
+| 11 | hard | agentic-write-file | — | 15.8s | — |
+| 12 | hard | agentic-edit-file | — | 21.6s | — |
+| 13 | expert | agentic-divergence-guard | 76000ms | 78.4s | — |
+| 10 | expert | multi-turn-long-context | 39657ms | 90.1s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | gemma4-mira-mlx-expert-profile calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | run_shell, run_shell | YES |
+| 7 | agentic-multi-step | 2 | run_shell | YES |
+| 8 | agentic-read-reason | 1 | read_file | YES |
+| 9 | agentic-task-done | 3 | run_shell | YES |
+| 11 | agentic-write-file | 2 | write_file, read_file | YES |
+| 12 | agentic-edit-file | 3 | run_shell, edit_file, read_file | YES |
+| 13 | agentic-divergence-guard | 3 | run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell, run_shell | no |
+| 10 | multi-turn-long-context | 0 | none | no |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | gemma4-mira-mlx-expert-profile score |
+|---|-----------|---------|---|
+| 1 | easy | baseline | — |
+| 2 | easy | code-no-tools | — |
+| 3 | medium | reasoning | — |
+| 4 | medium | long-output | — |
+| 5 | medium | thinking-toggle | — |
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | — |
+| 8 | hard | agentic-read-reason | — |
+| 9 | expert | agentic-task-done | — |
+| 11 | hard | agentic-write-file | — |
+| 12 | hard | agentic-edit-file | — |
+| 13 | expert | agentic-divergence-guard | — |
+| 10 | expert | multi-turn-long-context | — |

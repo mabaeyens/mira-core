@@ -117,3 +117,9 @@ DFLASH_DIAGNOSTICS: str = _get("dflash_diagnostics", "off")  # off | basic | ful
 # rtol=4e-2); 4-bit is unproven anywhere in this codebase.
 MIRA_MLX_KV_BITS: Optional[int] = _get("mira_mlx_kv_bits", None)
 MIRA_MLX_KV_GROUP_SIZE: int = _get("mira_mlx_kv_group_size", 64)
+# Opt-in MoE expert-routing logging for the expert-offloading go/no-go decision
+# (specs/moe-expert-offload-01-profiling.md). False (default) = zero overhead,
+# no-op on dense models. Not meant to stay on by default even for Qwen3.6 —
+# only enable for a deliberate profiling window.
+MIRA_MLX_PROFILE_EXPERTS: bool = _get("mira_mlx_profile_experts", False)
+MIRA_MLX_EXPERT_PROFILE_PATH: Optional[str] = _get("mira_mlx_expert_profile_path", None)

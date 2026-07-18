@@ -1,6 +1,31 @@
 # Backlog
 
 ## Done
+- [2026-07-18] MoE expert-offloading Phase 0 (profiling) — GO signal on both flagship models. Built
+  `core/inference/expert_profiler.py` (opt-in, `--profile-experts`/`mira_mlx_profile_experts`) — patches
+  `mlx_lm.models.switch_layers.SwitchGLU`/`SwitchMLP.__call__` at the class level (architecture-agnostic:
+  Qwen3.6's `Qwen3NextSparseMoeBlock` and Gemma4's differently-named router aren't attribute-compatible,
+  but both route through these shared primitives) and `scripts/analyze_expert_profile.py` (stdlib-only,
+  computes concentration/adjacent-token-overlap against the true uniform-random baseline for the model's
+  actual num_experts/top_k, not an arbitrary fixed threshold). Ran the full 13-question bench suite against
+  both real production models on mira-mlx:
+  - **Qwen3.6-35B-A3B** (256 experts, top-8): mean top-20% concentration 49.8% (2.5x uniform-random
+    baseline of 19.9%), adjacent-token overlap 17.1% (10.8x baseline of 1.6%). 243,960 records, 40 layers.
+  - **Gemma4-26B-A4B** (128 experts, top-8): mean concentration 72.5% (3.6x baseline of 20.3%), overlap
+    25.4% (7.9x baseline of 3.2%) — an even stronger signal than Qwen3.6. 201,600 records, 30 layers.
+  - **Conclusion**: both metrics show real, substantial skew/correlation well above the uniform-random null
+    hypothesis on both models — GO for `specs/moe-expert-offload-02-runtime-cache.md` (fork-level
+    SwitchGLU/SwitchMLP gather interception + disk-backed cold-expert store + `hardware.py` active-weight
+    budget rework). The adjacent-token overlap result in particular (7.9-10.8x baseline) is a strong
+    positive signal for "LLM in a Flash"-style windowing specifically, not just Eliseev & Mazur-style
+    frequency-based caching. Raw logs (235MB/222MB JSONL, not committed) and bench results:
+    `docs/bench-results-2026-07-18.md`, `scripts/bench_raw_2026-07-18_{qwen3.6,gemma4}-mira-mlx-expert-profile.jsonl`.
+  - Profiling disabled again in `mira.yaml` after this run (`mira_mlx_profile_experts: false`) — this was a
+    deliberate bench-driven window, not the multi-day live-traffic window the spec originally envisioned;
+    re-enable for a longer real-usage window if a more representative sample is wanted before starting spec 02.
+  Specs: `specs/moe-expert-offload-01-profiling.md` (done), `specs/moe-expert-offload-02-runtime-cache.md`
+  (next — no longer blocked).
+
 - [2026-07-18] KV-cache quantization, isolated timing re-bench (resolves the Phase C timing caveat above): re-ran the 13-question suite four times with no other apps/processes running (Safari helper processes only, idle CPU) — Ministral 3 14B and Qwen3.6-35B-A3B, each once with `kv_bits=8` and once fully unquantized (temporarily unset `mira_mlx_kv_bits` in `mira.yaml`, confirmed via the running subprocess's args each time, restored to `kv_bits=8` afterward). Correctness held again in all four runs (same tool-call/`task_done` pattern as every prior run).
   - **TTFT (first-token latency) is the cleanest metric** — unaffected by output length or agentic tool-call-round-trip count. On the five non-agentic questions (Q1–Q5, most directly comparable across runs), the quantized-vs-unquantized delta was within ±30ms for both models — indistinguishable from run-to-run noise. **Conclusion: KV-cache quantization has no measurable prefill/TTFT cost.**
   - **Wall-clock totals are not a clean signal for this bench harness**: agentic questions (Q6–Q13) have a variable number of tool-call round trips run-to-run even with identical prompts (e.g. Ministral Q6 was 1 tool call in one run, 2 in another) — each extra round trip adds a full decode+prefill cycle to wall time, swamping any quantization-specific effect. The multi-turn long-context question (Q10, the one exercising the largest KV cache in the suite) showed the biggest swings, but in **opposite directions per model** (Ministral: quantized 222s vs unquantized 119s, ~1.9x slower; Qwen3.6: quantized 67s vs unquantized 98s, ~1.5x *faster*) — a real per-token compute cost from quantization would show the same direction on both models, so this is more consistent with cache-hit/reuse variance across the four separate server restarts (fresh in-memory cache each time) than with quantization overhead.

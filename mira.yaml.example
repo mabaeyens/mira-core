@@ -121,6 +121,17 @@ dflash_diagnostics: off
 # mira_mlx_kv_group_size: quantization group size for mira_mlx_kv_bits (default 64).
 mira_mlx_kv_group_size: 64
 
+# mira_mlx_profile_experts: log MoE expert-routing decisions (which experts
+# fire per layer/token) to a JSONL file, for the expert-offloading go/no-go
+# analysis (specs/moe-expert-offload-01-profiling.md). No-op on dense models
+# (e.g. Ministral 3 14B). Not meant to stay on permanently — enable for a
+# deliberate profiling window against real traffic, then disable. Default: off.
+# mira_mlx_profile_experts: true
+
+# mira_mlx_expert_profile_path: where to write the JSONL log when
+# mira_mlx_profile_experts is on. Default: <data dir>/expert_profile/<unix-ts>.jsonl
+# mira_mlx_expert_profile_path: /path/to/expert_profile.jsonl
+
 # ── Performance Tips ─────────────────────────────────────────────────────────
 # For best performance with Ollama on MacBook Pro M5, add to ~/.zprofile:
 #   export OLLAMA_CONTEXT_LENGTH=65536
