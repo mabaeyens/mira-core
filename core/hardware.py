@@ -10,6 +10,7 @@ a single over-budget submission.
 import json
 import logging
 import shutil
+import struct
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -109,16 +110,89 @@ def estimate_model_weight_bytes(model_id: str) -> Optional[int]:
     return total or None
 
 
+def _classify_weight_bytes(snapshot_dir: Path, num_experts: int):
+    """Split on-disk shard bytes into (per-expert-stacked, everything else)
+    by reading safetensors headers only (no tensor data read) — a tensor
+    whose first dimension equals num_experts and has >= 3 dims is a stacked
+    per-expert tensor, matching the shape mlx_lm's SwitchLinear/
+    QuantizedSwitchLinear always store (num_experts, out, in). Returns
+    (None, None) if bytes can't be classified (caller falls back to full
+    on-disk size rather than guessing)."""
+    shards = sorted(snapshot_dir.glob("*.safetensors"))
+    if not shards:
+        return None, None
+    expert_bytes = 0
+    other_bytes = 0
+    try:
+        for shard in shards:
+            with open(shard, "rb") as f:
+                header_len = struct.unpack("<Q", f.read(8))[0]
+                header = json.loads(f.read(header_len))
+            for key, meta in header.items():
+                if key == "__metadata__":
+                    continue
+                shape = meta.get("shape")
+                offsets = meta.get("data_offsets")
+                if not shape or not offsets:
+                    continue
+                nbytes = offsets[1] - offsets[0]
+                if len(shape) >= 3 and shape[0] == num_experts:
+                    expert_bytes += nbytes
+                else:
+                    other_bytes += nbytes
+    except (OSError, json.JSONDecodeError, struct.error) as exc:
+        logger.warning("hardware: failed to classify weight bytes at %s: %s", snapshot_dir, exc)
+        return None, None
+    return expert_bytes, other_bytes
+
+
+def estimate_active_weight_bytes(model_id: str, resident_expert_fraction: Optional[float] = None) -> Optional[int]:
+    """Resident weight footprint with MoE expert offloading active: every
+    non-expert byte stays resident as before, but only
+    resident_expert_fraction of each per-expert stacked tensor's bytes do.
+
+    Returns the same value as estimate_model_weight_bytes() (offloading has
+    no effect on the budget) when resident_expert_fraction is None or >= 1.0,
+    or when the model isn't MoE / bytes can't be classified — this is what
+    keeps every derive_* caller's default behavior unchanged unless a caller
+    explicitly opts in.
+    """
+    total_bytes = estimate_model_weight_bytes(model_id)
+    if total_bytes is None:
+        return None
+    if resident_expert_fraction is None or resident_expert_fraction >= 1.0:
+        return total_bytes
+
+    config_path = _find_cached_config(model_id)
+    if config_path is None:
+        return total_bytes
+    try:
+        raw = json.loads(config_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return total_bytes
+    cfg = raw.get("text_config", raw)
+    num_experts = cfg.get("num_experts")
+    if not num_experts:
+        return total_bytes  # dense model — offloading doesn't apply
+
+    expert_bytes, other_bytes = _classify_weight_bytes(config_path.parent, num_experts)
+    if expert_bytes is None:
+        return total_bytes
+
+    return int(other_bytes + expert_bytes * resident_expert_fraction)
+
+
 def derive_prompt_cache_max_bytes(
     model_id: str,
     total_ram_bytes: Optional[int] = None,
     kv_bits: Optional[int] = None,
     kv_group_size: int = 64,
+    resident_expert_fraction: Optional[float] = None,
 ) -> int:
     """Safe prompt-cache pool size: whatever's left after the model, KV working
     set, and a fixed safety margin, floored so it's never negative/degenerate."""
     total_ram_bytes = total_ram_bytes if total_ram_bytes is not None else get_total_ram_bytes()
-    model_bytes = estimate_model_weight_bytes(model_id) or 8 * BYTES_PER_GB  # conservative guess
+    model_bytes = estimate_active_weight_bytes(model_id, resident_expert_fraction) or 8 * BYTES_PER_GB  # conservative guess
     available = total_ram_bytes - model_bytes - SAFETY_MARGIN_BYTES
     # Leave room for at least the active generation's own KV cache on top of the
     # cache *pool* — cap the pool at half of whatever's left.
@@ -128,11 +202,12 @@ def derive_prompt_cache_max_bytes(
 
 def derive_context_window(model_id: str, total_ram_bytes: Optional[int] = None,
                            requested_context: int = 65536,
-                           kv_bits: Optional[int] = None, kv_group_size: int = 64) -> int:
+                           kv_bits: Optional[int] = None, kv_group_size: int = 64,
+                           resident_expert_fraction: Optional[float] = None) -> int:
     """Cap a requested context window to what this machine can actually hold in
     KV cache for a single active generation, without touching the cache pool."""
     total_ram_bytes = total_ram_bytes if total_ram_bytes is not None else get_total_ram_bytes()
-    model_bytes = estimate_model_weight_bytes(model_id) or 8 * BYTES_PER_GB
+    model_bytes = estimate_active_weight_bytes(model_id, resident_expert_fraction) or 8 * BYTES_PER_GB
     kv_bytes_per_token = estimate_kv_bytes_per_token(model_id, kv_bits=kv_bits, kv_group_size=kv_group_size)
     if kv_bytes_per_token is None:
         return requested_context  # unknown architecture — don't guess, use the caller's value
@@ -170,10 +245,11 @@ def derive_cache_limit_bytes(total_ram_bytes: Optional[int] = None) -> int:
 
 def fits_in_memory(model_id: str, total_ram_bytes: Optional[int] = None,
                     min_context: int = 4096,
-                    kv_bits: Optional[int] = None, kv_group_size: int = 64) -> tuple[bool, str]:
+                    kv_bits: Optional[int] = None, kv_group_size: int = 64,
+                    resident_expert_fraction: Optional[float] = None) -> tuple[bool, str]:
     """Preflight check: would this model + a minimum usable context even fit?"""
     total_ram_bytes = total_ram_bytes if total_ram_bytes is not None else get_total_ram_bytes()
-    model_bytes = estimate_model_weight_bytes(model_id)
+    model_bytes = estimate_active_weight_bytes(model_id, resident_expert_fraction)
     if model_bytes is None:
         return True, "model not yet downloaded — cannot preflight, allowing"
 

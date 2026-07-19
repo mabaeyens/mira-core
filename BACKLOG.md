@@ -25,6 +25,186 @@
     re-enable for a longer real-usage window if a more representative sample is wanted before starting spec 02.
   Specs: `specs/moe-expert-offload-01-profiling.md` (done), `specs/moe-expert-offload-02-runtime-cache.md`
   (next — no longer blocked).
+- [2026-07-19] MoE expert disk offloading (`specs/moe-expert-offload-02-runtime-cache.md`) — Phase A + B
+  built and correctness-verified; **Phase C blocked on a real GPU-OOM crash found during live validation,
+  not yet fixed.**
+  - **Spike (before any implementation)**: byte-range `seek()+read()` against the live Qwen3.6-35B-A3B-4bit
+    safetensors shards measured 0.3-0.6ms per expert slice — far under the tens-of-ms Eliseev & Mazur assume
+    for their (network-attached-storage) setup, so Phase A skipped repacking entirely: the disk store reads
+    straight from the model's existing shards.
+  - **Phase A** (`~/Documents/Projects/mlx-lm`, `mira-core-pin` branch, commit `f0c66a4`, **not pushed**):
+    added `enable_offload(resident_slots, fetch_fn)` to `SwitchLinear`/`QuantizedSwitchLinear`
+    (`switch_layers.py`). First design used a fixed-size slot array with in-place row overwrites — found (via
+    `tests/test_expert_offload.py`) a real bug: an eviction *later in the same forward call* could silently
+    overwrite a slot an *earlier* expert in that same call had already resolved to, since the actual gather
+    only runs after every index in the call resolves — corrupting output for that call. Rebuilt as a
+    dict-keyed `expert_id -> weight` cache with a fresh temporary stacked tensor built per call — no shared
+    slots, so this bug class can't occur, verified including the case where a single call's unique-expert
+    count exceeds `resident_slots`. Verified bit-identical output vs. the unmodified eager path: synthetic
+    `SwitchLinear`/`QuantizedSwitchLinear` unit tests, and a live end-to-end check against the real
+    Qwen3.6-35B-A3B-4bit model (logits `mx.array_equal` on both a cold and warm cache pass).
+  - **Phase B** (mira-core, uncommitted): `core/inference/disk_expert_cache.py` (byte-range reader, resolves
+    each `(module_path, attr)` to its safetensors shard/offset once), `core/inference/expert_offload.py`
+    (install hook, mirrors `expert_profiler.py`'s pattern; excludes `shared_expert`, which isn't
+    per-expert-stacked so is never matched), `core/hardware.py` (`estimate_active_weight_bytes()` classifies
+    on-disk bytes into per-expert-stacked vs. everything-else by safetensors header shape, threaded through
+    `derive_prompt_cache_max_bytes`/`derive_context_window`/`fits_in_memory` — default/unset behavior
+    unchanged, unit-tested), CLI/config/`backend_manager.py` wiring (`--resident-expert-fraction` /
+    `mira_mlx_resident_expert_fraction`, same opt-in pattern as KV-quant), `/v1/stats` expert-cache hit-rate.
+  - **Phase C attempt — found a real crash, not yet resolved**: enabled `mira_mlx_resident_expert_fraction:
+    0.3` and restarted the live `com.mab.mira` service to bench it. The live backend crashed during its own
+    startup warmup request (`Remote end closed connection without response`) — reproduced safely in an
+    isolated standalone process (separate port, same payload) rather than continuing to poke at the live
+    service: `libc++abi: terminating due to uncaught exception ... [METAL] Command buffer execution failed:
+    Insufficient Memory (kIOGPUCommandBufferCallbackErrorOutOfMemory)` on a 1458-token prefill (the real
+    system prompt + tool descriptions, not a toy prompt). **Root cause**: Qwen3.6 routes top-8-of-256 experts
+    per token; a ~1458-token prefill makes ~11,664 expert selections in one batched forward call, so the
+    *unique* experts touched per layer approaches all 256, not a small hot subset — spec 01's skew finding
+    holds for steady-state/decode traffic but does not bound prefill-time diversity. At
+    `resident_expert_fraction=0.3` (76 resident), a single large prefill needs to fetch and stack close to
+    all 256 experts across all 40 layers, all queued into one lazy MLX graph before evaluation — that
+    transient memory spike blew through the GPU's command-buffer budget. This is a correctness-preserving
+    design (Phase A's guarantee held — no wrong output, a hard crash instead) but provides **no memory
+    benefit during prefill**, since prefill's own expert diversity defeats the small-resident-set premise.
+    Live service recovered immediately (`mira_mlx_resident_expert_fraction` unset, restarted, confirmed
+    healthy) — outage window was contained to the debugging session.
+  - **Decision (confirmed with user)**: stopped to document rather than rush a fix that session, then designed
+    and implemented one next session (`~/Documents/Projects/mlx-lm` `mira-core-pin` commit `0458f97`). Traced
+    through the "offload only during decode" idea the user proposed first and found it doesn't hold up on its
+    own: for it to actually save RAM, the model can't stay fully resident during prefill, which means prefill
+    needs the *same* bounded mechanism anyway — a phase toggle would just relocate the hard problem, not
+    avoid it. Landed on **chunked/bounded resolve** instead: partition a call's unique experts into groups of
+    at most `max_stack_size` (new `enable_offload()` param, defaults to `resident_slots`), one
+    `gather_mm`/`gather_qmm` per group against the *entire* index tensor (out-of-group positions get a dummy
+    index, discarded via `mx.where`), with a forced `mx.eval()` between groups so the previous group's
+    temporary stack is actually released before the next is built — without that, MLX's laziness re-batches
+    every group into one graph anyway and the bound is fiction. Fetches/evicts lazily per-group rather than
+    resolving the whole call's expert set up front, which bounds the *cache dict itself* too, not just the
+    final stacked tensor (the original design's dict cache ballooning to near-full-table size was as much a
+    contributor to the crash as the stack). Costs more matmul work than a single unchunked call whenever a
+    call needs more than one group (every group's call touches every position, not just its own) — that's the
+    trade for a bound that holds regardless of call shape, with no prefill/decode signal needed from
+    `BatchGenerator`/mira-core at all: decode's usual small unique-expert count still resolves in one group,
+    unchanged cost from before.
+  - **Found and fixed a real bug while implementing this**: `mx.gather_mm`/`gather_qmm`'s output has
+    `indices.ndim + 2` dimensions, not `+ 1` as first assumed — true only for the `top_k=1` shape every prior
+    test happened to use. The per-group `mx.where` mask needs padding to the output's *actual* rank (checked
+    at runtime), not a fixed offset; got this wrong on the first pass and a same-shape-family test would not
+    have caught it. Added `tests/test_expert_offload.py::test_offload_matches_baseline_with_realistic_top_k_routing`
+    (`top_k=8` over 20 tokens, mirroring `SwitchGLU`'s real `(N, top_k)` indices shape) specifically because it
+    caught this — confirmed the bug reproduces and the fix resolves it before moving on.
+  - **Verified**: mira-core's test suite, including a new bounded-cache-size invariant test
+    (`test_offload_bounds_cache_size_during_large_diverse_call` — instruments `fetch_fn` to assert the cache
+    dict never exceeds `capacity + max_stack_size` entries during a worst-case call touching all 64 of a
+    64-expert test model). Then re-ran the *exact* crashing scenario standalone (separate port, not the live
+    service): same real system-prompt payload (~1458 tokens), `resident_expert_fraction=0.3` — **200 OK, no
+    crash, no orphaned process** (previously: hard Metal OOM abort). Resident RSS was ~2.3GB (vs. Qwen3.6's
+    normal ~20GB) confirming the memory saving is real at rest; TTFT on that first large/diverse prefill was
+    ~42s (chunking's matmul-overhead cost, expected — this prompt forces ~76 chunks per module across 120
+    modules), a short decode-heavy follow-up completed in ~13s. Live `com.mab.mira` service was never touched
+    during this verification pass.
+  - **Not yet done (at the time)**: an actual throughput/TTFT tradeoff table across a range of
+    `resident_expert_fraction` values, and Eliseev & Mazur's gate-score-priority prefetch idea. Fork commit
+    (`0458f97`, on `f0c66a4`) local/unpushed; mira-core Phase A/B changes uncommitted.
+  Spec: `specs/moe-expert-offload-02-runtime-cache.md`.
+
+- [2026-07-20] MoE expert disk offloading — continued Phase C validation. Ran the RAM/TTFT tradeoff table
+  (standalone servers, not the live `com.mab.mira` service — user later gave blanket permission to disturb
+  production for this work too, noted for future sessions) across `resident_expert_fraction` ∈
+  {none, 0.15, 0.3, 0.5} against Qwen3.6-35B-A3B, and found two more real bugs plus one still-open design gap.
+  - **`ps` RSS doesn't measure MLX's Metal-backed unified memory on macOS** — a live process hosting the fully
+    loaded 20GB model showed 11MB RSS. Switched to `/v1/stats`'s `active_memory_bytes`/`peak_memory_bytes`
+    (from `mx.get_active_memory()`/`mx.get_peak_memory()`), which do reflect it correctly (baseline: 19.25GB
+    peak, matching the model's real size).
+  - **Traced "offload only during decode" (the idea considered as an alternative fix the prior session)
+    through fully and confirmed it doesn't work standalone**: `BatchGenerator._next()`
+    (`mlx_lm/generate.py:1803-1879`) already separates prefill (`self._prompt_batch.prompt(prompts)`) and
+    decode (`self._generation_batch.next()`) into distinct calls, so there's no per-token phase-mixing risk —
+    but for the idea to save any RAM, the model can't stay fully resident during prefill either, which means
+    prefill needs the *same* bounded mechanism anyway. A phase toggle relocates the hard problem rather than
+    avoiding it; chunked/bounded resolve (already built) subsumes it.
+  - **Bug 1 — sequential fetch was likely the dominant cost, not chunking's extra matmul work**: the crashing
+    ~1458-token prefill from the prior session had 67,110 cache misses in *one call*; at ~0.3-0.6ms per
+    sequential disk read that alone is 20-40s, matching the measured TTFT almost exactly. Parallelized the
+    fetch loop in `_offload_chunked_gather` across a shared 8-worker `ThreadPoolExecutor`
+    (`mlx-lm` `mira-core-pin` commit `dce6935`, paired with the fix below).
+  - **Bug 2 (found by that change) — thread-affinity crash**: the parallelized fetch constructed `mx.array`
+    objects on `ThreadPoolExecutor` worker threads. MLX streams are thread-local, and mira-mlx's engine pins
+    model execution to one dedicated thread (a fix from earlier project history, `feedback_launchagent_reload`-
+    adjacent), so the array crashed the instant it was used there: `RuntimeError: There is no Stream(gpu, N)
+    in current thread`. **mira-core's pytest suite (48/48 passing across 8 repeated stress runs) did not catch
+    this** — it only exercises the offload code in a plain script, never mira-mlx's pinned-thread architecture;
+    only a real standalone server process reproduced it (same lesson as the original OOM: pytest correctness
+    tests and real-server behavior tests catch genuinely different bug classes here). Fixed by splitting disk
+    I/O + numpy parsing (thread-safe, done in parallel) from `mx.array` construction (must run on the calling
+    thread, done after the parallel fetch via new `_offload_to_mx()`/`_offload_fetched_to_data()`) —
+    `core/inference/disk_expert_cache.py`'s `fetch_fn` now returns raw `(np.ndarray, dtype_str)` instead of
+    `mx.array`, since the fork must not import mira-core (wrong dependency direction) so the conversion logic
+    now lives in both places by necessity (small, ~5-line duplication).
+  - **Bug 3 — the chunk-size bound scaled *up* with the very setting meant to be safer**: `max_stack_size`
+    defaulted to `resident_slots`, so at `resident_expert_fraction=0.5` (`resident_slots=128` on 256 experts),
+    chunks of ~128 reproduced the *original* Metal OOM the chunking fix was supposed to prevent — a bound that
+    grows with the setting isn't a bound. Fixed with a fixed `_OFFLOAD_DEFAULT_MAX_STACK = 64`, independent of
+    `resident_slots` (still overridable per-call).
+  - **Verified against a real standalone server (not just pytest) after both fixes**: 0.15 and 0.3 now
+    complete the exact ~1458-token crashing prompt correctly; 0.3 dropped from 38.6s → 27.5s (confirms the
+    concurrency fix is doing real work, not just correctness). 0.5 still crashed *at this point* — both that
+    and the peak-memory gap below were resolved by the 2026-07-19 seed-view fix (see the RESOLVED bullet).
+  - **RESOLVED (2026-07-19 follow-up) — peak memory now below baseline at every fraction**: the gap had a
+    single root cause, and it was not "three overlapping copies" as first theorized — it was one wrong
+    assumption. `module.weight[:resident_slots]` is an mx **view** that pins the *entire* parent buffer, so
+    `module.weight = seed_weight` never freed the other experts; the whole table stayed resident and offload
+    only piled cache + temp-stack memory on top of a still-full model. The "~0GB active right after load"
+    reading that had suggested the table WAS being freed was a lazy-mmap artifact (safetensors weights don't
+    fault into active memory until first touched — the short/long requests are what materialized them). Caught
+    it by measuring MLX slice semantics directly *before* editing (applying the session's own "verify, don't
+    assume" lesson): allocate (256,1024,1024) f32, slice `[:32]`, drop the parent → `mx.get_active_memory()`
+    freed 0 bytes until the slice itself was also dropped. Fix (`mira-core-pin` commit `5378ffb`): seed the
+    resident set from disk (same path a cold miss uses → genuinely independent buffers), replace
+    weight/scales/biases with a 1-row stand-in (view of one now-resident expert, so `input_dims`/`output_dims`
+    still resolve and the param tree stays intact) which drops the last reference to the full tensors, and
+    stash the true expert count on the module since `num_experts` can no longer read it from `weight.shape[0]`.
+    Compute path unchanged (offload `__call__` reads only the cache), so the unit suite stays bit-identical —
+    7/7, added `test_offload_frees_full_weight_and_preserves_num_experts`, 5x no flakiness.
+
+    Re-measured on a fresh real-model server (fork synced into the venv, restored after — live `com.mab.mira`
+    disturbed freely per the standing permission):
+
+    | fraction | peak GB (worst-case prefill) | was | steady-state resident GB | cold ~1458-tok prefill |
+    |---|---|---|---|---|
+    | none (baseline) | 19.25 | 19.25 | 18.31 | 1.8s |
+    | 0.15 | 18.19 | 21.39 | 4.01 | 28.8s |
+    | 0.3 | 18.21 | 23.99 | 6.58 | 21.8s |
+    | 0.5 | 18.24 | crashed | 9.94 | 22.3s |
+
+    Peak is now fraction-independent and *below* baseline (incl. 0.5, which no longer OOMs — this also closes
+    the "re-verify 0.5 against the fully-fixed code" loose end). The worst-case diverse prefill is
+    activation-bound, not expert-bound, so the resident fraction sets the *steady-state* floor (the real RAM
+    win — now genuinely delivered: 4GB at 0.15 vs 18.3GB full) but not the transient peak. Output coherent and
+    identical across all configs. Cost: cold-prefill latency (disk-bound), decode unaffected once warm.
+  - **Scope — does NOT solve "run models larger than DRAM" (user-raised, 2026-07-19)**: peak is
+    fraction-independent and ~baseline because the worst-case diverse prefill is *activation*-bound, not
+    expert-bound. So this lowers resting/decode footprint (real: 4GB resident vs 18.3GB full) but not the
+    *prefill* peak — and prefill peak is what gates whether an over-DRAM model can run at all. Nuance worth
+    recording: `mlx_lm.load` is lazy (safetensors mmap'd; active ~0 right after load at every fraction), and
+    this fix drops the full-table reference before it's ever materialized, so experts are sparse from
+    model-open through steady state — the full table is *never* resident now. So sparse-at-open and
+    sparse-steady-state are solved; the single remaining wall is the **first prefill's** working set
+    (activations + faulted experts). Next step toward the real goal: **bounded-token-block prefill** (cap
+    activation memory per prefill step) + a **compacted chunked gather** (compute only each group's own token
+    positions, not redundantly over all of them), on top of this freed table. This fix is the prerequisite,
+    not the whole solution — you can't bound the prefill working set while the full table stays pinned.
+  - **Recommendation (updated)**: the earlier "keep ≤0.2" restriction is lifted — any fraction is now safe on
+    this 32GB hardware. Higher fractions buy less steady-state savings for the same prefill cost, so ~0.15-0.3
+    is the sensible range (best RAM headroom per unit of cold-prefill penalty). Still opt-in/unset by default.
+  - Fork commits (all local, unpushed, on `mira-core-pin`): `0458f97` (chunked/bounded resolve), `dce6935`
+    (concurrent fetch + thread-affinity fix + chunk-cap-independent-of-fraction fix), `5378ffb` (seed-view
+    fix — frees the full table). mira-core changes (`disk_expert_cache.py`'s raw-data contract change, plus all
+    of Phase A/B) remain uncommitted. **To make it live**: push `mira-core-pin`, bump the pin in
+    `pyproject.toml` (or reinstall mlx-lm) — the offload code lives only in these unpushed commits, so
+    `resident_expert_fraction` in `mira.yaml` would currently call an `enable_offload` the installed mlx-lm
+    lacks.
+  Spec: `specs/moe-expert-offload-02-runtime-cache.md` updated with full current status.
 - [2026-07-18] Fixed two `core/backend_manager.py`/`server.py` bugs found while switching mira-mlx between
   models during the expert-offloading profiling run above: (1) `ensure_backend_running("mira-mlx")` always
   called `start_mira_mlx()` with no model argument, silently defaulting to its own hardcoded `MIRA_MLX_MODEL`

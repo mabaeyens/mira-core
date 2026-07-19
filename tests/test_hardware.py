@@ -198,3 +198,83 @@ def test_derive_disk_cache_max_bytes_shrinks_on_low_free_space(tmp_path, monkeyp
 
     monkeypatch.setattr(hardware.shutil, "disk_usage", lambda path: FakeUsage())
     assert hardware.derive_disk_cache_max_bytes(tmp_path) == 2 * GB
+
+
+# -- estimate_active_weight_bytes / _classify_weight_bytes (MoE offloading) -
+
+def _write_fake_safetensors(path, tensors):
+    """Write a minimal, valid safetensors file: real header (name -> dtype/
+    shape/data_offsets), zero-filled data section. Content is never read by
+    _classify_weight_bytes (header-only), only shapes/offsets matter."""
+    import struct as _struct
+
+    header = {}
+    offset = 0
+    for name, (shape, nbytes) in tensors.items():
+        header[name] = {"dtype": "F32", "shape": list(shape), "data_offsets": [offset, offset + nbytes]}
+        offset += nbytes
+    header_bytes = json.dumps(header).encode()
+    with open(path, "wb") as f:
+        f.write(_struct.pack("<Q", len(header_bytes)))
+        f.write(header_bytes)
+        f.write(b"\x00" * offset)
+
+
+def test_estimate_active_weight_bytes_none_fraction_matches_full_size(monkeypatch):
+    monkeypatch.setattr(hardware, "estimate_model_weight_bytes", lambda model_id: 20 * GB)
+    assert hardware.estimate_active_weight_bytes("fake/model", None) == 20 * GB
+    assert hardware.estimate_active_weight_bytes("fake/model", 1.0) == 20 * GB
+
+
+def test_estimate_active_weight_bytes_dense_model_unaffected(tmp_path, monkeypatch):
+    """A model with no 'num_experts' in its config (dense) must be returned
+    at full size regardless of resident_expert_fraction — offloading only
+    applies to MoE architectures."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"hidden_size": 4096}')
+    monkeypatch.setattr(hardware, "estimate_model_weight_bytes", lambda model_id: 20 * GB)
+    monkeypatch.setattr(hardware, "_find_cached_config", lambda model_id: config_path)
+    assert hardware.estimate_active_weight_bytes("fake/dense-model", 0.2) == 20 * GB
+
+
+def test_estimate_active_weight_bytes_moe_scales_expert_bytes_only(tmp_path, monkeypatch):
+    """8 experts, 1MB each (8MB total expert bytes) + 2MB non-expert bytes.
+    At resident_expert_fraction=0.25, only the expert portion shrinks."""
+    num_experts = 8
+    per_expert_bytes = 1 * 1024 * 1024
+    other_bytes = 2 * 1024 * 1024
+    shard = tmp_path / "model.safetensors"
+    _write_fake_safetensors(shard, {
+        "model.layers.0.mlp.switch_mlp.down_proj.weight": ((num_experts, 512, 512), num_experts * per_expert_bytes),
+        "model.embed_tokens.weight": ((32000, 512), other_bytes),
+    })
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"num_experts": num_experts}))
+
+    # estimate_model_weight_bytes reports on-disk *file* size (includes the
+    # safetensors header preamble), not just tensor data bytes — classify
+    # only sums data_offsets, so use the same source of truth for "full".
+    full_bytes = shard.stat().st_size
+    monkeypatch.setattr(hardware, "estimate_model_weight_bytes", lambda model_id: full_bytes)
+    monkeypatch.setattr(hardware, "_find_cached_config", lambda model_id: config_path)
+
+    full = hardware.estimate_active_weight_bytes("fake/moe-model", None)
+    reduced = hardware.estimate_active_weight_bytes("fake/moe-model", 0.25)
+    assert full == full_bytes
+    assert reduced == other_bytes + int(num_experts * per_expert_bytes * 0.25)
+    assert reduced < full
+
+
+def test_derive_context_window_resident_expert_fraction_forwards_to_estimate(monkeypatch):
+    """resident_expert_fraction must reach estimate_active_weight_bytes, not
+    be silently dropped along the derive_context_window call path."""
+    captured = {}
+
+    def fake_estimate(model_id, resident_expert_fraction=None):
+        captured["resident_expert_fraction"] = resident_expert_fraction
+        return 8 * GB
+
+    monkeypatch.setattr(hardware, "estimate_active_weight_bytes", fake_estimate)
+    monkeypatch.setattr(hardware, "estimate_kv_bytes_per_token", lambda model_id, **kwargs: 163840)
+    hardware.derive_context_window("fake/model", 32 * GB, requested_context=65536, resident_expert_fraction=0.3)
+    assert captured["resident_expert_fraction"] == 0.3

@@ -1066,7 +1066,7 @@ wheels = [
 [[package]]
 name = "mlx-lm"
 version = "0.31.3"
-source = { git = "https://github.com/mabaeyens/mlx-lm.git?branch=mira-core-pin#bbd849640c7fd5f6fd86f37064fb8f0ed0092f08" }
+source = { git = "https://github.com/mabaeyens/mlx-lm.git?branch=mira-core-pin#5378ffb97e3f04ae8b9190aecb89845a7a600f7a" }
 dependencies = [
     { name = "jinja2" },
     { name = "mlx", marker = "sys_platform == 'darwin'" },

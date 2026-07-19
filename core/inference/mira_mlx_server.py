@@ -137,6 +137,7 @@ class GenerationEngine:
         disk_cache_max_bytes: int = 0,
         profile_experts: bool = False,
         expert_profile_path: Optional[str] = None,
+        resident_expert_fraction: Optional[float] = None,
     ):
         self.model_path = model_path
         self.max_tokens = max_tokens
@@ -153,6 +154,7 @@ class GenerationEngine:
         self.disk_cache_max_bytes = disk_cache_max_bytes
         self.profile_experts = profile_experts
         self.expert_profile_path = expert_profile_path
+        self.resident_expert_fraction = resident_expert_fraction
 
         self._inbox: "queue.Queue[ChatJob]" = queue.Queue()
         self._pending: dict[int, dict] = {}  # uid -> job bookkeeping
@@ -166,6 +168,7 @@ class GenerationEngine:
         self.prompt_cache: Optional[DiskBackedPromptCache] = None
         self.state_machine: Optional[SequenceStateMachine] = None
         self.expert_profiler = None  # ExpertProfiler, only set when profile_experts=True
+        self.expert_cache_store = None  # DiskExpertCacheStore, only set when resident_expert_fraction is not None
 
         # Diagnostics only (GET /v1/stats) — mutated on the engine thread, read
         # cross-thread from the async HTTP layer, so a lock guards both sides.
@@ -215,6 +218,12 @@ class GenerationEngine:
                     active_job_ids_fn=lambda: [str(uid) for uid in self._pending.keys()],
                 )
                 install_expert_profiler(self.model, self.expert_profiler)
+            if self.resident_expert_fraction is not None:
+                from core.inference.expert_offload import install as install_expert_offload
+
+                self.expert_cache_store = install_expert_offload(
+                    self.model, self.model_path, self.resident_expert_fraction
+                )
             self.state_machine = _build_state_machine(self.tokenizer)
             self._eos_ids = set(self.tokenizer.eos_token_ids)
             # Capture this thread's stream so every later insert/next call is
@@ -333,12 +342,24 @@ class GenerationEngine:
             return round(sorted_values[idx], 1)
 
         disk_store = getattr(self.prompt_cache, "disk_store", None)
+        expert_cache_stats = None
+        if self.expert_cache_store is not None:
+            from core.inference.expert_offload import stats as expert_offload_stats
+
+            ec = expert_offload_stats(self.model)
+            ec_total = ec["hits"] + ec["misses"]
+            expert_cache_stats = {
+                "hits": ec["hits"],
+                "misses": ec["misses"],
+                "hit_rate": round(ec["hits"] / ec_total, 3) if ec_total else None,
+            }
         return {
             "uptime_seconds": round(time.time() - self._start_time, 1),
             "cache_hits": hits,
             "cache_misses": misses,
             "cache_hit_rate": round(hits / total_requests, 3) if total_requests else None,
             "disk_cache_hits": disk_store.hits if disk_store is not None else 0,
+            "expert_cache": expert_cache_stats,
             "memory_pressure_trim_events": trims,
             "total_prompt_tokens": prompt_tokens,
             "total_generated_tokens": generated_tokens,
@@ -636,6 +657,10 @@ def main() -> None:
     # overhead unless explicitly set. See core/inference/expert_profiler.py.
     parser.add_argument("--profile-experts", action="store_true")
     parser.add_argument("--expert-profile-path", default=None)
+    # Opt-in MoE expert disk offloading (specs/moe-expert-offload-02-runtime-cache.md).
+    # None (default) = every expert resident, today's behavior. No-op on dense
+    # models. See core/inference/expert_offload.py.
+    parser.add_argument("--resident-expert-fraction", type=float, default=None)
     args = parser.parse_args()
 
     engine = GenerationEngine(
@@ -654,6 +679,7 @@ def main() -> None:
         disk_cache_max_bytes=args.disk_cache_max_bytes,
         profile_experts=args.profile_experts,
         expert_profile_path=args.expert_profile_path,
+        resident_expert_fraction=args.resident_expert_fraction,
     )
     engine.start()
 

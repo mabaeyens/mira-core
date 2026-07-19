@@ -16,6 +16,7 @@ from core.config import DFLASH_CLI as _DFLASH_CLI_PATH
 from core.config import DFLASH_DIAGNOSTICS, MLX_LM_CLI as _MLX_LM_CLI_PATH
 from core.config import MIRA_MLX_KV_BITS, MIRA_MLX_KV_GROUP_SIZE
 from core.config import MIRA_MLX_PROFILE_EXPERTS, MIRA_MLX_EXPERT_PROFILE_PATH
+from core.config import MIRA_MLX_RESIDENT_EXPERT_FRACTION
 from core.config import OMLX_CLI as _OMLX_CLI_PATH, PREFILL_STEP_SIZE
 from core.config import VLLM_MLX_CLI as _VLLM_MLX_CLI_PATH
 
@@ -140,7 +141,10 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
     global _mira_mlx_proc
     from core import hardware
 
-    ok, reason = hardware.fits_in_memory(model, kv_bits=MIRA_MLX_KV_BITS, kv_group_size=MIRA_MLX_KV_GROUP_SIZE)
+    ok, reason = hardware.fits_in_memory(
+        model, kv_bits=MIRA_MLX_KV_BITS, kv_group_size=MIRA_MLX_KV_GROUP_SIZE,
+        resident_expert_fraction=MIRA_MLX_RESIDENT_EXPERT_FRACTION,
+    )
     if not ok:
         raise RuntimeError(f"mira-mlx preflight check failed: {reason}")
 
@@ -149,13 +153,15 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
     # (found 2026-07-09 — a fixed 3GB cap was smaller than a single long
     # conversation's ~3.3GB KV cache entry, silently evicting it every time).
     prompt_cache_max_bytes = hardware.derive_prompt_cache_max_bytes(
-        model, kv_bits=MIRA_MLX_KV_BITS, kv_group_size=MIRA_MLX_KV_GROUP_SIZE
+        model, kv_bits=MIRA_MLX_KV_BITS, kv_group_size=MIRA_MLX_KV_GROUP_SIZE,
+        resident_expert_fraction=MIRA_MLX_RESIDENT_EXPERT_FRACTION,
     )
     context_window = hardware.derive_context_window(
         model,
         requested_context=MIRA_MLX_CONTEXT,
         kv_bits=MIRA_MLX_KV_BITS,
         kv_group_size=MIRA_MLX_KV_GROUP_SIZE,
+        resident_expert_fraction=MIRA_MLX_RESIDENT_EXPERT_FRACTION,
     )
     disk_cache_max_bytes = hardware.derive_disk_cache_max_bytes(MIRA_MLX_CACHE_DIR)
     # A single response can't usefully exceed the machine's own derived context
@@ -190,6 +196,8 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
         args += ["--profile-experts"]
         if MIRA_MLX_EXPERT_PROFILE_PATH:
             args += ["--expert-profile-path", MIRA_MLX_EXPERT_PROFILE_PATH]
+    if MIRA_MLX_RESIDENT_EXPERT_FRACTION is not None:
+        args += ["--resident-expert-fraction", str(MIRA_MLX_RESIDENT_EXPERT_FRACTION)]
 
     _mira_mlx_proc = subprocess.Popen(
         args,
@@ -575,6 +583,7 @@ def get_preset_for(backend: str, model_id: str) -> dict:
             requested_context=MIRA_MLX_CONTEXT,
             kv_bits=MIRA_MLX_KV_BITS,
             kv_group_size=MIRA_MLX_KV_GROUP_SIZE,
+            resident_expert_fraction=MIRA_MLX_RESIDENT_EXPERT_FRACTION,
         )
         return {"backend": "mira-mlx", "model": model_id, "host": MIRA_MLX_HOST, "context_window": actual_context}
     else:

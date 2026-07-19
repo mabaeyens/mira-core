@@ -132,6 +132,18 @@ mira_mlx_kv_group_size: 64
 # mira_mlx_profile_experts is on. Default: <data dir>/expert_profile/<unix-ts>.jsonl
 # mira_mlx_expert_profile_path: /path/to/expert_profile.jsonl
 
+# mira_mlx_resident_expert_fraction: MoE expert disk offloading (opt-in; unset/
+# null = every expert resident, today's behavior). When set (e.g. 0.3), only
+# that fraction of each MoE layer's experts stay resident in unified memory —
+# the rest are fetched on demand straight from the model's own safetensors
+# shards (no repacking, no separate cache directory) and LRU-evicted. No-op on
+# dense models. Requires the mira-core-pin mlx-lm fork's
+# SwitchLinear/QuantizedSwitchLinear.enable_offload() (spec:
+# specs/moe-expert-offload-02-runtime-cache.md). Frees RAM for context/prompt-
+# cache headroom — core/hardware.py sizes those budgets against the reduced
+# resident footprint automatically once this is set.
+# mira_mlx_resident_expert_fraction: 0.3
+
 # ── Performance Tips ─────────────────────────────────────────────────────────
 # For best performance with Ollama on MacBook Pro M5, add to ~/.zprofile:
 #   export OLLAMA_CONTEXT_LENGTH=65536

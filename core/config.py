@@ -123,3 +123,10 @@ MIRA_MLX_KV_GROUP_SIZE: int = _get("mira_mlx_kv_group_size", 64)
 # only enable for a deliberate profiling window.
 MIRA_MLX_PROFILE_EXPERTS: bool = _get("mira_mlx_profile_experts", False)
 MIRA_MLX_EXPERT_PROFILE_PATH: Optional[str] = _get("mira_mlx_expert_profile_path", None)
+# Opt-in MoE expert disk offloading (specs/moe-expert-offload-02-runtime-cache.md).
+# None (default) = every expert resident, today's behavior, zero overhead. When
+# set (e.g. 0.3), only that fraction of each MoE layer's experts stay resident;
+# the rest are fetched on demand straight from the model's own safetensors
+# shards and LRU-evicted. Requires the mira-core-pin mlx-lm fork's
+# SwitchLinear/QuantizedSwitchLinear.enable_offload(); a no-op on dense models.
+MIRA_MLX_RESIDENT_EXPERT_FRACTION: Optional[float] = _get("mira_mlx_resident_expert_fraction", None)
