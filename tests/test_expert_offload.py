@@ -396,6 +396,61 @@ def test_switchglu_end_to_end_compact_matches_mask(tmp_path, monkeypatch):
     assert store.misses > 0
 
 
+def test_single_group_decode_call_is_bit_identical_and_skips_eval(tmp_path, monkeypatch):
+    """Decode always routes to a SINGLE group (its top_k experts fit one stack).
+    The per-group mx.eval barrier exists only to bound memory ACROSS groups, so
+    it is skipped for a lone group (there is no next group to bound against) —
+    measured +13% decode (7.15->8.09 t/s) at identical 12.73GB peak on real
+    Qwen3.6-35B-A3B-8bit over-DRAM offload. Guard against two regressions:
+    (a) the single-group output stays bit-identical to the full-resident
+    baseline, and (b) the guard is actually taken — the barrier eval is skipped
+    for one group but still fires for a genuine multi-group (prefill) call.
+    """
+    d, o, n_experts = 32, 48, 16
+    baseline = SwitchLinear(d, o, n_experts, bias=False)
+    mx.eval(baseline.parameters())
+    shard = tmp_path / "model-00001-of-00001.safetensors"
+    mx.save_safetensors(str(shard), {"test.switch.weight": baseline.weight})
+
+    offloaded = SwitchLinear(d, o, n_experts, bias=False)
+    offloaded.weight = baseline.weight
+    mx.eval(offloaded.parameters())
+    store = DiskExpertCacheStore(tmp_path)
+    # max_stack (8) > the single call's unique-expert count => exactly one group.
+    offloaded.enable_offload(3, store.reader_for("test.switch", ["weight"]), max_stack_size=8)
+
+    x = mx.random.normal((4, 1, 1, d), key=mx.random.key(1))
+    single_idx = mx.array([[0], [3], [5], [3]])  # 3 unique <= max_stack 8 => 1 group
+
+    # (a) bit-identical on the decode-shaped (single-group) path.
+    expected = baseline(x, single_idx)
+    actual = offloaded(x, single_idx)
+    assert mx.array_equal(expected, actual), "single-group decode path diverged from baseline"
+
+    # (b) eval-skip proof. The barrier eval is the ONLY mx.eval inside
+    # _offload_chunked_gather's mask path (fetch/stack/evict make none), so
+    # counting mx.eval across one offloaded call isolates the guard exactly.
+    real_eval = mx.eval
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        mx, "eval",
+        lambda *a, **k: (calls.__setitem__("n", calls["n"] + 1), real_eval(*a, **k))[1],
+    )
+
+    calls["n"] = 0
+    offloaded(x, single_idx)  # 1 group -> barrier skipped
+    single_evals = calls["n"]
+
+    many_idx = mx.array([[0], [2], [4], [6], [8], [10], [12], [14], [1], [3]])  # 10 unique > 8 => 2 groups
+    x2 = mx.random.normal((10, 1, 1, d), key=mx.random.key(2))
+    calls["n"] = 0
+    offloaded(x2, many_idx)  # 2 groups -> barrier fires
+    multi_evals = calls["n"]
+
+    assert single_evals == 0, f"single-group decode call should skip the barrier eval (saw {single_evals})"
+    assert multi_evals >= 1, f"multi-group call must still eval to bound cross-group memory (saw {multi_evals})"
+
+
 def test_enable_offload_is_noop_when_resident_slots_covers_all_experts(tmp_path):
     """resident_slots >= num_experts must leave the module fully unchanged —
     the default/unset behavior guarantee the spec requires end to end."""
