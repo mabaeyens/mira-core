@@ -10,7 +10,7 @@ exercised for real against the same on-disk layout Qwen3.6 uses.
 import pytest
 
 mx = pytest.importorskip("mlx.core")  # mlx is macOS-only (Apple Silicon), absent on Linux CI
-from mlx_lm.models.switch_layers import QuantizedSwitchLinear, SwitchLinear
+from mlx_lm.models.switch_layers import QuantizedSwitchLinear, SwitchGLU, SwitchLinear
 
 from core.inference.disk_expert_cache import DiskExpertCacheStore
 
@@ -215,6 +215,185 @@ def test_offload_frees_full_weight_and_preserves_num_experts(tmp_path):
         assert module.output_dims == OUTPUT_DIMS, "output_dims must still resolve off the stand-in"
         assert len(module._offload_cache) == RESIDENT_SLOTS, "exactly resident_slots experts seeded from disk"
         shard.unlink()
+
+
+# --------------------------------------------------------------------------
+# Compact chunked-gather path (sorted_indices=True): when SwitchGLU/SwitchMLP
+# pre-sort the routing (they do whenever indices.size >= 64, i.e. the
+# multi-group prefill case), _offload_chunked_gather slices x per contiguous
+# group and concatenates, instead of running every group's gather over ALL
+# positions and mx.where-combining (the "G-fold" prefill tax).
+#
+# Ground truth note: the shipping offload gather_fn always passes
+# sorted_indices=False to mx.gather_mm/gather_qmm, and mx's sorted_indices=True
+# kernel hint is NOT bit-identical to False (~2e-3, verified). So the exact
+# reference for ANY offload path (mask or compact) is the full-resident call
+# with sorted_indices=False, and the strongest regression gate is
+# compact-output == mask-output, which these tests assert directly.
+# --------------------------------------------------------------------------
+
+_COMPACT_D, _COMPACT_O, _COMPACT_NE = 32, 48, 32
+_COMPACT_RESIDENT, _COMPACT_MAX_STACK = 4, 4  # 4-wide groups << 32 experts => many groups
+
+
+def _make_compact_switch_linear():
+    return SwitchLinear(_COMPACT_D, _COMPACT_O, _COMPACT_NE, bias=False)
+
+
+def _make_compact_quantized():
+    return _make_compact_switch_linear().to_quantized(group_size=32, bits=4)
+
+
+def _compact_baseline_and_offload(make, attrs, tmp_path):
+    baseline = make()
+    mx.eval(baseline.parameters())
+    shard = tmp_path / "model-00001-of-00001.safetensors"
+    mx.save_safetensors(
+        str(shard), {f"test.switch.{a}": baseline[a] for a in attrs if baseline.get(a) is not None}
+    )
+    offloaded = make()
+    for a in attrs:
+        if baseline.get(a) is not None:
+            offloaded[a] = baseline[a]
+    mx.eval(offloaded.parameters())
+    store = DiskExpertCacheStore(tmp_path)
+    offloaded.enable_offload(
+        _COMPACT_RESIDENT, store.reader_for("test.switch", attrs), max_stack_size=_COMPACT_MAX_STACK
+    )
+    return baseline, offloaded, store
+
+
+def _sorted_x_and_idx(n=80, seed=3):
+    """1-D ascending expert ids over many groups, plus an (n, 1, d) activation
+    — exactly the shape/order SwitchGLU produces after _gather_sort."""
+    idx = mx.sort(mx.random.randint(0, _COMPACT_NE, (n,), key=mx.random.key(seed)))
+    x = mx.expand_dims(mx.random.normal((n, _COMPACT_D), key=mx.random.key(seed + 100)), (-2, -3)).flatten(0, -3)
+    return x, idx
+
+
+@pytest.mark.parametrize(
+    "make,attrs",
+    [
+        (_make_compact_switch_linear, ["weight"]),
+        (_make_compact_quantized, ["weight", "scales", "biases"]),
+    ],
+)
+def test_compact_path_matches_plain_gather(make, attrs, tmp_path):
+    """Compact-path output is bit-identical to the full-resident plain gather
+    (sorted_indices=False, the exact reference for the offload feature), for
+    both SwitchLinear and QuantizedSwitchLinear."""
+    baseline, offloaded, store = _compact_baseline_and_offload(make, attrs, tmp_path)
+    x, idx = _sorted_x_and_idx()
+    expected = baseline(x, idx, sorted_indices=False)  # plain gather = exact ground truth
+    actual = offloaded(x, idx, sorted_indices=True)     # compact (slice+concat) path
+    assert expected.shape == actual.shape
+    assert mx.array_equal(expected, actual), "compact path diverged from full-resident plain gather"
+    assert store.misses > 0, "test setup bug: compact path never faulted an expert to disk"
+
+
+def test_compact_path_bit_identical_to_mask_path(tmp_path, monkeypatch):
+    """The core regression gate: enabling compaction must not change output vs
+    the shipping mask path by a single bit. Run the same offloaded module +
+    inputs once through the compact path, once with _offload_chunked_gather
+    monkey-forced onto the mask path (sorted_indices=False), and compare."""
+    import mlx_lm.models.switch_layers as sl
+
+    _baseline, offloaded, _store = _compact_baseline_and_offload(_make_compact_switch_linear, ["weight"], tmp_path)
+    x, idx = _sorted_x_and_idx(seed=21)
+
+    compact = offloaded(x, idx, sorted_indices=True)  # compact branch (guaranteed sorted)
+
+    orig = sl._offload_chunked_gather
+    monkeypatch.setattr(
+        sl, "_offload_chunked_gather",
+        lambda m, xx, ii, g, sorted_indices=False: orig(m, xx, ii, g, sorted_indices=False),
+    )
+    mask = offloaded(x, idx, sorted_indices=True)  # same call, forced down mask path
+    assert mx.array_equal(compact, mask), "compact path is not bit-identical to the mask path"
+
+
+def test_compact_path_is_actually_taken_when_sorted(tmp_path, monkeypatch):
+    """Prove the sorted call goes through the compact (slice+concat) branch and
+    NOT the mask branch: mx.where is used ONLY by the mask path, so if it is
+    never called on a sorted multi-group call, the compact branch ran. The same
+    call with sorted_indices=False must, by contrast, hit mx.where."""
+    _baseline, offloaded, _store = _compact_baseline_and_offload(_make_compact_switch_linear, ["weight"], tmp_path)
+    x, idx = _sorted_x_and_idx(seed=7)
+
+    where_calls = {"n": 0}
+    real_where = mx.where
+    monkeypatch.setattr(
+        mx, "where",
+        lambda *a, **k: (where_calls.__setitem__("n", where_calls["n"] + 1), real_where(*a, **k))[1],
+    )
+
+    offloaded(x, idx, sorted_indices=True)
+    assert where_calls["n"] == 0, "sorted multi-group call should skip mx.where (compact path not taken)"
+
+    offloaded(x, idx, sorted_indices=False)
+    assert where_calls["n"] > 0, "unsorted call should use the mx.where mask path"
+
+
+def test_compact_path_falls_back_when_sorted_flag_lies(tmp_path):
+    """A caller could pass sorted_indices=True with indices that are NOT
+    actually monotonic. The compact path must detect this (its own monotonicity
+    check, not just the flag) and fall back to the always-correct mask path, so
+    output is never silently scattered to the wrong positions."""
+    _baseline, offloaded, store = _compact_baseline_and_offload(_make_compact_switch_linear, ["weight"], tmp_path)
+    baseline = _baseline
+
+    # Deliberately UNSORTED 1-D indices, but we lie and pass sorted_indices=True.
+    idx = mx.random.randint(0, _COMPACT_NE, (80,), key=mx.random.key(11))
+    assert not bool(mx.all(idx[1:] >= idx[:-1])), "test needs genuinely unsorted indices"
+    x = mx.expand_dims(mx.random.normal((80, _COMPACT_D), key=mx.random.key(12)), (-2, -3)).flatten(0, -3)
+
+    expected = baseline(x, idx, sorted_indices=False)  # unsorted => plain gather is ground truth
+    actual = offloaded(x, idx, sorted_indices=True)     # flag lies; guard must catch it
+    assert mx.array_equal(expected, actual), "mislabelled sorted flag corrupted output (guard failed)"
+    assert store.misses > 0
+
+
+def test_switchglu_end_to_end_compact_matches_mask(tmp_path, monkeypatch):
+    """Full SwitchGLU dispatch: its own _gather_sort feeds sorted indices to the
+    three offloaded sublayers, exercising the compact path through the real call
+    path. Compare an offloaded SwitchGLU's output with compaction ON vs the same
+    module forced onto the mask path — they must be bit-identical. (Can't compare
+    to the full-resident SwitchGLU: it uses gather sorted_indices=True internally,
+    whose kernel hint isn't bit-identical to the offload path's False.)"""
+    import mlx_lm.models.switch_layers as sl
+
+    d, hidden, n_experts, top_k, n_tokens = 32, 48, 32, 8, 16
+    subs = ["gate_proj", "up_proj", "down_proj"]
+
+    ref = SwitchGLU(d, hidden, n_experts, bias=False)
+    mx.eval(ref.parameters())
+    shard = tmp_path / "model-00001-of-00001.safetensors"
+    mx.save_safetensors(str(shard), {f"glu.{s}.weight": ref[s].weight for s in subs})
+
+    offloaded = SwitchGLU(d, hidden, n_experts, bias=False)
+    for s in subs:
+        offloaded[s].weight = ref[s].weight
+    mx.eval(offloaded.parameters())
+    store = DiskExpertCacheStore(tmp_path)
+    for s in subs:
+        offloaded[s].enable_offload(4, store.reader_for(f"glu.{s}", ["weight"]), max_stack_size=4)
+
+    x = mx.random.normal((n_tokens, d), key=mx.random.key(5))
+    indices = mx.random.randint(0, n_experts, (n_tokens, top_k), key=mx.random.key(6))
+    assert indices.size >= 64, "test must trigger SwitchGLU's do_sort branch"
+
+    compact = offloaded(x, indices)  # compact path in all three sublayers
+
+    orig = sl._offload_chunked_gather
+    monkeypatch.setattr(
+        sl, "_offload_chunked_gather",
+        lambda m, xx, ii, g, sorted_indices=False: orig(m, xx, ii, g, sorted_indices=False),
+    )
+    mask = offloaded(x, indices)  # forced mask path
+
+    assert compact.shape == mask.shape
+    assert mx.array_equal(compact, mask), "SwitchGLU compact path diverged from mask path through the sort dispatch"
+    assert store.misses > 0
 
 
 def test_enable_offload_is_noop_when_resident_slots_covers_all_experts(tmp_path):
