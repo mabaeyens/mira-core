@@ -1,6 +1,21 @@
 # Backlog
 
 ## Done
+- [2026-07-19] MoE offload throughput follow-up — **analysis complete, banked (no build this round)**.
+  Diagnostic + 6 adversarial reviewers + fresh-server/standalone gates at fraction 0.3 on
+  Qwen3.6-35B-A3B-4bit. Findings (`specs/moe-expert-offload-06-throughput-gate-findings.md`):
+  (1) The "~18.2GB prefill peak" that framed the memory axis **no longer exists** — it was a
+  pre-lazy-fix artifact; current diverse-prefill peak is 7.25GB. Owl-plan Approaches 1-3 closed.
+  (2) **Disk is not the throughput bottleneck**: reads are 0.207ms each, 8-way parallel → ~14% of wall;
+  `open`/`seek` <2%. A miss's real cost is engine-side (`mx.array` build + dequant + G-fold gather);
+  the lever is miss count (hit_rate), not read speed. Specs 03/04/05 shelved (03 gated→moot, 04 NO-GO,
+  05 deferred — see each spec's adversarial section).
+  (3) **Hot-pinning the resident set** raises hit_rate but modestly: in-sample +10 pts was overfit;
+  out-of-sample a hybrid (pin ~64 hottest + LRU) gives **+2.4 pts (~14% fewer misses)**, pure pinning
+  (no LRU) hurts (-2 pts), adaptive LFU fails (+0.27). Left as scoped next-round work alongside the
+  bigger-but-riskier G-fold gather compaction (owl Approach 2) for the ~8-12x prefill tax.
+  Three optimization specs written + adversarially reviewed: `specs/moe-expert-offload-03/04/05-*.md`.
+  No production code changed.
 - [2026-07-18] MoE expert-offloading Phase 0 (profiling) — GO signal on both flagship models. Built
   `core/inference/expert_profiler.py` (opt-in, `--profile-experts`/`mira_mlx_profile_experts`) — patches
   `mlx_lm.models.switch_layers.SwitchGLU`/`SwitchMLP.__call__` at the class level (architecture-agnostic:
