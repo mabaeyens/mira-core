@@ -194,9 +194,15 @@
     activation memory per prefill step) + a **compacted chunked gather** (compute only each group's own token
     positions, not redundantly over all of them), on top of this freed table. This fix is the prerequisite,
     not the whole solution — you can't bound the prefill working set while the full table stays pinned.
-  - **Recommendation (updated)**: the earlier "keep ≤0.2" restriction is lifted — any fraction is now safe on
-    this 32GB hardware. Higher fractions buy less steady-state savings for the same prefill cost, so ~0.15-0.3
-    is the sensible range (best RAM headroom per unit of cold-prefill penalty). Still opt-in/unset by default.
+  - **Now ON by default (2026-07-19)** at fraction 0.3, via a new `mira_mlx_expert_offload` flag (config
+    default `true`; set `false` to fall back to the simpler fully-resident lazy-mmap path — the pre-offload
+    behavior). Flag + fraction resolve in `core/config.py::_resolve_resident_fraction` into the single
+    effective `MIRA_MLX_RESIDENT_EXPERT_FRACTION` the rest of the stack already gated on, so no downstream
+    wiring changed. Live-confirmed on production after restart: `--resident-expert-fraction 0.3` on the
+    subprocess, `/v1/stats` expert_cache hit_rate ~0.37, **active memory 6.58GB (down from 18.3GB — ~12GB
+    freed)**, coherent output. Chosen for the steady-state RAM freeing even though the model fits at baseline;
+    accepted cost is slower cold-prefill TTFT (short first message ~2.6s→~8s, decode + peak unchanged). The
+    earlier "keep ≤0.2" restriction is moot — any fraction is safe; 0.15–0.3 is the sensible range.
   - Fork commits (all local, unpushed, on `mira-core-pin`): `0458f97` (chunked/bounded resolve), `dce6935`
     (concurrent fetch + thread-affinity fix + chunk-cap-independent-of-fraction fix), `5378ffb` (seed-view
     fix — frees the full table). mira-core changes (`disk_expert_cache.py`'s raw-data contract change, plus all

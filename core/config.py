@@ -123,10 +123,29 @@ MIRA_MLX_KV_GROUP_SIZE: int = _get("mira_mlx_kv_group_size", 64)
 # only enable for a deliberate profiling window.
 MIRA_MLX_PROFILE_EXPERTS: bool = _get("mira_mlx_profile_experts", False)
 MIRA_MLX_EXPERT_PROFILE_PATH: Optional[str] = _get("mira_mlx_expert_profile_path", None)
-# Opt-in MoE expert disk offloading (specs/moe-expert-offload-02-runtime-cache.md).
-# None (default) = every expert resident, today's behavior, zero overhead. When
-# set (e.g. 0.3), only that fraction of each MoE layer's experts stay resident;
-# the rest are fetched on demand straight from the model's own safetensors
-# shards and LRU-evicted. Requires the mira-core-pin mlx-lm fork's
-# SwitchLinear/QuantizedSwitchLinear.enable_offload(); a no-op on dense models.
-MIRA_MLX_RESIDENT_EXPERT_FRACTION: Optional[float] = _get("mira_mlx_resident_expert_fraction", None)
+# MoE expert disk offloading (specs/moe-expert-offload-02-runtime-cache.md).
+# ON by default as of 2026-07-19: only `mira_mlx_resident_expert_fraction` of
+# each MoE layer's experts stay resident; the rest are fetched on demand from
+# the model's own safetensors shards and LRU-evicted. Frees ~12GB at steady
+# state on Qwen3.6-35B-A3B (18.3GB -> ~6.6GB resident at 0.3), at the cost of
+# slower cold-prefill (first-token) latency; decode speed and peak memory are
+# unchanged. Requires the mira-core-pin mlx-lm fork's enable_offload(); a no-op
+# on dense models. Set `mira_mlx_expert_offload: false` to fall back to the
+# simpler, fully-resident lazy-mmap path (the pre-offload behavior).
+MIRA_MLX_EXPERT_OFFLOAD: bool = _get("mira_mlx_expert_offload", True)
+
+
+def _resolve_resident_fraction(offload_enabled: bool, raw_fraction) -> Optional[float]:
+    """Collapse the on/off switch and the tuning knob into the single effective
+    resident fraction the rest of the stack gates on (`... is not None`). Returns
+    None when offloading is off — either the flag is false, the fraction is unset
+    to null, or it's >= 1.0 ("keep everything resident"), so no consumer has to
+    special-case any of those."""
+    if not offload_enabled or raw_fraction is None or float(raw_fraction) >= 1.0:
+        return None
+    return float(raw_fraction)
+
+
+MIRA_MLX_RESIDENT_EXPERT_FRACTION: Optional[float] = _resolve_resident_fraction(
+    MIRA_MLX_EXPERT_OFFLOAD, _get("mira_mlx_resident_expert_fraction", 0.3)
+)

@@ -132,17 +132,22 @@ mira_mlx_kv_group_size: 64
 # mira_mlx_profile_experts is on. Default: <data dir>/expert_profile/<unix-ts>.jsonl
 # mira_mlx_expert_profile_path: /path/to/expert_profile.jsonl
 
-# mira_mlx_resident_expert_fraction: MoE expert disk offloading (opt-in; unset/
-# null = every expert resident, today's behavior). When set (e.g. 0.3), only
-# that fraction of each MoE layer's experts stay resident in unified memory —
-# the rest are fetched on demand straight from the model's own safetensors
-# shards (no repacking, no separate cache directory) and LRU-evicted. No-op on
-# dense models. Requires the mira-core-pin mlx-lm fork's
-# SwitchLinear/QuantizedSwitchLinear.enable_offload() (spec:
-# specs/moe-expert-offload-02-runtime-cache.md). Frees RAM for context/prompt-
-# cache headroom — core/hardware.py sizes those budgets against the reduced
-# resident footprint automatically once this is set.
-# mira_mlx_resident_expert_fraction: 0.3
+# mira_mlx_expert_offload: MoE expert disk offloading — ON by default. Only
+# `mira_mlx_resident_expert_fraction` of each MoE layer's experts stay resident;
+# the rest are fetched on demand from the model's own safetensors shards (no
+# repacking, no separate cache dir) and LRU-evicted. Frees ~12GB at steady state
+# on Qwen3.6-35B-A3B (18.3GB -> ~6.6GB resident at 0.3) — core/hardware.py sizes
+# context/prompt-cache budgets against the reduced footprint automatically. Cost:
+# slower cold-prefill (first-token) latency; decode speed and peak memory are
+# unchanged. No-op on dense models. Requires the mira-core-pin mlx-lm fork's
+# enable_offload() (spec: specs/moe-expert-offload-02-runtime-cache.md).
+# Set to false for the simpler, fully-resident lazy-mmap path (pre-offload).
+mira_mlx_expert_offload: true
+#
+# mira_mlx_resident_expert_fraction: resident fraction when offload is on
+# (default 0.3). Lower = less RAM, more cold-prefill misses; higher = more RAM,
+# fewer misses. >= 1.0 keeps everything resident (same as offload off).
+mira_mlx_resident_expert_fraction: 0.3
 
 # ── Performance Tips ─────────────────────────────────────────────────────────
 # For best performance with Ollama on MacBook Pro M5, add to ~/.zprofile:
