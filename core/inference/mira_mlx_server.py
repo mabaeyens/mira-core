@@ -203,7 +203,24 @@ class GenerationEngine:
             tokenizer_config = {"trust_remote_code": self.trust_remote_code}
             if self.fix_mistral_regex:
                 tokenizer_config["fix_mistral_regex"] = True
-            self.model, self.tokenizer = load(self.model_path, tokenizer_config=tokenizer_config)
+            # When expert offload is enabled, load lazily. lazy=False makes
+            # mlx_lm.load call mx.eval(model.parameters()), which eagerly
+            # materializes the full stacked (num_experts, ...) expert table into
+            # unified memory at load — 18.17GB on Qwen3.6-35B-A3B, the single
+            # largest memory event in the whole lifecycle and the wall that stops
+            # a model whose expert table exceeds DRAM from ever opening. With
+            # lazy=True the table stays an unevaluated graph node (0 bytes wired);
+            # install_expert_offload() below then seeds the resident set straight
+            # from disk and its stand-in swap drops those nodes before anything
+            # forces their eval, so the full table never becomes a live buffer at
+            # any point (measured whole-run peak 18.21GB -> 7.48GB at fraction
+            # 0.3; peak now scales with the resident fraction, not table size).
+            # Without offload there is no stand-in swap to drop a deferred table,
+            # so keep the eager default (lazy=False) — unchanged behavior.
+            lazy_load = self.resident_expert_fraction is not None
+            self.model, self.tokenizer = load(
+                self.model_path, tokenizer_config=tokenizer_config, lazy=lazy_load
+            )
             if self.profile_experts:
                 from core.inference.expert_profiler import ExpertProfiler
                 from core.inference.expert_profiler import install as install_expert_profiler
