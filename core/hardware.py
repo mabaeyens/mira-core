@@ -24,6 +24,22 @@ KV_DTYPE_BYTES = 2  # mlx_lm's KV cache is fp16 by default regardless of model q
 # non-model processes (embeddings, RAG, orchestrator). Deliberately conservative.
 SAFETY_MARGIN_BYTES = 3 * BYTES_PER_GB
 
+# Apple-silicon Metal caps a process's wired working set at roughly 78% of unified
+# RAM (recommendedMaxWorkingSetSize; measured 24.96GB on this 32GB Mac). Resident
+# weights past it force a Metal OOM regardless of free RAM, so RAM-aware expert
+# sizing bounds peak against this as a hard upper limit.
+METAL_WIRED_FRACTION = 0.78
+# Extra headroom kept below the wired ceiling for byte-model estimation error.
+WIRED_HEADROOM_BYTES = 3 * BYTES_PER_GB
+# RAM-aware sizing's PRIMARY (lower) target: keep peak footprint at/below this
+# fraction of unified RAM, leaving the rest free for the prefill transient gather.
+# Pushing residency to the wired ceiling (f~0.59 on the 8bit) gains more decode
+# but starves that transient and costs ~-36% prefill/TTFT from memory pressure;
+# capping peak near 55% of RAM (f~0.45) keeps prefill healthy while still lifting
+# decode (measured 2026-07-19). Deliberately conservative; raise to trade TTFT
+# for decode throughput.
+RAM_AWARE_PEAK_FRACTION = 0.55
+
 
 def get_total_ram_bytes() -> int:
     """Total physical RAM on this Mac, via `sysctl hw.memsize` (no new dependency)."""
@@ -180,6 +196,55 @@ def estimate_active_weight_bytes(model_id: str, resident_expert_fraction: Option
         return total_bytes
 
     return int(other_bytes + expert_bytes * resident_expert_fraction)
+
+
+def derive_resident_expert_fraction(
+    model_id: str,
+    floor_fraction: float,
+    total_ram_bytes: Optional[int] = None,
+    max_fraction: float = 0.85,
+) -> float:
+    """Largest resident-expert fraction whose peak footprint stays under a safe
+    ceiling, for an over-DRAM MoE model that is being offloaded anyway.
+
+    Rationale: offload defaults to a flat 0.3, but an over-DRAM model leaves RAM
+    idle — the 8bit Qwen3.6 peaks ~12.7GB on a 32GB Mac at 0.3, ~19GB unused.
+    Raising the resident fraction cashes that headroom for decode throughput
+    (measured +26% at 0.5, no prediction, no quality change). This returns the
+    highest fraction whose resident-weight bytes stay under the Metal wired
+    ceiling with headroom. It NEVER returns below floor_fraction (the configured
+    knob), so it can only raise residency, never lower it.
+
+    The on-disk resident-weight bytes track measured PEAK closely (byte-model
+    19.2GB vs measured 19.07GB at f=0.5), so peak is bounded directly on them.
+    Falls back to floor_fraction whenever the model can't be classified as MoE.
+    """
+    total_ram_bytes = total_ram_bytes if total_ram_bytes is not None else get_total_ram_bytes()
+    config_path = _find_cached_config(model_id)
+    if config_path is None:
+        return floor_fraction
+    try:
+        raw = json.loads(config_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return floor_fraction
+    cfg = raw.get("text_config", raw)
+    num_experts = cfg.get("num_experts")
+    if not num_experts:
+        return floor_fraction  # dense model — offloading doesn't apply
+    expert_bytes, other_bytes = _classify_weight_bytes(config_path.parent, num_experts)
+    if not expert_bytes:
+        return floor_fraction
+
+    ceiling = min(
+        int(total_ram_bytes * RAM_AWARE_PEAK_FRACTION),          # primary target: leave prefill headroom
+        int(total_ram_bytes * METAL_WIRED_FRACTION) - WIRED_HEADROOM_BYTES,  # hard wired-limit cap
+        total_ram_bytes - SAFETY_MARGIN_BYTES,
+    )
+    budget_for_experts = ceiling - other_bytes
+    if budget_for_experts <= 0:
+        return floor_fraction
+    f = budget_for_experts / expert_bytes
+    return round(max(floor_fraction, min(f, max_fraction)), 3)
 
 
 def derive_prompt_cache_max_bytes(

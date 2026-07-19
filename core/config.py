@@ -153,6 +153,15 @@ def _parse_offload_mode(v) -> str:
 
 MIRA_MLX_EXPERT_OFFLOAD_MODE: str = _parse_offload_mode(_get("mira_mlx_expert_offload", "auto"))
 
+# In "auto" mode, when a model is offloaded because it would not fit fully
+# resident, size the resident fraction to the RAM actually available instead of
+# the flat tuning knob: an over-DRAM model leaves memory idle at 0.3 (8bit
+# Qwen3.6 peaks ~12.7GB on a 32GB Mac). Sizing to keep peak near 55% of RAM
+# raises the 8bit to 0.45 and was measured at +12% decode AND +9% prefill (fewer
+# misses, still ample prefill-transient headroom), no prediction, no quality
+# change. Never lowers below the configured fraction. Off => flat everywhere.
+MIRA_MLX_EXPERT_RAM_AWARE: bool = _get("mira_mlx_expert_ram_aware", True)
+
 
 def _resolve_resident_fraction(offload_enabled: bool, raw_fraction) -> Optional[float]:
     """Collapse the on/off switch and the tuning knob into the single effective
@@ -182,16 +191,23 @@ def resolve_offload_fraction(model_id: str) -> Optional[float]:
             (hardware.fits_in_memory with resident_expert_fraction=None); models
             that fit run resident at full speed. Offload's ~5x decode cost is
             only worth paying when it's the difference between running and not.
+            When it does offload, the fraction is RAM-aware (sized to available
+            memory, >= the configured knob) unless mira_mlx_expert_ram_aware is
+            off — an over-DRAM model shouldn't leave memory idle at a flat 0.3.
     """
     candidate = MIRA_MLX_RESIDENT_EXPERT_FRACTION
     if candidate is None or MIRA_MLX_EXPERT_OFFLOAD_MODE == "off":
         return None
     if MIRA_MLX_EXPERT_OFFLOAD_MODE == "on":
-        return candidate
+        return candidate  # explicit manual override — respect the knob as-is
     # auto: enable offload only when the model can't fit fully resident.
     from core import hardware
     fits, _reason = hardware.fits_in_memory(
         model_id, kv_bits=MIRA_MLX_KV_BITS, kv_group_size=MIRA_MLX_KV_GROUP_SIZE,
         resident_expert_fraction=None,
     )
-    return None if fits else candidate
+    if fits:
+        return None
+    if MIRA_MLX_EXPERT_RAM_AWARE:
+        return hardware.derive_resident_expert_fraction(model_id, floor_fraction=candidate)
+    return candidate

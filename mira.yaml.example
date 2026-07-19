@@ -153,6 +153,15 @@ mira_mlx_expert_offload: auto
 # (default 0.3). Lower = less RAM, more cold-prefill misses; higher = more RAM,
 # fewer misses. >= 1.0 keeps everything resident (same as offload off).
 mira_mlx_resident_expert_fraction: 0.3
+#
+# mira_mlx_expert_ram_aware: in `auto`, when a model offloads because it wouldn't
+# fit fully resident, size the resident fraction to available RAM instead of the
+# flat fraction above — an over-DRAM model otherwise leaves memory idle (8-bit
+# Qwen3.6 peaks ~12.7GB on a 32GB Mac at 0.3). Sizing to keep peak near 55% of RAM
+# raises the 8-bit to 0.45: measured +12% decode AND +9% prefill, no quality
+# change. The fraction above is the floor (sizing only ever raises it). Default
+# true; false = flat fraction everywhere.
+mira_mlx_expert_ram_aware: true
 
 # ── Performance Tips ─────────────────────────────────────────────────────────
 # For best performance with Ollama on MacBook Pro M5, add to ~/.zprofile:

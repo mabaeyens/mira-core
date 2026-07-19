@@ -278,3 +278,63 @@ def test_derive_context_window_resident_expert_fraction_forwards_to_estimate(mon
     monkeypatch.setattr(hardware, "estimate_kv_bytes_per_token", lambda model_id, **kwargs: 163840)
     hardware.derive_context_window("fake/model", 32 * GB, requested_context=65536, resident_expert_fraction=0.3)
     assert captured["resident_expert_fraction"] == 0.3
+
+
+# -- derive_resident_expert_fraction (RAM-aware sizing for over-DRAM MoE) ----
+
+def _moe_model(tmp_path, expert_gb, other_gb, num_experts=256):
+    shard = tmp_path / "model.safetensors"
+    _write_fake_safetensors(shard, {
+        "model.layers.0.mlp.switch_mlp.down_proj.weight":
+            ((num_experts, 4096, 4096), int(expert_gb * GB)),
+        "model.embed_tokens.weight": ((32000, 4096), int(other_gb * GB)),
+    })
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"num_experts": num_experts}))
+    return config_path
+
+
+def test_derive_resident_fraction_raises_above_floor_with_headroom(tmp_path, monkeypatch):
+    """A big-but-offloadable expert table with RAM to spare must push the
+    fraction above the configured floor, sized to the wired ceiling."""
+    config_path = _moe_model(tmp_path, expert_gb=30, other_gb=3)
+    monkeypatch.setattr(hardware, "_find_cached_config", lambda model_id: config_path)
+    f = hardware.derive_resident_expert_fraction("fake/moe", floor_fraction=0.3, total_ram_bytes=32 * GB)
+    # ceiling = min(32*0.55, 32*0.78 - 3, 32 - 3) = 17.6GB; budget = 17.6 - 3 = 14.6; f = 14.6/30
+    ceiling = min(int(32 * GB * hardware.RAM_AWARE_PEAK_FRACTION),
+                  int(32 * GB * hardware.METAL_WIRED_FRACTION) - hardware.WIRED_HEADROOM_BYTES,
+                  32 * GB - hardware.SAFETY_MARGIN_BYTES)
+    assert 0.3 < f < 0.85
+    assert abs(f - round((ceiling - 3 * GB) / (30 * GB), 3)) < 1e-6
+
+
+def test_derive_resident_fraction_never_below_floor(tmp_path, monkeypatch):
+    """Tight RAM must not lower the fraction below the configured knob — the
+    function can only ever RAISE residency, never reduce it."""
+    config_path = _moe_model(tmp_path, expert_gb=40, other_gb=8)
+    monkeypatch.setattr(hardware, "_find_cached_config", lambda model_id: config_path)
+    f = hardware.derive_resident_expert_fraction("fake/moe", floor_fraction=0.3, total_ram_bytes=16 * GB)
+    assert f == 0.3
+
+
+def test_derive_resident_fraction_clamped_at_max(tmp_path, monkeypatch):
+    """A small expert table with abundant RAM clamps at max_fraction, never 1.0
+    (we're still an offloaded model; keep some slack)."""
+    config_path = _moe_model(tmp_path, expert_gb=5, other_gb=2)
+    monkeypatch.setattr(hardware, "_find_cached_config", lambda model_id: config_path)
+    f = hardware.derive_resident_expert_fraction("fake/moe", floor_fraction=0.3,
+                                                 total_ram_bytes=64 * GB, max_fraction=0.85)
+    assert f == 0.85
+
+
+def test_derive_resident_fraction_dense_model_returns_floor(tmp_path, monkeypatch):
+    """A dense model (no num_experts) isn't offloaded — return the floor."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"hidden_size": 4096}')
+    monkeypatch.setattr(hardware, "_find_cached_config", lambda model_id: config_path)
+    assert hardware.derive_resident_expert_fraction("fake/dense", floor_fraction=0.3) == 0.3
+
+
+def test_derive_resident_fraction_uncached_model_returns_floor(monkeypatch):
+    monkeypatch.setattr(hardware, "_find_cached_config", lambda model_id: None)
+    assert hardware.derive_resident_expert_fraction("fake/unknown", floor_fraction=0.3) == 0.3
