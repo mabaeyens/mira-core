@@ -451,6 +451,45 @@ def test_single_group_decode_call_is_bit_identical_and_skips_eval(tmp_path, monk
     assert multi_evals >= 1, f"multi-group call must still eval to bound cross-group memory (saw {multi_evals})"
 
 
+def test_shared_fd_reader_is_thread_safe_and_reused(tmp_path):
+    """The reader serves every expert read from one long-lived read-only fd per
+    shard via os.pread (positioned+atomic), instead of reopening the file per
+    attr. Guard both properties: (a) concurrent reads from many threads of many
+    experts return byte-identical data to a serial reference (pread shares an fd
+    with no offset races), and (b) only one fd is opened per shard (the reopen
+    that cost ~36us/miss is gone). close() is idempotent."""
+    import threading
+
+    baseline = SwitchLinear(INPUT_DIMS, OUTPUT_DIMS, NUM_EXPERTS, bias=False)
+    mx.eval(baseline.parameters())
+    shard = tmp_path / "model-00001-of-00001.safetensors"
+    mx.save_safetensors(str(shard), {"test.switch.weight": baseline.weight})
+
+    store = DiskExpertCacheStore(tmp_path)
+    fetch = store.reader_for("test.switch", ["weight"])
+
+    reference = {e: fetch(e)[0].copy() for e in range(NUM_EXPERTS)}  # serial ground truth
+
+    errors = []
+    def hammer():
+        for _ in range(20):
+            for e in range(NUM_EXPERTS):
+                got, _dt = fetch(e)
+                if not np.array_equal(got, reference[e]):
+                    errors.append(e)
+    threads = [threading.Thread(target=hammer) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"concurrent pread returned wrong bytes for experts {set(errors)}"
+    assert len(store._fds) == 1, f"expected 1 fd for the single shard, got {len(store._fds)}"
+    store.close()
+    store.close()  # idempotent
+    assert len(store._fds) == 0
+
+
 def test_enable_offload_is_noop_when_resident_slots_covers_all_experts(tmp_path):
     """resident_slots >= num_experts must leave the module fully unchanged —
     the default/unset behavior guarantee the spec requires end to end."""
