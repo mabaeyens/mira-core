@@ -238,9 +238,66 @@ default-on was paying 5x decode for RAM the machine did not need. So offload is 
 `hardware.fits_in_memory`. The 4-bit runs resident at full speed (live: 0.61s prefill against about
 40s with offload on), and the 8-bit auto-offloads because it is the only way it runs at all. That is
 the honest framing of the whole feature. Offload buys the ability to run a model I otherwise could
-not, at a real speed cost, so I pay it only when I have to. The next wins against the decode miss tax
-(cross-layer prefetch, co-activation-aware on-disk expert ordering, a larger or smarter resident set)
-all attack exactly that cost.
+not, at a real speed cost, so I pay it only when I have to. From here two separate levers remained:
+cut the per-token compute the tax rides on, or cut the miss count itself. Section 11 is what happened
+when I pushed on both.
+
+## 11. Clawing back the tax: two gather optimizations, and one wall
+
+Both wins were already foreshadowed. Section 5 flagged the compacted chunked gather as "salvageable
+only as a safely-gated latency win," and section 3(a) introduced the per-group `mx.eval()` barrier.
+Each became a real, bit-identical change on the fork.
+
+**Prefill compaction.** The mask-path chunked gather from 3(a) runs each of the G expert-groups over
+*all* token positions and discards the out-of-group ones with `mx.where`, so it pays G times the
+matmul on a diverse prefill (G is 4 at fraction 0.3). But `SwitchGLU`/`SwitchMLP` already sort routing
+before dispatch whenever `indices.size >= 64`, which is exactly the multi-group prefill case, and pass
+`sorted_indices=True`. When that holds and the flat index run is verified monotonic, each group's
+positions are one contiguous slice, so I slice `x` to that segment, gather once over just those
+positions, and concatenate, with no `mx.where`. It is guarded by an actual monotonicity check rather
+than trusting the flag, so a mislabelled `sorted_indices` falls back to the mask path. That guard is
+the answer to the silent-corruption risk section 5 raised: the invariant is verified per call, not
+assumed. Measured on 4-bit, offload 0.3, a 3022-token prefill: cold prefill 75.7 to 136.2 t/s (1.8x),
+bit-identical to the mask path, hit-rate and peak unchanged. The isolated gather micro-bench is 3.24x;
+end-to-end is 1.8x because the gather is about half of offload-on prefill wall time and the rest is
+attention plus the disk misses.
+
+**Decode eval-skip.** The per-group `mx.eval()` from 3(a) exists only to bound memory *across* groups:
+it forces each group's stack to release before the next one allocates. Decode always routes to a
+single group, because a token's top-8 experts fit inside one `max_stack` of 64, so there is never a
+next group to bound against. On that path the eval only forces a per-layer GPU sync, roughly 3 per
+layer over 40 layers per token, where a fully-resident model evals the whole token once. Skipping it
+when `len(groups) == 1` lets MLX defer the token's gather graph to the caller's next eval boundary,
+which during generation is the sampler evaling each token anyway. The measurement that mattered was
+peak, since deferring the graph is exactly what could have raised it. On the real over-DRAM case,
+8-bit, offload 0.3, greedy so both runs select identical experts (hits and misses identical to the
+token):
+
+| variant | decode | peak | prefill |
+|---|---|---|---|
+| barrier every group | 7.15 t/s | 12.73 GB | 117.3 t/s |
+| skip lone-group barrier | 8.09 t/s | 12.73 GB | 120.0 t/s |
+
+That is +13% decode at byte-identical peak, output bit-identical. Peak not moving is the whole point:
+on the real offload path only the resident fraction is ever held, so deferring one token's graph adds
+a negligible transient instead of materializing the table. A synthetic that keeps every expert warm
+shows the opposite, deferral raises peak and loses about 12%, but that warm-everything state is
+precisely what offload exists to avoid, so it never occurs on the real path. This is why it had to be
+settled on the real 8-bit model rather than in a microbench: the microbench's memory regime is the one
+regime offload guarantees you are not in.
+
+**The miss-count wall.** The other lever, cutting the miss count by raising hit-rate, I pushed on and
+it did not give. Cross-layer prefetch is defeated by the load-balancing aux loss, which decorrelates
+per-layer usage, so there is no cheap predictor. Co-activation-aware on-disk reordering is already
+spent by LRU at decode: the first activation caches the expert and the adjacent-token reuse is then a
+hit, not a read, so it would only help cold-prefill sequential reads. A warm-then-pin hot set beats
+plain LRU by about 2.4 points within a topic but does not generalize across topics, and pure pinning
+without LRU is worse than plain LRU. The realistic online ceiling (Belady, in-sample) is about 0.79,
+and warm decode already sits at 0.71 to 0.83, so there is no large win hiding there. The only dial
+that moves miss count freely is the resident fraction, which spends back the RAM offload exists to
+save. So the tax stays where the measurements put it, and the wins that shipped are the compute-side
+ones above: the prefill redundancy and the decode sync. Both live on the `mabaeyens/mlx-lm` fork and
+are noted on the upstream offload PR.
 
 ---
 

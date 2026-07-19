@@ -69,6 +69,9 @@ mira.yaml
 # Local session specs (pre-coding 5-bullet plans, not for review)
 specs/
 
+# Local explainer notes / personal deep-dives (not for review)
+notes/
+
 # Security audit notes (local only)
 SECURITY_AUDIT.md
 
