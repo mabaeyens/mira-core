@@ -182,18 +182,12 @@
     activation-bound, not expert-bound, so the resident fraction sets the *steady-state* floor (the real RAM
     win — now genuinely delivered: 4GB at 0.15 vs 18.3GB full) but not the transient peak. Output coherent and
     identical across all configs. Cost: cold-prefill latency (disk-bound), decode unaffected once warm.
-  - **Scope — does NOT solve "run models larger than DRAM" (user-raised, 2026-07-19)**: peak is
-    fraction-independent and ~baseline because the worst-case diverse prefill is *activation*-bound, not
-    expert-bound. So this lowers resting/decode footprint (real: 4GB resident vs 18.3GB full) but not the
-    *prefill* peak — and prefill peak is what gates whether an over-DRAM model can run at all. Nuance worth
-    recording: `mlx_lm.load` is lazy (safetensors mmap'd; active ~0 right after load at every fraction), and
-    this fix drops the full-table reference before it's ever materialized, so experts are sparse from
-    model-open through steady state — the full table is *never* resident now. So sparse-at-open and
-    sparse-steady-state are solved; the single remaining wall is the **first prefill's** working set
-    (activations + faulted experts). Next step toward the real goal: **bounded-token-block prefill** (cap
-    activation memory per prefill step) + a **compacted chunked gather** (compute only each group's own token
-    positions, not redundantly over all of them), on top of this freed table. This fix is the prerequisite,
-    not the whole solution — you can't bound the prefill working set while the full table stays pinned.
+  - **Scope note (2026-07-19) — CORRECTED by the step-0 probe below.** This bullet originally claimed the
+    18.2GB peak was *activation*-bound (so only token-block prefill / compacted gather could lower it) and
+    that `mlx_lm.load` is lazy with "active ~0 right after load." **Both wrong.** The peak is 100% load-time
+    eager materialization of the full expert table (`lazy=False` → `mx.eval(model.parameters())`), and it was
+    fixed outright by `load(..., lazy=True)` gated on offload (peak 18.21→7.25GB, table never wires). The
+    token-block/compacted-gather "next steps" are moot. See the step-0 bullet below for the real mechanism.
   - **Now ON by default (2026-07-19)** at fraction 0.3, via a new `mira_mlx_expert_offload` flag (config
     default `true`; set `false` to fall back to the simpler fully-resident lazy-mmap path — the pre-offload
     behavior). Flag + fraction resolve in `core/config.py::_resolve_resident_fraction` into the single
@@ -203,6 +197,59 @@
     freed)**, coherent output. Chosen for the steady-state RAM freeing even though the model fits at baseline;
     accepted cost is slower cold-prefill TTFT (short first message ~2.6s→~8s, decode + peak unchanged). The
     earlier "keep ≤0.2" restriction is moot — any fraction is safe; 0.15–0.3 is the sensible range.
+  - **Prefill-peak diagnostic (2026-07-19) — SUPERSEDED by the step-0 probe below; kept for the trail.**
+    Asked to evaluate 3 fixes for the peak; adversarial review (3 agents) refuted all three as targeting <1%
+    of it (token-block prefill 0.3-0.5%, compacted gather 0.13% + a silent sort-order corruption trap below
+    fraction 0.25, full weight-streaming rejected — non-expert is only 2.1GB and dense 100%/token → ~5 tok/s
+    ceiling). Measured on a fresh server (offload 0.3): peak 18.21GB, FLAT across prefill_step_size and
+    kv_bits. From those *server* readings I concluded the peak was a one-time FIRST-FORWARD transient (MLX
+    faulting the full table in on first run). **That conclusion was wrong** — see the step-0 correction.
+  - **Step-0 load-path probe (2026-07-19) — the peak is LOAD-TIME EAGER MATERIALIZATION, and FIXED.**
+    A standalone probe with per-phase `reset_peak()` (which the live server never does — it never resets
+    `mx.get_peak_memory()`, so the load high-water mark was still showing at first-request time and *looked*
+    request-caused) settled the mechanism decisively. Trajectory at fraction 0.3, lazy=False (current):
+    after `load()` **active/peak=18.17GB** (not ~0 — the earlier "active~0 after load" was read *after*
+    install's stand-in swap had already freed it); after `install()` active 6.37 / peak 18.21, freed bytes to
+    MLX's buffer *pool* (`cache`=16.88GB, released by `clear_cache`); every forward bounded (tiny 6.51,
+    diverse ~1458 prefill 7.48). **No first-forward fault exists.** `mlx_lm.load` with `lazy=False` calls
+    `mx.eval(model.parameters())` (utils.py:418) which wires the full stacked `(num_experts,…)` table at load.
+    **Fix (shipped):** `load(..., lazy=True)` in `mira_mlx_server._run`, gated on
+    `resident_expert_fraction is not None`. Under lazy=True `sanitize` still builds the stacked tensors but
+    they stay unevaluated (0 wired bytes); `install()`'s stand-in swap drops them before any eval → the full
+    table never materializes at any point. Measured: standalone whole-run peak **18.21→7.48GB**; real server
+    `/v1/stats` peak **18.21→7.25GB** (pre-request 18.21→**0.0**), output bit-coherent, tests 12/12. The
+    originally-scoped "filter expert keys" and "offload-native `__init__`" components proved unnecessary.
+    Peak now scales with resident fraction, not table size → a model with an over-DRAM expert table can open
+    (synthetic-checkpoint demonstration still TODO — the only claim resting on inference not measurement).
+    Docs: `docs/moe-offload-lazy-load-design.md` (fix), `docs/moe-offload-case-study.md` §6b (the correction).
+    Model is Qwen3.5 hybrid (`qwen3_5.py`: GatedDeltaNet linear-attn + full-attn every 4th layer +
+    `qwen3_next` SparseMoeBlock), not `qwen3_moe`. Diagnostic scripts in the job scratch dir; earlier plan at
+    `~/.claude/plans/resilient-sprouting-owl.md` (its 3 peak-fix approaches are all moot now).
+  - **Over-DRAM demonstrated + throughput benched + offload made per-model AUTO (2026-07-19).**
+    Downloaded `Qwen3.6-35B-A3B-8bit` (35GB, ~33.8GB expert table > 32GB RAM). Ran it via
+    `load(lazy=True)`+offload(0.3) at **peak 12.71GB**, coherent output — a model that cannot load
+    eagerly on this hardware (`scripts/moe_overdram_demo.py`, case study §9). Then benched throughput
+    (`scripts/moe_throughput_bench.py`, fresh backend per config, 3022-tok prefill / 200-tok decode):
+    | config | prefill cold/warm t/s | decode t/s | peak GB | hit |
+    |---|---|---|---|---|
+    | 4bit offload-OFF | 616 / 957 | **57.1** | 19.31 | — |
+    | 4bit offload-ON 0.3 | 77 / 76 | **10.8** | 7.31 | 0.51 |
+    | 8bit offload-ON 0.3 | 59 / 56 | **6.6** | 13.05 | 0.51 |
+    **Finding: offload has a large throughput cost** (~5x decode, ~8-12x prefill on 4bit), NOT "decode
+    unchanged" as the earlier note claimed — a diverse prefill touches ~all 256 experts but 0.3
+    resident can't hold that set, so warm ~= cold and decode pays a per-token miss tax (hit_rate 0.51).
+    **So offload is now per-model AUTO** (`mira_mlx_expert_offload: auto`, `config.resolve_offload_fraction`):
+    enabled only when `hardware.fits_in_memory(resident_expert_fraction=None)` says the fully-resident
+    model won't fit. The 4bit (fits at 19.3GB) now runs offload-OFF at full speed (live-verified: tiny
+    prefill 0.61s vs ~40s offload-on, expert_cache None, active 18.25GB); the 8bit (over-DRAM) auto-
+    enables offload. `on`/`off` still force it. Reverses the 2026-07-19 "default-on" decision on the
+    strength of the throughput data (per [[feedback_confirm_before_reversing_decisions]], surfaced to
+    and chosen by the user). Config `core/config.py` (tri-state mode + resolver, 11 config tests),
+    launch decision `core/backend_manager.start_mira_mlx`. NOTE (separate gap found): the `/chat`
+    orchestrator can't report tok/s because the mira-mlx backend doesn't emit
+    `prompt_eval_count`/`eval_count` on its chunks, so `orchestrator` token counters + `context_pct`
+    stay 0 — throughput must be timed against the backend (hence `scripts/moe_throughput_bench.py`,
+    not the 13-question `/chat` bench). Worth fixing so the app's context% works.
   - Fork commits (all local, unpushed, on `mira-core-pin`): `0458f97` (chunked/bounded resolve), `dce6935`
     (concurrent fetch + thread-affinity fix + chunk-cap-independent-of-fraction fix), `5378ffb` (seed-view
     fix — frees the full table). mira-core changes (`disk_expert_cache.py`'s raw-data contract change, plus all
