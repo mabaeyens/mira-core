@@ -132,19 +132,24 @@ mira_mlx_kv_group_size: 64
 # mira_mlx_profile_experts is on. Default: <data dir>/expert_profile/<unix-ts>.jsonl
 # mira_mlx_expert_profile_path: /path/to/expert_profile.jsonl
 
-# mira_mlx_expert_offload: MoE expert disk offloading — ON by default. Only
+# mira_mlx_expert_offload: MoE expert disk offloading. Only
 # `mira_mlx_resident_expert_fraction` of each MoE layer's experts stay resident;
 # the rest are fetched on demand from the model's own safetensors shards (no
-# repacking, no separate cache dir) and LRU-evicted. Frees ~12GB at steady state
-# on Qwen3.6-35B-A3B (18.3GB -> ~6.6GB resident at 0.3) — core/hardware.py sizes
-# context/prompt-cache budgets against the reduced footprint automatically. Cost:
-# slower cold-prefill (first-token) latency; decode speed and peak memory are
-# unchanged. No-op on dense models. Requires the mira-core-pin mlx-lm fork's
-# enable_offload() (spec: specs/moe-expert-offload-02-runtime-cache.md).
-# Set to false for the simpler, fully-resident lazy-mmap path (pre-offload).
-mira_mlx_expert_offload: true
+# repacking, no separate cache dir) and LRU-evicted. core/hardware.py sizes
+# context/prompt-cache budgets against the reduced footprint automatically.
+# It makes a model whose expert table exceeds unified memory runnable at all,
+# but has a REAL throughput cost (measured ~5x slower decode, ~8-12x slower
+# prefill on Qwen3.6-35B-A3B: a diverse prefill touches nearly every expert and
+# the resident fraction can't hold that working set). No-op on dense models.
+# Requires the mira-core-pin mlx-lm fork's enable_offload().
+#   auto (default) — offload ONLY when the fully-resident model would not fit,
+#                    decided per-model at launch; models that fit run at full
+#                    speed, larger-than-DRAM models offload to run at all.
+#   on / true      — always offload (trade speed for RAM headroom).
+#   off / false    — never offload (fully resident, pre-offload path).
+mira_mlx_expert_offload: auto
 #
-# mira_mlx_resident_expert_fraction: resident fraction when offload is on
+# mira_mlx_resident_expert_fraction: resident fraction USED when offload is on
 # (default 0.3). Lower = less RAM, more cold-prefill misses; higher = more RAM,
 # fewer misses. >= 1.0 keeps everything resident (same as offload off).
 mira_mlx_resident_expert_fraction: 0.3
