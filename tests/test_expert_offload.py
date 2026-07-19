@@ -494,6 +494,50 @@ def test_shared_fd_reader_is_thread_safe_and_reused(tmp_path):
     assert len(store._fds) == 0
 
 
+def test_decode_hit_rate_counters_split_by_phase(tmp_path):
+    """Decode-only hit/miss counters increment on decode-shaped calls
+    (indices.size < 64) and NOT on prefill-shaped calls, so /v1/stats can report
+    the steady-state decode hit-rate separately from the prefill-polluted blended
+    one. expert_offload.stats() surfaces both."""
+    from core.inference import expert_offload
+
+    baseline = SwitchLinear(INPUT_DIMS, OUTPUT_DIMS, NUM_EXPERTS, bias=False)
+    mx.eval(baseline.parameters())
+    shard = tmp_path / "model-00001-of-00001.safetensors"
+    mx.save_safetensors(str(shard), {"test.switch.weight": baseline.weight})
+    offloaded = SwitchLinear(INPUT_DIMS, OUTPUT_DIMS, NUM_EXPERTS, bias=False)
+    offloaded.weight = baseline.weight
+    mx.eval(offloaded.parameters())
+    store = DiskExpertCacheStore(tmp_path)
+    offloaded.enable_offload(RESIDENT_SLOTS, store.reader_for("test.switch", ["weight"]))
+
+    assert offloaded._offload_hits_decode == 0 and offloaded._offload_misses_decode == 0
+
+    # decode-shaped: indices.size 2 < 64
+    x_d = mx.random.normal((2, 1, 1, INPUT_DIMS))
+    offloaded(x_d, mx.array([[0], [5]]))
+    dec = offloaded._offload_hits_decode + offloaded._offload_misses_decode
+    bl = offloaded._offload_hits + offloaded._offload_misses
+    assert dec > 0 and dec == bl, "decode call must move the decode counters (only calls so far)"
+
+    # prefill-shaped: indices.size 80 >= 64 -> blended grows, decode does NOT
+    x_p = mx.random.normal((40, 1, 1, INPUT_DIMS))
+    idx_p = mx.random.randint(0, NUM_EXPERTS, (40, 2))
+    assert idx_p.size >= 64
+    offloaded(x_p, idx_p)
+    assert offloaded._offload_hits + offloaded._offload_misses > bl, "prefill call must move blended counters"
+    assert offloaded._offload_hits_decode + offloaded._offload_misses_decode == dec, \
+        "prefill call must NOT move the decode counters"
+
+    # stats() surfaces both splits (single-module model stand-in)
+    class _M:
+        def named_modules(self):
+            return [("switch", offloaded)]
+    s = expert_offload.stats(_M())
+    assert s["hits_decode"] + s["misses_decode"] == dec
+    assert s["hits"] + s["misses"] > dec
+
+
 def test_enable_offload_is_noop_when_resident_slots_covers_all_experts(tmp_path):
     """resident_slots >= num_experts must leave the module fully unchanged —
     the default/unset behavior guarantee the spec requires end to end."""

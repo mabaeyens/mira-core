@@ -89,9 +89,20 @@ def stats(model) -> dict:
     from mlx_lm.models.switch_layers import QuantizedSwitchLinear, SwitchLinear
 
     hits = misses = 0
+    hits_decode = misses_decode = 0
     for _, module in model.named_modules():
         if not isinstance(module, (QuantizedSwitchLinear, SwitchLinear)):
             continue
         hits += getattr(module, "_offload_hits", 0)
         misses += getattr(module, "_offload_misses", 0)
-    return {"hits": hits, "misses": misses}
+        # Decode-only split (the improvable number: blended hit-rate is dragged
+        # down by the cold prefill, which routes to ~all experts). Absent on an
+        # older fork build, hence getattr with a 0 default.
+        hits_decode += getattr(module, "_offload_hits_decode", 0)
+        misses_decode += getattr(module, "_offload_misses_decode", 0)
+    return {
+        "hits": hits,
+        "misses": misses,
+        "hits_decode": hits_decode,
+        "misses_decode": misses_decode,
+    }

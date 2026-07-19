@@ -365,10 +365,15 @@ class GenerationEngine:
 
             ec = expert_offload_stats(self.model)
             ec_total = ec["hits"] + ec["misses"]
+            ec_total_decode = ec["hits_decode"] + ec["misses_decode"]
             expert_cache_stats = {
                 "hits": ec["hits"],
                 "misses": ec["misses"],
+                # Blended over the process lifetime and summed across all modules,
+                # so a cold prefill drags it down; decode_hit_rate is the steady-
+                # state number a residency/policy change actually moves.
                 "hit_rate": round(ec["hits"] / ec_total, 3) if ec_total else None,
+                "decode_hit_rate": round(ec["hits_decode"] / ec_total_decode, 3) if ec_total_decode else None,
             }
         return {
             "uptime_seconds": round(time.time() - self._start_time, 1),
