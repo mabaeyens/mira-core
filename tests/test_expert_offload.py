@@ -7,6 +7,7 @@ switch layer is saved to a real safetensors shard on disk (the exact format
 mlx_lm.utils.load() reads), so DiskExpertCacheStore's byte-range reads are
 exercised for real against the same on-disk layout Qwen3.6 uses.
 """
+import numpy as np
 import pytest
 
 mx = pytest.importorskip("mlx.core")  # mlx is macOS-only (Apple Silicon), absent on Linux CI
@@ -472,18 +473,21 @@ def test_shared_fd_reader_is_thread_safe_and_reused(tmp_path):
 
     errors = []
     def hammer():
-        for _ in range(20):
-            for e in range(NUM_EXPERTS):
-                got, _dt = fetch(e)
-                if not np.array_equal(got, reference[e]):
-                    errors.append(e)
+        try:
+            for _ in range(20):
+                for e in range(NUM_EXPERTS):
+                    got, _dt = fetch(e)
+                    if not np.array_equal(got, reference[e]):
+                        errors.append(("mismatch", e))
+        except Exception as exc:  # a thread raising must fail the test, not vanish
+            errors.append(("raised", repr(exc)))
     threads = [threading.Thread(target=hammer) for _ in range(8)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
 
-    assert not errors, f"concurrent pread returned wrong bytes for experts {set(errors)}"
+    assert not errors, f"concurrent pread failed: {errors[:4]}"
     assert len(store._fds) == 1, f"expected 1 fd for the single shard, got {len(store._fds)}"
     store.close()
     store.close()  # idempotent
