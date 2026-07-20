@@ -269,11 +269,56 @@ def test_run_shell_sudo_blocked(ws):
 
 def test_run_shell_force_bypasses_guard(ws):
     from core import shell_tools
-    # Use a safe destructive-looking command that won't actually damage anything
+    # `force` is now an INTERNAL parameter set from a user approval token, never
+    # from model output. Called directly it still bypasses the guard — that is
+    # the mechanism the approval layer drives.
     (ws / "deleteme.txt").write_text("bye")
     result = shell_tools.run_shell("rm -rf deleteme.txt", force=True)
     assert result["exit_code"] == 0
     assert not (ws / "deleteme.txt").exists()
+
+
+def test_model_cannot_self_approve_destructive_command(ws):
+    """Regression guard: the model must not be able to authorise its own
+    destructive command. `force` was previously a field in run_shell's JSON
+    schema, so emitting force=true was enough to defeat the confirmation gate.
+    """
+    from core import tools, tool_registry
+
+    # 1. The flag must not be offered to the model at all.
+    shell_params = tools.RUN_SHELL_TOOL["function"]["parameters"]["properties"]
+    assert "force" not in shell_params
+    delete_params = tools.DELETE_FILE_TOOL["function"]["parameters"]["properties"]
+    assert "confirm" not in delete_params
+
+    # 2. Even if the model emits it anyway, dispatch must ignore it.
+    (ws / "keepme.txt").write_text("still here")
+    ctx = tool_registry.ToolContext(workspace_root=str(ws), approved=frozenset())
+    result = tool_registry.dispatch(
+        "run_shell", {"command": "rm -rf keepme.txt", "force": True}, ctx
+    )
+    assert result.get("requires_confirmation") is True
+    assert (ws / "keepme.txt").exists(), "model-supplied force must not delete anything"
+
+    # 3. A genuine user approval token does let it through.
+    from core.approvals import approval_token
+    ctx_ok = tool_registry.ToolContext(
+        workspace_root=str(ws),
+        approved=frozenset({approval_token("run_shell", "rm -rf keepme.txt")}),
+    )
+    result_ok = tool_registry.dispatch("run_shell", {"command": "rm -rf keepme.txt"}, ctx_ok)
+    assert result_ok.get("exit_code") == 0
+    assert not (ws / "keepme.txt").exists()
+
+    # 4. An approval for a DIFFERENT command must not authorise this one.
+    (ws / "other.txt").write_text("x")
+    ctx_wrong = tool_registry.ToolContext(
+        workspace_root=str(ws),
+        approved=frozenset({approval_token("run_shell", "rm -rf something-else")}),
+    )
+    result_wrong = tool_registry.dispatch("run_shell", {"command": "rm -rf other.txt"}, ctx_wrong)
+    assert result_wrong.get("requires_confirmation") is True
+    assert (ws / "other.txt").exists()
 
 
 def test_run_shell_timeout(ws):

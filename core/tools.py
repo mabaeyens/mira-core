@@ -190,12 +190,11 @@ DELETE_FILE_TOOL = {
     "type": "function",
     "function": {
         "name": "delete_file",
-        "description": "Delete a file or directory from the workspace. Requires confirm=true after user approval.",
+        "description": "Delete a file or directory from the workspace. Destructive: refused until the user approves it out of band.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
-                "confirm": {"type": "boolean", "description": "Must be true to execute; omit to get a confirmation prompt first", "default": False},
             },
             "required": ["path"],
         },
@@ -210,7 +209,8 @@ RUN_SHELL_TOOL = {
         "name": "run_shell",
         "description": (
             "Run a shell command in the workspace. Destructive commands (rm -rf, git reset --hard, etc.) "
-            "require force=true after user approval.\n"
+            "are refused and returned to the user for approval; you cannot approve them yourself, so "
+            "do not retry a refused command — relay the refusal and wait.\n"
             "For aggregation tasks, use ONE pipeline — never split into list-files then process-each:\n"
             "  Count lines:    find . -name '*.py' -not -path '*/__pycache__/*' | xargs cat | wc -l\n"
             "  Find patterns:  grep -rn 'TODO\\|FIXME' . --include='*.py'\n"
@@ -223,7 +223,10 @@ RUN_SHELL_TOOL = {
             "properties": {
                 "command": {"type": "string", "description": "Shell command to execute"},
                 "cwd": {"type": "string", "description": "Working directory relative to workspace root (default: root)", "default": "."},
-                "force": {"type": "boolean", "description": "Set true to run a previously flagged dangerous command after user confirms", "default": False},
+                # NOTE: there is deliberately no `force` parameter. Approval for a
+                # destructive command comes from the user via an out-of-band
+                # approval token (core/approvals.py), never from the model — a
+                # model-settable flag is not a confirmation gate.
                 "timeout": {"type": "integer", "description": "Timeout in seconds (default 30, max 300). Use for long builds or test suites.", "default": 30},
             },
             "required": ["command"],
@@ -443,14 +446,13 @@ GITHUB_MERGE_PR_TOOL = {
     "type": "function",
     "function": {
         "name": "github_merge_pr",
-        "description": "Merge a pull request. Requires confirm=true after user approval.",
+        "description": "Merge a pull request. Destructive: refused until the user approves it out of band.",
         "parameters": {
             "type": "object",
             "properties": {
                 "repo": {"type": "string", "description": "owner/repo"},
                 "pr_number": {"type": "integer", "description": "PR number"},
                 "merge_method": {"type": "string", "description": "merge, squash, or rebase", "default": "merge"},
-                "confirm": {"type": "boolean", "default": False},
             },
             "required": ["repo", "pr_number"],
         },
@@ -461,7 +463,7 @@ GITHUB_DELETE_FILE_TOOL = {
     "type": "function",
     "function": {
         "name": "github_delete_file",
-        "description": "Delete a file from a GitHub repository. Requires confirm=true after user approval.",
+        "description": "Delete a file from a GitHub repository. Destructive: refused until the user approves it out of band.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -469,7 +471,6 @@ GITHUB_DELETE_FILE_TOOL = {
                 "path": {"type": "string", "description": "File path in repo"},
                 "message": {"type": "string", "description": "Commit message"},
                 "branch": {"type": "string", "description": "Branch (default: default branch)", "default": ""},
-                "confirm": {"type": "boolean", "default": False},
             },
             "required": ["repo", "path", "message"],
         },
@@ -480,13 +481,12 @@ GITHUB_DELETE_BRANCH_TOOL = {
     "type": "function",
     "function": {
         "name": "github_delete_branch",
-        "description": "Delete a branch from a GitHub repository. Requires confirm=true after user approval.",
+        "description": "Delete a branch from a GitHub repository. Destructive: refused until the user approves it out of band.",
         "parameters": {
             "type": "object",
             "properties": {
                 "repo": {"type": "string", "description": "owner/repo"},
                 "branch": {"type": "string"},
-                "confirm": {"type": "boolean", "default": False},
             },
             "required": ["repo", "branch"],
         },

@@ -50,6 +50,15 @@ def github_clone_repo(repo: str, dest: str = "") -> Dict[str, Any]:
     from .config import WORKSPACE_ROOT
     repo_name = repo.split("/")[-1]
     clone_path = Path(dest).expanduser() if dest else Path(WORKSPACE_ROOT).expanduser() / repo_name
+    # `dest` is model-supplied and the result is later registered as a project
+    # local_path (i.e. a sandbox root), so an unconstrained value here is a way
+    # to widen the sandbox from inside it. Keep clones under $HOME.
+    clone_path = clone_path.resolve()
+    home = Path.home().resolve()
+    if clone_path != home and home not in clone_path.parents:
+        return {"error": f"Clone destination must be inside your home folder: {clone_path}"}
+    if clone_path == home:
+        return {"error": "Clone destination cannot be the home folder itself"}
     clone_path.parent.mkdir(parents=True, exist_ok=True)
     if clone_path.exists():
         return {"error": f"Destination already exists: {clone_path}"}

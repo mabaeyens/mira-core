@@ -555,6 +555,45 @@
 
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    /* ── Destructive-action approval prompt ── */
+    .approval-prompt {
+      background: var(--error-bg);
+      border: 1px solid var(--error-border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      align-self: flex-start;
+      max-width: 100%;
+    }
+    .approval-title {
+      color: var(--error-text);
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .approval-target {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      background: rgba(0, 0, 0, 0.28);
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin: 0 0 8px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .approval-hint { font-size: 11px; opacity: 0.75; margin-bottom: 10px; }
+    .approval-actions { display: flex; gap: 8px; align-items: center; }
+    .approval-approve, .approval-decline {
+      font-size: 12px;
+      padding: 5px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      border: 1px solid var(--error-border);
+    }
+    .approval-approve { background: var(--error-text); color: #fff; border-color: transparent; }
+    .approval-decline { background: transparent; color: inherit; }
+    .approval-settled { font-size: 12px; opacity: 0.85; }
+
     /* ── Error chip ── */
     .error-msg {
       display: inline-flex;
@@ -1142,6 +1181,21 @@
   let ragDocuments = new Map(); // name → chunk count, persists across turns
   let currentConvId = null;    // active conversation ID
 
+  // ── Destructive-action approvals ─────────────────────────────────────────
+  // The server refuses destructive actions (rm -rf, git reset --hard, sudo,
+  // PR merges, branch deletes) and returns a token. The action runs only when
+  // that token is sent back on a later request. The model cannot produce one —
+  // that is the whole point — so this set may ONLY be filled by a real click on
+  // the Approve button. Never from an SSE payload, never auto-approved.
+  let approvedTokens = new Set();
+
+  /** Drain the approvals for exactly one outgoing request. */
+  function takeApprovedTokens() {
+    const tokens = [...approvedTokens];
+    approvedTokens.clear();
+    return tokens;
+  }
+
   // ── Folder browser state ─────────────────────────────────────────────────
   let folderCurPath = '/';    // current directory shown in modal
   let folderSelected = new Set();   // selected file paths (absolute)
@@ -1233,6 +1287,9 @@
   }
 
   async function switchConversation(convId, updateList = true) {
+    // Approvals must never leak across conversations — an approval granted in
+    // one conversation must not authorise a command in another.
+    approvedTokens.clear();
     currentConvId = convId;
     localStorage.setItem('mira_conv_id', convId);
     // Load message history from DB and render
@@ -1272,6 +1329,7 @@
       body,
     });
     const data = await resp.json();
+    approvedTokens.clear();   // fresh conversation starts with no approvals
     currentConvId = data.id;
     messagesEl.innerHTML = '';
     messagesEl.appendChild(welcomeEl);
@@ -1803,6 +1861,76 @@
     return bubble;
   }
 
+  /**
+   * Render the approve/decline prompt for a destructive action the server
+   * refused. The token is held in a closure and only reaches `approvedTokens`
+   * on a real click — it is never written into the DOM or the model's context.
+   */
+  function renderApprovalPrompt(event) {
+    const token = event.approval_token;
+    if (!token) return;
+
+    welcomeEl.style.display = 'none';
+    const wrapper = document.createElement('div');
+    wrapper.className = 'message assistant';
+
+    const box = document.createElement('div');
+    box.className = 'approval-prompt';
+
+    const title = document.createElement('div');
+    title.className = 'approval-title';
+    title.textContent = `⚠️ Approval needed — ${event.matched || event.action}`;
+
+    const target = document.createElement('pre');
+    target.className = 'approval-target';
+    target.textContent = event.target || '';   // textContent: never parsed as HTML
+
+    const hint = document.createElement('div');
+    hint.className = 'approval-hint';
+    hint.textContent = 'Approving runs this exact command on your next message. '
+                     + 'It does not approve anything else.';
+
+    const row = document.createElement('div');
+    row.className = 'approval-actions';
+
+    const approve = document.createElement('button');
+    approve.textContent = 'Approve';
+    approve.className = 'approval-approve';
+
+    const decline = document.createElement('button');
+    decline.textContent = 'Decline';
+    decline.className = 'approval-decline';
+
+    function settle(text) {
+      approve.remove();
+      decline.remove();
+      const done = document.createElement('span');
+      done.className = 'approval-settled';
+      done.textContent = text;
+      row.appendChild(done);
+    }
+
+    approve.onclick = () => {
+      approvedTokens.add(token);          // the ONLY place this set is filled
+      settle('✅ Approved — send a message to run it');
+      inputEl.focus();
+    };
+    decline.onclick = () => {
+      approvedTokens.delete(token);
+      settle('🚫 Declined');
+    };
+
+    row.appendChild(approve);
+    row.appendChild(decline);
+    box.appendChild(title);
+    if (event.target) box.appendChild(target);
+    box.appendChild(hint);
+    box.appendChild(row);
+    wrapper.appendChild(box);
+    messagesEl.appendChild(wrapper);
+    scrollToBottom();
+  }
+
   function addStatusChip(className, html) {
     welcomeEl.style.display = 'none';
     const wrapper = document.createElement('div');
@@ -1946,6 +2074,10 @@
       form.append('thinking_enabled', thinkingChk.checked ? 'true' : 'false');
       for (const file of filesToSend) form.append('files', file);
       for (const path of pathsToSend) form.append('paths', path);
+      // Approvals the USER granted by clicking Approve. Sent once, for this
+      // request only, then cleared — a stale approval must never authorise a
+      // later command. Never populated from model output.
+      for (const token of takeApprovedTokens()) form.append('approved_tokens', token);
 
       const response = await fetch('/chat', { method: 'POST', body: form });
 
@@ -2101,6 +2233,11 @@
             currentSearchChip = null;
           }
           thinkingEl = createThinkingBlock();
+          break;
+        }
+
+        case 'approval_required': {
+          renderApprovalPrompt(event);
           break;
         }
 

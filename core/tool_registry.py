@@ -16,7 +16,7 @@ import logging
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
-from . import fs_tools, shell_tools, github_tools, db
+from . import fs_tools, shell_tools, github_tools, db, approvals
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,12 @@ class ToolContext:
     temp_workspace: Optional[str] = None
     attachments: Optional[Dict[str, dict]] = None          # name -> {name,type,size,content}
     mark_task_done: Optional[Callable[[str], dict]] = None
+    # Approval tokens the USER supplied on this request (see core/approvals.py).
+    # Never populated from model output — that is the whole point.
+    approved: Optional[frozenset] = None
+
+    def approves(self, action: str, payload: str) -> bool:
+        return approvals.is_approved(action, payload, self.approved)
 
     @property
     def read_root(self) -> Optional[str]:
@@ -102,13 +108,15 @@ def _move_file(ctx, a):
 
 @tool("delete_file")
 def _delete_file(ctx, a):
-    return fs_tools.delete_file(a.get("path", ""), a.get("confirm", False), root=ctx.workspace_root)
+    path = a.get("path", "")
+    return fs_tools.delete_file(path, ctx.approves("delete_file", path), root=ctx.workspace_root)
 
 
 @tool("run_shell")
 def _run_shell(ctx, a):
     return shell_tools.run_shell(
-        a.get("command", ""), a.get("cwd", "."), a.get("force", False),
+        a.get("command", ""), a.get("cwd", "."),
+        ctx.approves("run_shell", a.get("command", "")),
         root=ctx.workspace_root, timeout=a.get("timeout", 30),
     )
 
@@ -275,14 +283,20 @@ def _github_create_pr(ctx, a):
 
 @tool("github_merge_pr")
 def _github_merge_pr(ctx, a):
-    return github_tools.github_merge_pr(a["repo"], a["pr_number"], a.get("merge_method", "merge"), a.get("confirm", False))
+    payload = f"{a['repo']}#{a['pr_number']}"
+    return github_tools.github_merge_pr(a["repo"], a["pr_number"], a.get("merge_method", "merge"),
+                                        ctx.approves("github_merge_pr", payload))
 
 
 @tool("github_delete_file")
 def _github_delete_file(ctx, a):
-    return github_tools.github_delete_file(a["repo"], a["path"], a["message"], a.get("branch", ""), a.get("confirm", False))
+    payload = f"{a['repo']}:{a.get('branch', '')}:{a['path']}"
+    return github_tools.github_delete_file(a["repo"], a["path"], a["message"], a.get("branch", ""),
+                                           ctx.approves("github_delete_file", payload))
 
 
 @tool("github_delete_branch")
 def _github_delete_branch(ctx, a):
-    return github_tools.github_delete_branch(a["repo"], a["branch"], a.get("confirm", False))
+    payload = f"{a['repo']}:{a['branch']}"
+    return github_tools.github_delete_branch(a["repo"], a["branch"],
+                                             ctx.approves("github_delete_branch", payload))

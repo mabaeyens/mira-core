@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 
 from .config import SHELL_TIMEOUT, WORKSPACE_ROOT
 from .workspace import safe_path, rel
+from .approvals import approval_token
 
 
 def _normalize(cmd: str) -> str:
@@ -88,9 +89,13 @@ def run_shell(command: str, cwd: str = ".", force: bool = False, root: Optional[
                     "action": "run_shell",
                     "command": command,
                     "matched": label,
+                    # The client shows this to the user and, on approval, sends the
+                    # token back on the next request. The model cannot mint it.
+                    "approval_token": approval_token("run_shell", command),
                     "message": (
                         f"Command contains a potentially destructive operation ({label}). "
-                        "Ask the user to confirm, then call run_shell again with force=true."
+                        "Relay this to the user for approval. You cannot approve it "
+                        "yourself — do not retry this command."
                     ),
                 }
             break  # user confirmed — allow it

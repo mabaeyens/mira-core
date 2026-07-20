@@ -13,6 +13,7 @@ _MAX_LIST_ENTRIES = 2_000
 _EXCLUDED_DIRS = {"__pycache__", "node_modules"}
 
 from .workspace import safe_path, rel
+from .approvals import approval_token
 
 
 def read_file(path: str, root: Optional[str] = None) -> Dict[str, Any]:
@@ -148,9 +149,13 @@ def delete_file(path: str, confirm: bool = False, root: Optional[str] = None) ->
             "requires_confirmation": True,
             "action": "delete_file",
             "path": r,
+            # Token binds to the path the model actually asked for, so approving
+            # one deletion does not approve a different one.
+            "approval_token": approval_token("delete_file", path),
             "message": (
                 f"This will permanently delete {kind} '{r}'. "
-                "Ask the user to confirm, then call delete_file again with confirm=true."
+                "Relay this to the user for approval. You cannot approve it "
+                "yourself — do not retry this deletion."
             ),
         }
     if p.is_dir():

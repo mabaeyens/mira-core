@@ -31,6 +31,7 @@ from . import tool_registry
 from .backend_manager import restart_dflash_if_dead, PRESETS
 from . import file_handler
 from .thinking_stripper import ThinkingStripper
+from .workspace import safe_filename
 from . import backend_client as bc
 from . import context_manager as ctxmgr
 
@@ -224,6 +225,9 @@ class ChatOrchestrator:
         self._temp_workspace: Optional[str] = None
         self._attachment_registry: Dict[str, Dict] = {}
         self._github_tools_enabled: bool = False
+        # Fail closed: any dispatch path that does not go through stream_chat
+        # (e.g. /ask) carries no approvals, so destructive actions are refused.
+        self._approved_tokens: frozenset = frozenset()
         self._add_system_prompt()
 
     @property
@@ -407,6 +411,7 @@ class ChatOrchestrator:
         attachments=None,
         thinking_enabled: Optional[bool] = None,
         github_tools_enabled: bool = False,
+        approved_tokens: Optional[frozenset] = None,
     ) -> Iterator[Dict]:
         """
         Process a user message and yield events for consumers (CLI, web).
@@ -415,6 +420,9 @@ class ChatOrchestrator:
         rag_indexing/done/context, stats, warning, done, error.
         """
         self._github_tools_enabled = github_tools_enabled
+        # Scoped to this turn only: an approval the user gave for one command must
+        # not silently authorise a later turn's command.
+        self._approved_tokens = frozenset(approved_tokens or ())
         if attachments:
             for att in attachments:
                 if att.get("warning"):
@@ -452,7 +460,10 @@ class ChatOrchestrator:
                         rag_indexed_this_turn = True
                         if not self.workspace_root:
                             ws = self._get_or_create_temp_workspace()
-                            ws_path = Path(ws) / att["name"]
+                            # att["name"] is untrusted (upload header, or a path
+                            # attachment). Sanitized at ingestion too; repeated
+                            # here so the sink is safe on its own.
+                            ws_path = Path(ws) / safe_filename(att["name"])
                             used_mb = sum(
                                 f.stat().st_size for f in Path(ws).rglob("*") if f.is_file()
                             ) / 1_048_576
@@ -789,6 +800,7 @@ class ChatOrchestrator:
             temp_workspace=self._temp_workspace,
             attachments=self._attachment_registry,
             mark_task_done=self._mark_task_done,
+            approved=self._approved_tokens,
         )
         return tool_registry.dispatch(name, args, ctx)
 
@@ -949,6 +961,19 @@ class ChatOrchestrator:
                 _, label_done_fn = _tool_ui_labels(name, args)
                 observation = self._wrap_observation(name, result)
                 yield {"type": "tool_done", "tool": name, "label": label_done_fn(result)}
+                # A destructive action the server refused. Surface the approval
+                # token so the CLIENT can offer the user an approve control; the
+                # model cannot approve it (see core/approvals.py).
+                if isinstance(result, dict) and result.get("requires_confirmation"):
+                    yield {
+                        "type": "approval_required",
+                        "tool": name,
+                        "action": result.get("action", name),
+                        "approval_token": result.get("approval_token"),
+                        "target": result.get("command") or result.get("path") or "",
+                        "matched": result.get("matched", ""),
+                        "message": result.get("message", ""),
+                    }
                 if diverged:
                     yield {"type": "divergence_guard", "tool": name, "step": step + 1}
                 yield {"type": "agent_step", "step": step + 1, "tool": name, "status": observation["status"]}
