@@ -44,6 +44,12 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on a safetensors JSON header. Real headers for the largest models
+# we run are a few MB; the field itself is 8 bytes read straight off disk, so
+# without a cap a corrupt or hostile shard can request an arbitrary-size read
+# before a single field has been validated.
+_MAX_HEADER_BYTES = 256 * 1024 * 1024
+
 # safetensors dtype string -> numpy dtype usable with np.frombuffer.
 # BF16 has no native numpy dtype: read as raw uint16; the caller bit-casts to
 # bfloat16 after mx.array construction (this string is what tells it to).
@@ -96,6 +102,26 @@ class DiskExpertCacheStore:
         self._fds_lock = threading.Lock()
         self._load_index()
 
+    def _shard_path(self, shard_name: str):
+        """Resolve a shard name to a path inside the model directory.
+
+        Shard names come from the model's own index.json, which is data shipped
+        by whoever published the model — not something this code authored. An
+        absolute value like "/etc/shadow" would silently replace model_path
+        entirely (pathlib discards the left operand), and "../.." would walk out,
+        so the name is constrained to a bare filename before it reaches open().
+
+        Containment is enforced on the NAME, not on the resolved path. Resolving
+        is wrong here: the HuggingFace cache stores every shard in a snapshot dir
+        as a symlink into the sibling blobs/ dir, so .resolve() legitimately lands
+        outside model_path and a parents check would reject every HF-cached model.
+        Because the name is already proven to be a bare filename, model_path /
+        shard_name cannot escape by construction.
+        """
+        if Path(shard_name).name != shard_name or shard_name in ("", ".", ".."):
+            raise ValueError(f"expert cache: refusing suspicious shard name {shard_name!r}")
+        return self.model_path / shard_name
+
     def _fd_for(self, shard_name: str) -> int:
         fd = self._fds.get(shard_name)
         if fd is not None:
@@ -103,7 +129,7 @@ class DiskExpertCacheStore:
         with self._fds_lock:
             fd = self._fds.get(shard_name)
             if fd is None:
-                fd = os.open(self.model_path / shard_name, os.O_RDONLY)
+                fd = os.open(self._shard_path(shard_name), os.O_RDONLY)
                 self._fds[shard_name] = fd
             return fd
 
@@ -126,7 +152,17 @@ class DiskExpertCacheStore:
         if index_file.exists():
             try:
                 data = json.loads(index_file.read_text())
-                self._weight_map = data.get("weight_map", {})
+                raw_map = data.get("weight_map", {}) or {}
+                # Drop entries whose shard name is not a plain filename rather
+                # than failing the whole load: a tampered index should not be
+                # able to read outside the model dir, and the missing tensor
+                # surfaces as a normal lookup miss.
+                self._weight_map = {}
+                for tensor, shard in raw_map.items():
+                    if isinstance(shard, str) and Path(shard).name == shard and shard not in ("", ".", ".."):
+                        self._weight_map[tensor] = shard
+                    else:
+                        logger.warning("expert cache: dropping weight_map entry %r -> %r", tensor, shard)
                 return
             except (OSError, json.JSONDecodeError) as exc:
                 logger.warning("expert cache: failed to read %s: %s", index_file, exc)
@@ -140,9 +176,15 @@ class DiskExpertCacheStore:
         cached = self._shard_headers.get(shard_name)
         if cached is not None:
             return cached
-        path = self.model_path / shard_name
+        path = self._shard_path(shard_name)
         with open(path, "rb") as f:
             header_len = struct.unpack("<Q", f.read(8))[0]
+            # header_len is 8 attacker-supplied bytes; without a bound this asks
+            # for an arbitrary-size read before anything has been validated.
+            if not 0 < header_len <= _MAX_HEADER_BYTES:
+                raise ValueError(
+                    f"expert cache: implausible safetensors header length {header_len} in {shard_name}"
+                )
             header = json.loads(f.read(header_len))
         data_start = 8 + header_len
         result = (header, data_start)

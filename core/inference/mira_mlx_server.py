@@ -132,7 +132,10 @@ class GenerationEngine:
         kv_group_size: int = 64,
         quantized_kv_start: int = 0,
         fix_mistral_regex: bool = False,
-        trust_remote_code: bool = True,
+        # Off by default: loading a repo with this on executes that repo's own
+        # Python (tokenizer auto_map) inside this process. Opt in per-model via
+        # mira.yaml when a model genuinely needs a custom tokenizer class.
+        trust_remote_code: bool = False,
         disk_cache_dir: Optional[str] = None,
         disk_cache_max_bytes: int = 0,
         profile_experts: bool = False,
@@ -669,6 +672,10 @@ def main() -> None:
     # kv_bits. Left as a CLI arg for parity with mlx-lm's single-sequence API.
     parser.add_argument("--quantized-kv-start", type=int, default=0)
     parser.add_argument("--fix-mistral-regex", action="store_true")
+    # Default off. --no-trust-remote-code kept as an accepted no-op so any
+    # existing caller passing it keeps working.
+    parser.add_argument("--trust-remote-code", action="store_true", dest="trust_remote_code",
+                        default=False)
     parser.add_argument("--no-trust-remote-code", action="store_false", dest="trust_remote_code")
     # Disk overflow for evicted prompt-cache entries. Unset dir or a zero byte
     # budget disables persistence entirely (in-memory-only, today's behavior).
