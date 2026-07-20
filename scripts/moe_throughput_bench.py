@@ -129,7 +129,12 @@ def stats(port):
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/stats", timeout=5) as r:
             s = json.load(r)
         ec = s.get("expert_cache") or {}
-        return round((s.get("peak_memory_bytes") or 0) / 1024**3, 2), ec.get("hit_rate")
+        # Two different metrics, do NOT compare across them: hit_rate is blended
+        # over the process lifetime so a cold prefill drags it down, while
+        # decode_hit_rate is the steady-state number a residency change moves.
+        # See mira_mlx_server.py:372-374.
+        return (round((s.get("peak_memory_bytes") or 0) / 1024**3, 2),
+                ec.get("hit_rate"), ec.get("decode_hit_rate"))
     except Exception:
         return None, None
 
@@ -158,11 +163,13 @@ def run_config(name, model, fraction, port, p_tok, kv_bits=8):
         ntok, ttft, gen_s = decode_once(port, 200)
         dec = round(ntok / gen_s, 1) if gen_s > 0 else None
         print(f"  decode: {ntok} tok in {gen_s:.2f}s = {dec} t/s (ttft {ttft:.2f}s)", flush=True)
-        peak, hit = stats(port)
-        print(f"  peak={peak}GB  hit_rate={hit}", flush=True)
+        peak, hit, dec_hit = stats(port)
+        print(f"  peak={peak}GB  hit_rate={hit} (lifetime, incl. cold prefill)  "
+              f"decode_hit_rate={dec_hit} (steady state)", flush=True)
         return {"name": name, "prompt_tokens": p_tok,
                 "prefill_cold_tps": round(p_tok/cold, 1), "prefill_warm_tps": round(p_tok/warm, 1),
-                "decode_tps": dec, "peak_gb": peak, "hit_rate": hit}
+                "decode_tps": dec, "peak_gb": peak,
+                "hit_rate": hit, "decode_hit_rate": dec_hit}
     finally:
         proc.terminate()
         try:
@@ -212,14 +219,17 @@ def main():
 
     results = [run_config(n, m, f, p, p_tok, args.kv_bits) for (n, m, f, p) in configs]
     print("\n=== SUMMARY ===", flush=True)
-    print(f"{'config':<18}{'prefill_cold':>13}{'prefill_warm':>13}{'decode':>8}{'peak_gb':>8}{'hit':>6}",
-          flush=True)
+    print(f"{'config':<18}{'prefill_cold':>13}{'prefill_warm':>13}{'decode':>8}{'peak_gb':>8}"
+          f"{'hit_life':>10}{'hit_decode':>12}", flush=True)
     for r in results:
         if "error" in r:
             print(f"{r['name']:<18} ERROR: {r['error']}", flush=True)
             continue
         print(f"{r['name']:<18}{r['prefill_cold_tps']:>13}{r['prefill_warm_tps']:>13}"
-              f"{str(r['decode_tps']):>8}{str(r['peak_gb']):>8}{str(r['hit_rate']):>6}", flush=True)
+              f"{str(r['decode_tps']):>8}{str(r['peak_gb']):>8}"
+              f"{str(r['hit_rate']):>10}{str(r['decode_hit_rate']):>12}", flush=True)
+    print("hit_life is blended over the process lifetime (cold prefill drags it down); "
+          "hit_decode is steady state. Not comparable to each other.", flush=True)
 
 
 if __name__ == "__main__":
