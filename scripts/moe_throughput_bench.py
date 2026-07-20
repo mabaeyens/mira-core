@@ -44,9 +44,23 @@ from core.prompts import build_system_prompt  # noqa: E402
 PYTHON = str(REPO / ".venv/bin/python3")
 LOGDIR = Path(tempfile.mkdtemp(prefix="mira-tbench-"))
 
-PREFILL_PROMPT = build_system_prompt() + "\n\n" + (
-    "Consider the following engineering scenario in detail and hold it in mind. " * 120
-) + "\n\nUser: Acknowledge in one word."
+# NOTE: prefill and decode are measured from DIFFERENT prompts. The prefill
+# figure comes from a long prompt (PREFILL_REPEATS scenario sentences, ~3015
+# tokens at the default 120); the decode figure comes from the short prompt
+# below. So a decode t/s here is "decode after a SHORT prompt", which is what
+# to compare against someone else's steady-state number -- and it is also why
+# the lifetime hit_rate is dragged down by the long cold prefills that run
+# first. Both prompt lengths are printed at run time; quote them with any
+# result.
+PREFILL_REPEATS_DEFAULT = 120
+
+
+def build_prefill_prompt(repeats):
+    return build_system_prompt() + "\n\n" + (
+        "Consider the following engineering scenario in detail and hold it in mind. " * repeats
+    ) + "\n\nUser: Acknowledge in one word."
+
+
 DECODE_PROMPT = ("Write a detailed technical explanation, in flowing prose with no lists, "
                  "of how a mixture-of-experts transformer routes tokens to experts and why "
                  "that makes inference memory-bound rather than compute-bound.")
@@ -90,10 +104,10 @@ def _req(port, prompt, max_tokens, stream):
                                   headers={"Content-Type": "application/json"}, method="POST")
 
 
-def prefill_once(port):
+def prefill_once(port, prefill_prompt):
     """Non-stream, max_tokens=1. Returns wall_s (prefill dominates)."""
     t0 = time.time()
-    with urllib.request.urlopen(_req(port, PREFILL_PROMPT, 1, False), timeout=300) as r:
+    with urllib.request.urlopen(_req(port, prefill_prompt, 1, False), timeout=300) as r:
         json.load(r)
     return time.time() - t0
 
@@ -139,35 +153,48 @@ def stats(port):
         return None, None
 
 
-def count_prompt_tokens(model):
+def count_tokens(model, text):
     from mlx_lm.utils import hf_repo_to_path
     from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained(hf_repo_to_path(model))
-    return len(tok.apply_chat_template([{"role": "user", "content": PREFILL_PROMPT}],
+    return len(tok.apply_chat_template([{"role": "user", "content": text}],
                                        add_generation_prompt=True)["input_ids"])
 
 
-def run_config(name, model, fraction, port, p_tok, kv_bits=8):
-    print(f"\n### {name}  ({model.split('/')[-1]}, fraction={fraction}, kv_bits={kv_bits or 'off'}) ###",
+def run_config(name, model, fraction, port, p_tok, d_tok, prefill_prompt,
+               kv_bits=8, decode_tokens=200, skip_prefill=False):
+    print(f"\n### {name}  ({model.split('/')[-1]}, fraction={fraction}, kv_bits={kv_bits or 'off'}, "
+          f"prefill_prompt={p_tok} tok, decode_prompt={d_tok} tok, gen={decode_tokens} tok) ###",
           flush=True)
     proc = launch(model, fraction, port, kv_bits)
     try:
         if not wait_ready(port):
             print("  NOT READY", flush=True)
             return {"name": name, "error": "not ready"}
-        cold = prefill_once(port)
-        warm = prefill_once(port)
-        print(f"  prefill: {p_tok} tok | cold {cold:.2f}s = {p_tok/cold:.1f} t/s | "
-              f"warm {warm:.2f}s = {p_tok/warm:.1f} t/s", flush=True)
+        cold = warm = None
+        if skip_prefill:
+            # The long prefills are what drag the LIFETIME hit_rate down. Skipping
+            # them makes hit_rate and decode_hit_rate directly comparable, which is
+            # the right shape for matching someone else's short-prompt claim.
+            print("  prefill: SKIPPED (--skip-prefill), so hit_rate is decode-dominated",
+                  flush=True)
+        else:
+            cold = prefill_once(port, prefill_prompt)
+            warm = prefill_once(port, prefill_prompt)
+            print(f"  prefill: {p_tok} tok | cold {cold:.2f}s = {p_tok/cold:.1f} t/s | "
+                  f"warm {warm:.2f}s = {p_tok/warm:.1f} t/s", flush=True)
         decode_once(port, 32)  # warmup
-        ntok, ttft, gen_s = decode_once(port, 200)
+        ntok, ttft, gen_s = decode_once(port, decode_tokens)
         dec = round(ntok / gen_s, 1) if gen_s > 0 else None
-        print(f"  decode: {ntok} tok in {gen_s:.2f}s = {dec} t/s (ttft {ttft:.2f}s)", flush=True)
+        print(f"  decode: {ntok} tok in {gen_s:.2f}s = {dec} t/s (ttft {ttft:.2f}s) "
+              f"after a {d_tok}-tok prompt", flush=True)
         peak, hit, dec_hit = stats(port)
-        print(f"  peak={peak}GB  hit_rate={hit} (lifetime, incl. cold prefill)  "
+        print(f"  peak={peak}GB  hit_rate={hit} (lifetime)  "
               f"decode_hit_rate={dec_hit} (steady state)", flush=True)
-        return {"name": name, "prompt_tokens": p_tok,
-                "prefill_cold_tps": round(p_tok/cold, 1), "prefill_warm_tps": round(p_tok/warm, 1),
+        return {"name": name, "prompt_tokens": p_tok, "decode_prompt_tokens": d_tok,
+                "gen_tokens": decode_tokens,
+                "prefill_cold_tps": round(p_tok/cold, 1) if cold else None,
+                "prefill_warm_tps": round(p_tok/warm, 1) if warm else None,
                 "decode_tps": dec, "peak_gb": peak,
                 "hit_rate": hit, "decode_hit_rate": dec_hit}
     finally:
@@ -192,9 +219,21 @@ def main():
                          "--model-8bit is a foreign model with no 4-bit sibling to compare against.")
     ap.add_argument("--label-8bit", default="8bit-offload-on",
                     help="summary label for the over-DRAM config (rename when it is not an 8-bit)")
+    ap.add_argument("--decode-tokens", type=int, default=200,
+                    help="tokens to generate for the decode measurement. Raise it when comparing "
+                         "against a 'steady state' figure -- a short run is still partly warming "
+                         "the LRU, which reads as slower than steady state.")
     ap.add_argument("--kv-bits", type=int, default=8,
                     help="KV cache quantization bits; 0 disables. Must be 0 for models with "
                          "attention sinks (gpt-oss) -- mlx-lm cannot do quantized SDPA with sinks.")
+    ap.add_argument("--prefill-repeats", type=int, default=PREFILL_REPEATS_DEFAULT,
+                    help="scenario-sentence repeats in the prefill prompt (default 120 ~= 3015 "
+                         "tokens). Lower it to measure at a shorter prompt; the actual token "
+                         "count is measured and printed either way.")
+    ap.add_argument("--skip-prefill", action="store_true",
+                    help="skip the two long prefills entirely. They are what drag the LIFETIME "
+                         "hit_rate down, so skipping makes hit_rate decode-dominated and directly "
+                         "comparable to a short-prompt steady-state claim.")
     args = ap.parse_args()
 
     if args.skip_4bit and args.skip_8bit:
@@ -213,11 +252,19 @@ def main():
     # Tokenize with the first model actually benched: prompt-token count is the
     # numerator of every prefill t/s below, so borrowing another model's
     # tokenizer silently skews the result.
-    p_tok = count_prompt_tokens(configs[0][1])
-    print(f"prefill prompt = {p_tok} tokens (chat-templated, {configs[0][1].split('/')[-1]} "
-          f"tokenizer); logs in {LOGDIR}", flush=True)
+    prefill_prompt = build_prefill_prompt(args.prefill_repeats)
+    tokenizer_model = configs[0][1]
+    p_tok = count_tokens(tokenizer_model, prefill_prompt)
+    d_tok = count_tokens(tokenizer_model, DECODE_PROMPT)
+    print(f"tokenizer      : {tokenizer_model.split('/')[-1]}", flush=True)
+    print(f"prefill prompt : {p_tok} tokens (repeats={args.prefill_repeats})"
+          f"{'  [SKIPPED]' if args.skip_prefill else ''}", flush=True)
+    print(f"decode prompt  : {d_tok} tokens, generating {args.decode_tokens} tokens", flush=True)
+    print(f"logs in {LOGDIR}", flush=True)
 
-    results = [run_config(n, m, f, p, p_tok, args.kv_bits) for (n, m, f, p) in configs]
+    results = [run_config(n, m, f, p, p_tok, d_tok, prefill_prompt,
+                          args.kv_bits, args.decode_tokens, args.skip_prefill)
+               for (n, m, f, p) in configs]
     print("\n=== SUMMARY ===", flush=True)
     print(f"{'config':<18}{'prefill_cold':>13}{'prefill_warm':>13}{'decode':>8}{'peak_gb':>8}"
           f"{'hit_life':>10}{'hit_decode':>12}", flush=True)
@@ -225,7 +272,7 @@ def main():
         if "error" in r:
             print(f"{r['name']:<18} ERROR: {r['error']}", flush=True)
             continue
-        print(f"{r['name']:<18}{r['prefill_cold_tps']:>13}{r['prefill_warm_tps']:>13}"
+        print(f"{r['name']:<18}{str(r['prefill_cold_tps']):>13}{str(r['prefill_warm_tps']):>13}"
               f"{str(r['decode_tps']):>8}{str(r['peak_gb']):>8}"
               f"{str(r['hit_rate']):>10}{str(r['decode_hit_rate']):>12}", flush=True)
     print("hit_life is blended over the process lifetime (cold prefill drags it down); "
