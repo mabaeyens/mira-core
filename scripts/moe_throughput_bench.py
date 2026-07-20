@@ -52,14 +52,20 @@ DECODE_PROMPT = ("Write a detailed technical explanation, in flowing prose with 
                  "that makes inference memory-bound rather than compute-bound.")
 
 
-def launch(model, fraction, port):
+def launch(model, fraction, port, kv_bits=8):
     args = [
         PYTHON, "-m", "core.inference.mira_mlx_server",
         "--model", model, "--host", "127.0.0.1", "--port", str(port),
         "--max-tokens", "4096", "--prefill-step-size", "1024",
         "--prompt-cache-max-bytes", "1000000000", "--max-kv-size", "128000",
-        "--fix-mistral-regex", "--kv-bits", "8", "--kv-group-size", "64",
+        "--fix-mistral-regex",
     ]
+    # Models with attention sinks (gpt-oss) cannot use a quantized KV cache:
+    # mlx-lm raises "Quantized SDPA does not support attention sinks" from the
+    # generation thread, which leaves requests hanging until the client times
+    # out rather than returning an error. Pass --kv-bits 0 for those.
+    if kv_bits:
+        args += ["--kv-bits", str(kv_bits), "--kv-group-size", "64"]
     if fraction is not None:
         args += ["--resident-expert-fraction", str(fraction)]
     logf = open(LOGDIR / f"tbench_{port}.log", "w")
@@ -136,9 +142,10 @@ def count_prompt_tokens(model):
                                        add_generation_prompt=True)["input_ids"])
 
 
-def run_config(name, model, fraction, port, p_tok):
-    print(f"\n### {name}  ({model.split('/')[-1]}, fraction={fraction}) ###", flush=True)
-    proc = launch(model, fraction, port)
+def run_config(name, model, fraction, port, p_tok, kv_bits=8):
+    print(f"\n### {name}  ({model.split('/')[-1]}, fraction={fraction}, kv_bits={kv_bits or 'off'}) ###",
+          flush=True)
+    proc = launch(model, fraction, port, kv_bits)
     try:
         if not wait_ready(port):
             print("  NOT READY", flush=True)
@@ -173,20 +180,37 @@ def main():
     ap.add_argument("--fraction", type=float, default=0.3)
     ap.add_argument("--base-port", type=int, default=8131)
     ap.add_argument("--skip-8bit", action="store_true", help="skip the over-DRAM 8-bit config")
+    ap.add_argument("--skip-4bit", action="store_true",
+                    help="skip both 4-bit configs; bench only the over-DRAM model. Use when "
+                         "--model-8bit is a foreign model with no 4-bit sibling to compare against.")
+    ap.add_argument("--label-8bit", default="8bit-offload-on",
+                    help="summary label for the over-DRAM config (rename when it is not an 8-bit)")
+    ap.add_argument("--kv-bits", type=int, default=8,
+                    help="KV cache quantization bits; 0 disables. Must be 0 for models with "
+                         "attention sinks (gpt-oss) -- mlx-lm cannot do quantized SDPA with sinks.")
     args = ap.parse_args()
 
-    print("=== MoE OFFLOAD THROUGHPUT BENCH ===", flush=True)
-    p_tok = count_prompt_tokens(args.model_4bit)
-    print(f"prefill prompt = {p_tok} tokens (chat-templated); logs in {LOGDIR}", flush=True)
+    if args.skip_4bit and args.skip_8bit:
+        ap.error("--skip-4bit and --skip-8bit together leave nothing to bench")
 
-    configs = [
-        ("4bit-offload-off", args.model_4bit, None, args.base_port),
-        ("4bit-offload-on", args.model_4bit, args.fraction, args.base_port + 1),
-    ]
+    configs = []
+    if not args.skip_4bit:
+        configs += [
+            ("4bit-offload-off", args.model_4bit, None, args.base_port),
+            ("4bit-offload-on", args.model_4bit, args.fraction, args.base_port + 1),
+        ]
     if not args.skip_8bit:
-        configs.append(("8bit-offload-on", args.model_8bit, args.fraction, args.base_port + 2))
+        configs.append((args.label_8bit, args.model_8bit, args.fraction, args.base_port + 2))
 
-    results = [run_config(n, m, f, p, p_tok) for (n, m, f, p) in configs]
+    print("=== MoE OFFLOAD THROUGHPUT BENCH ===", flush=True)
+    # Tokenize with the first model actually benched: prompt-token count is the
+    # numerator of every prefill t/s below, so borrowing another model's
+    # tokenizer silently skews the result.
+    p_tok = count_prompt_tokens(configs[0][1])
+    print(f"prefill prompt = {p_tok} tokens (chat-templated, {configs[0][1].split('/')[-1]} "
+          f"tokenizer); logs in {LOGDIR}", flush=True)
+
+    results = [run_config(n, m, f, p, p_tok, args.kv_bits) for (n, m, f, p) in configs]
     print("\n=== SUMMARY ===", flush=True)
     print(f"{'config':<18}{'prefill_cold':>13}{'prefill_warm':>13}{'decode':>8}{'peak_gb':>8}{'hit':>6}",
           flush=True)
