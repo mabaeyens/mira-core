@@ -121,9 +121,25 @@ Both come in below the upstream model's 2.25x / 3.0x, and the gap looks like the
 model assumes and our shared-fd reader no longer pays. **Not adopted.** Either lever needs a coalesced
 side-file, which breaks reading straight from the model's own shards: no repack step, no second artifact
 per model, nothing to invalidate on re-quant. At the fraction we actually ship that is +14.3%, which does
-not buy the property back. A1 at +9.0% is not a candidate at all. The likeliest trigger to revisit is a
-model far enough over DRAM to force a much smaller resident fraction, which pushes the read share back
-toward the 0.3 end. Discussion: ml-explore/mlx-lm#1438.
+not buy the property back. A1 at +9.0% is not a candidate at all.
+
+**Revisit trigger tested and retired (2026-07-20).** The stated trigger was "a model far enough over DRAM
+to force a much smaller resident fraction, pushing the read share back up". We ran it on
+`gpt-oss-120b-MXFP4-Q8` (56.3GB expert table, 1.8x RAM, mxfp4, a different architecture). The read share
+did rise as predicted, 21.8% to **39.3%** — and A2 still got **worse**, +9.7% against +14.3%:
+
+| | read share | A1 I/O | A2 I/O | A2 end-to-end |
+|---|---|---|---|---|
+| Qwen 8bit @0.45 (shipped) | 21.8% | 1.61x | 2.34x | +14.3% |
+| gpt-oss @0.30 | 39.3% | 1.08x | 1.29x | +9.7% |
+
+Coalescing is an IOPS/latency lever and gpt-oss reads are already bandwidth-bound: its module is
+4050K + 253K (one read is 94% of the bytes, scattered already runs 5.8 GB/s) where Qwen's is
+1024K + 32K + 32K (two tiny reads that are pure per-op latency floor, scattered only 2.5 GB/s).
+**The two effects are anti-correlated** — a bigger model forces a smaller fraction (raising the read
+share) *and* has larger slices (making reads bandwidth-bound) — and the second wins. So there is no
+"bigger model" that rescues coalescing, and the trigger was based on a wrong model of where the win
+comes from. Discussion: ml-explore/mlx-lm#1438.
 
 **The sparsity predictor has no target here.** Their predictor guesses active neurons within a layer from
 that layer's own input, available before the FFN runs. My analogue would be predicting the *next* layer's

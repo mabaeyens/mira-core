@@ -44,11 +44,29 @@ second artifact to keep in sync per model, nothing to invalidate on re-quant).
 At the RAM-aware fraction this build actually ships (~0.45) that costs the
 no-repack property for +14.3%, so:
 
-    DECISION: A2 is NO-GO, pending further evidence. A1 is not a candidate at
-    all (+9.0% is well under the bar). Revisit only if new measurements or the
-    mlx-lm#1438 discussion change the picture -- the most likely trigger is a
-    model far enough over DRAM to force a much smaller resident fraction, which
-    pushes the miss rate and the read share back up toward the 0.3 end.
+    DECISION: A2 is NO-GO. A1 is not a candidate at all (+9.0% is well under
+    the bar).
+
+REVISIT TRIGGER TESTED AND RETIRED (2026-07-20). The trigger above was "a model
+far enough over DRAM to force a much smaller resident fraction, pushing the read
+share back up". Ran it on gpt-oss-120b-MXFP4-Q8 (56.3GB expert table, 1.8x RAM,
+mxfp4, different architecture):
+
+    model                      read share   A1 I/O   A2 I/O   A2 end-to-end
+    Qwen 8bit @0.45 (shipped)     21.8%     1.61x    2.34x       +14.3%
+    gpt-oss @0.30                 39.3%     1.08x    1.29x        +9.7%
+
+The read share rose as predicted and A2 still got WORSE. Coalescing is an
+IOPS/latency lever and gpt-oss reads are already bandwidth-bound: its module is
+4050K + 253K (one read = 94% of the bytes, scattered already 5.8 GB/s) where
+Qwen's is 1024K + 32K + 32K (two tiny reads = pure per-op latency floor,
+scattered only 2.5 GB/s). The two effects are ANTI-CORRELATED: a bigger model
+forces a smaller fraction (raising read share, good) and has larger slices
+(bandwidth-bound reads, bad), and the second wins. There is no "bigger model"
+that rescues coalescing. Do not re-open on that reasoning.
+
+Run against another model with:
+    --model <repo> --module model.layers.N.mlp.experts.gate_proj --read-share X
 
 Discussion and full numbers: ml-explore/mlx-lm#1438 (and PR #1588 for the
 offload primitive itself).
@@ -69,6 +87,8 @@ from core.inference.disk_expert_cache import DiskExpertCacheStore  # noqa: E402
 
 MODEL = "mlx-community/Qwen3.6-35B-A3B-8bit"
 F_NOCACHE = 48
+# 'biases' are quant zero-points and are absent in mxfp4 (gpt-oss), where a
+# module-miss is 2 slices rather than 3. slice_sizes() skips whatever is missing.
 ATTRS = ["weight", "scales", "biases"]
 
 
@@ -121,6 +141,7 @@ def measure(path, size, sizes, trials, nocache, rng):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--model", default=MODEL)
     ap.add_argument("--module", default="model.layers.10.mlp.switch_mlp.gate_proj")
     ap.add_argument("--n", type=int, default=60)
     ap.add_argument("--read-share", type=float, default=0.261,
@@ -130,7 +151,7 @@ def main():
 
     rng = random.Random(0)
     from huggingface_hub import snapshot_download
-    store = DiskExpertCacheStore(Path(snapshot_download(MODEL)))
+    store = DiskExpertCacheStore(Path(snapshot_download(args.model)))
 
     sizes1 = slice_sizes(store, args.module)
     base = args.module.rsplit(".", 1)[0]
@@ -143,7 +164,7 @@ def main():
     size = os.path.getsize(path)
 
     share = args.read_share
-    print(f"model : {MODEL}")
+    print(f"model : {args.model}")
     print(f"shard : {shard}  ({size/1e9:.1f} GB)")
     print(f"slices: A1 {[f'{s/1024:.0f}K' for s in sizes1]}  "
           f"A2 {len(sizes9)} slices, {sum(sizes9)/1024:.0f} KiB total")
