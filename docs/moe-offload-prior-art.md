@@ -85,7 +85,7 @@ per token. That split is why I do not stream everything.
 | "LLM in a Flash" technique | What it maps to for me | Transfers? |
 |---|---|---|
 | **Windowing**: reuse neurons active in a recent-token window, load only the delta | measured adjacent-token expert overlap, 10.8x uniform | **Already captured by LRU** (below) |
-| **Row-column bundling**: store a neuron's up/down weights contiguously, read as one chunk | disk-read coalescing | **Under active evaluation** for cold reads (below): was previously judged non-paying |
+| **Row-column bundling**: store a neuron's up/down weights contiguously, read as one chunk | disk-read coalescing | **Measured, not adopted**: +14.3% at the shipped fraction, costs the no-repack property (below) |
 | **Sparsity predictor**: predict which neurons fire, prefetch only those | cross-layer expert prediction | **No signal** for this MoE's routing (Jaccard 0.017) |
 | **Optimized flash layout + large sequential reads** | byte-range slice reads | **Partly**: see the coalescing note below |
 | **Stream dense FFN weights from flash** (the premise) | would mean streaming my dense backbone | **Rejected**: bandwidth ceiling |
@@ -96,15 +96,34 @@ activation pulls it resident, so its second is a cache hit, not a reload. The ca
 windowing signal; what is left in the miss stream is the residency complement (the least-reused experts),
 which is why an explicit windowing pass on top of LRU buys little.
 
-**Row-column bundling / layout, re-opened, not settled.** The earlier version dismissed this as
+**Row-column bundling / layout: measured, and not adopted.** The earliest version dismissed this as
 non-paying because "reads are 0.2ms and parallel." That held for 4-bit prefill. On 8-bit decode the cold
 read is on the critical path, and the reader is more fragmented than assumed: up/gate/down are three
 separate modules and each reads weight+scales+biases as separate ops, so one cold expert is up to nine
 `open`+`seek`+`read` calls. Fixing the reopen-per-read alone (one long-lived fd per shard via `os.pread`)
-was measured at +4.5% decode and shipped. The bundling/sequential-layout win proper (coalescing the
-fragmented reads, ordering co-activated experts contiguously) is under active evaluation for the cold path
-(collaboration on ml-explore/mlx-lm#1438), specifically as a **prefill/TTFT** lever once a competent decode
-cache is in front, not the settled non-lever the first draft called it.
+was measured at +4.5% decode and shipped.
+
+A middle draft then framed the bundling win proper as a **prefill/TTFT** lever only. That was wrong too,
+and the decode sweep is what corrected it: decode faults about 1.3 experts per module call across 120
+sequential modules, so the 8-way reader has almost nothing to parallelize and the reads effectively
+serialize on the critical path. Cold reads are 26.1% of the decode token at resident fraction 0.3 and
+21.8% at 0.45. Decode is a genuine target, not just prefill.
+
+Measured on our own reader rather than transferred from the upstream model (`scripts/moe_coalesce_ceiling.py`,
+both arms reading never-touched regions at real slice sizes):
+
+| lever | I/O speedup | decode @0.3 | decode @0.45 |
+|---|---|---|---|
+| A1, 3 slices to 1 read | 1.61x | +11.0% | +9.0% |
+| A2, 9 slices to 1 read | 2.34x | +17.6% | +14.3% |
+
+Both come in below the upstream model's 2.25x / 3.0x, and the gap looks like the `open()` per slice that
+model assumes and our shared-fd reader no longer pays. **Not adopted.** Either lever needs a coalesced
+side-file, which breaks reading straight from the model's own shards: no repack step, no second artifact
+per model, nothing to invalidate on re-quant. At the fraction we actually ship that is +14.3%, which does
+not buy the property back. A1 at +9.0% is not a candidate at all. The likeliest trigger to revisit is a
+model far enough over DRAM to force a much smaller resident fraction, which pushes the read share back
+toward the 0.3 end. Discussion: ml-explore/mlx-lm#1438.
 
 **The sparsity predictor has no target here.** Their predictor guesses active neurons within a layer from
 that layer's own input, available before the FFN runs. My analogue would be predicting the *next* layer's
