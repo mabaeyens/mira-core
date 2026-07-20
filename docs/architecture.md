@@ -123,7 +123,7 @@ This is transparent to clients — the next turn proceeds normally with a shorte
 
 The native clients (mira-apps) connect to this server over HTTP/HTTPS. Key integration points:
 
-- **Discovery:** macOS connects to `localhost:8000`; iOS discovers the server via Bonjour (`_ollamasearch._tcp`) or a user-configured URL (Tailscale).
+- **Discovery:** macOS connects to `localhost:8000`; iOS uses a saved or user-configured URL (Tailscale over HTTPS `:8443`). Bonjour/mDNS discovery was removed from the apps — the clients are HTTP/HTTPS only.
 - **SSE streaming:** `SSEClient.swift` opens `POST /chat` as an `AsyncThrowingStream<ServerEvent>`, parsing each `data:` line as JSON.
 - **Event mapping:** All events in the table above have a corresponding `ServerEvent` Swift enum case consumed by `ChatViewModel`.
 - **Cancel:** iOS/macOS send `POST /cancel` then discard the stream; the server rolls back history.

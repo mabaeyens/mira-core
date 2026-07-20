@@ -162,15 +162,15 @@ flowchart LR
 flowchart TD
     START([App Launch]) --> LAST{"Last-used\nURL saved?"}
     LAST -->|yes| PROBE["Probe /health\n(1.4s min splash)"]
-    LAST -->|no| BONJOUR["Bonjour discovery\n_ollamasearch._tcp"]
+    LAST -->|no| CONN_VIEW
 
     PROBE -->|200 ready| CONNECTED([Connected\niOSConnectedView])
     PROBE -->|fail| FALLBACK["Try saved\nfallback URLs"]
     FALLBACK -->|one responds| CONNECTED
     FALLBACK -->|all fail| CONN_VIEW
 
-    BONJOUR --> CONN_VIEW["ConnectionView\n(manual URL or picker)"]
-    CONN_VIEW -->|user selects| SAVE["Save URL\nUserDefaults"]
+    CONN_VIEW["ConnectionView\n(manual URL entry)"]
+    CONN_VIEW -->|user enters URL| SAVE["Save URL\nUserDefaults"]
     SAVE --> CONNECTED
 ```
 
