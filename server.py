@@ -13,13 +13,14 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 import ollama
 import uvicorn
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 # Silence noisy third-party loggers
@@ -30,10 +31,11 @@ logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
 import core.db as db
 import core.file_handler as file_handler
-from core.config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT, MODEL_NAME, BACKEND, OLLAMA_HOST, CONTEXT_WINDOW, AUTH_TOKEN, ALLOWED_SOURCE_CIDRS, MIN_TOKEN_LENGTH
+from core.config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT, MODEL_NAME, BACKEND, OLLAMA_HOST, CONTEXT_WINDOW, AUTH_TOKEN, ALLOWED_SOURCE_CIDRS, ALLOWED_HOSTS, MIN_TOKEN_LENGTH
 from core.orchestrator import ChatOrchestrator
 from core.session_manager import SessionManager
 from core import backend_manager as _bm
+from core import workspace
 
 logging.basicConfig(
     level=logging.INFO,
@@ -162,6 +164,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # (clients poll it before they can authenticate) and the static web UI shell.
 _AUTH_OPEN_PATHS = ("/health", "/")
 
+_ALLOWED_HOST_NAMES = {h.strip().lower() for h in ALLOWED_HOSTS if h and h.strip()}
+
 # Parsed once: the source-IP allowlist (defense-in-depth behind the off-host bind).
 _ALLOWED_NETWORKS = []
 for _cidr in ALLOWED_SOURCE_CIDRS:
@@ -169,6 +173,59 @@ for _cidr in ALLOWED_SOURCE_CIDRS:
         _ALLOWED_NETWORKS.append(ipaddress.ip_network(_cidr, strict=False))
     except ValueError:
         logger.warning("Ignoring invalid CIDR in ALLOWED_SOURCE_CIDRS: %r", _cidr)
+
+
+# Host values accepted regardless of config. Anything else must be either an IP
+# inside ALLOWED_SOURCE_CIDRS (so the tailnet address works without naming it) or
+# listed explicitly in ALLOWED_HOSTS.
+_ALWAYS_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+
+def _split_host(header: str) -> str:
+    """Hostname from a Host header, port and IPv6 brackets removed."""
+    h = (header or "").strip().lower()
+    if h.startswith("["):                      # [::1]:8443
+        return h[: h.index("]") + 1] if "]" in h else h
+    return h.rsplit(":", 1)[0] if ":" in h else h
+
+
+def _host_allowed(header: str | None) -> bool:
+    """True when the Host header names this server by an address we expect.
+
+    Blocks DNS rebinding: the attacker's domain resolves to 127.0.0.1, so the
+    connection looks local, but the Host header still carries their domain.
+    """
+    if not header:
+        return True          # no Host (HTTP/1.0, some native clients) — nothing to spoof
+    name = _split_host(header)
+    if name in _ALWAYS_ALLOWED_HOSTS or name in _ALLOWED_HOST_NAMES:
+        return True
+    # Bare IPs: accept any address we would already accept as a source, so the
+    # discovered tailnet address works without being configured by hand.
+    try:
+        ip = ipaddress.ip_address(name.strip("[]"))
+    except ValueError:
+        return False
+    return any(ip in net for net in _ALLOWED_NETWORKS)
+
+
+def _origin_allowed(origin: str | None, host_header: str | None) -> bool:
+    """True when a cross-site request may perform a state-changing call.
+
+    Browsers set Origin on state-changing requests and scripts cannot forge it.
+    Native apps and CLIs send none, which is why absence is allowed — they are
+    not subject to the browser's ambient-credential problem in the first place.
+    """
+    if not origin:
+        return True
+    if origin == "null":         # sandboxed iframe / file:// — never ours
+        return False
+    parsed = urlparse(origin)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    return _host_allowed(parsed.netloc) and (
+        not host_header or _split_host(parsed.netloc) == _split_host(host_header)
+    )
 
 
 def _source_allowed(host: str | None) -> bool:
@@ -190,6 +247,23 @@ async def _auth_middleware(request: Request, call_next):
     allowed networks; (2) shared-secret Bearer token on sensitive routes when a
     token is configured. The token check is OPTIONS-exempt and skips the open
     paths; the comparison is constant-time."""
+    # Gate 0 — Host and Origin. Enforced ALWAYS, including when no token is set,
+    # because this is the gate that protects the tokenless-loopback default: a
+    # web page the user visits can reach 127.0.0.1 with the browser's ambient
+    # credentials, and neither the source-IP allowlist nor a bearer token the
+    # page cannot read will stop it. Host pinning blocks DNS rebinding; the
+    # Origin check blocks ordinary cross-site form/fetch posts.
+    if not _host_allowed(request.headers.get("host")):
+        logger.warning("Rejected request with unexpected Host: %r",
+                       request.headers.get("host"))
+        return JSONResponse({"detail": "Forbidden"}, status_code=403)
+    if request.method not in ("GET", "HEAD", "OPTIONS") and not _origin_allowed(
+        request.headers.get("origin"), request.headers.get("host")
+    ):
+        logger.warning("Rejected cross-origin %s %s from Origin: %r",
+                       request.method, request.url.path, request.headers.get("origin"))
+        return JSONResponse({"detail": "Forbidden"}, status_code=403)
+
     # Gate 1 — source IP. Only enforced when a token is set (token-set ⇒ off-host).
     if AUTH_TOKEN and not _source_allowed(request.client.host if request.client else None):
         return JSONResponse({"detail": "Forbidden"}, status_code=403)
@@ -197,9 +271,15 @@ async def _auth_middleware(request: Request, call_next):
     # Gate 2 — Bearer token.
     if AUTH_TOKEN and request.method != "OPTIONS":
         path = request.url.path
-        is_open = path in _AUTH_OPEN_PATHS or path.startswith("/static")
+        # Trailing slash matters: "/static" alone would also open "/staticfoo".
+        is_open = path in _AUTH_OPEN_PATHS or path.startswith("/static/")
         presented = request.headers.get("authorization", "")
-        if not is_open and not hmac.compare_digest(presented, f"Bearer {AUTH_TOKEN}"):
+        # Encode before comparing: uvicorn decodes headers as latin-1, so a
+        # non-ASCII byte in Authorization yields a str that compare_digest
+        # rejects with TypeError — an unauthenticated way to raise a 500.
+        if not is_open and not hmac.compare_digest(
+            presented.encode("utf-8", "replace"), f"Bearer {AUTH_TOKEN}".encode("utf-8")
+        ):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
 
@@ -320,7 +400,9 @@ async def switch_backend(request: Request, _=Depends(_ready)):
     except Exception as e:
         logger.error("Backend switch failed: %s", e)
         _ollama_ready = True
-        raise HTTPException(status_code=500, detail=str(e))
+        # Generic detail on purpose: backend errors embed absolute venv/HF-cache
+        # paths and the username. The full error is in the server log.
+        raise HTTPException(status_code=500, detail="Backend switch failed — see server logs")
     _ollama_ready = True
     return {"status": "ok", "backend": _rt["backend"], "model": _rt["model"]}
 
@@ -399,7 +481,8 @@ async def switch_model(request: Request, _=Depends(_ready)):
                 "message": "recovered from a slow readiness check",
             }
         _ollama_ready = True
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Model switch failed: %s", e)
+        raise HTTPException(status_code=500, detail="Model switch failed — see server logs")
     _ollama_ready = True
     return {"status": "ok", "backend": _rt["backend"], "model": _rt["model"]}
 
@@ -476,6 +559,10 @@ async def chat(
     paths: List[str] = Form(default=[]),
     thinking_enabled: Optional[bool] = Form(default=None),
     github_tools_enabled: bool = Form(default=False),
+    # Approval tokens for destructive actions the user confirmed in the client.
+    # These come from the USER via the client UI, never from model output — that
+    # is what makes the confirmation gate unforgeable by the model.
+    approved_tokens: List[str] = Form(default=[]),
     _: None = Depends(_ready),
 ):
     """SSE endpoint — streams typed events from stream_chat() to the browser."""
@@ -508,7 +595,7 @@ async def chat(
     for upload in files:
         data = await upload.read()
         try:
-            att = file_handler.load_file_bytes(upload.filename, data)
+            att = file_handler.load_file_bytes(workspace.safe_filename(upload.filename), data)
             attachments.append(att)
         except Exception as e:
             logger.warning(f"Could not process uploaded file '{upload.filename}': {e}")
@@ -551,7 +638,7 @@ async def chat(
                 thinking_content = None
 
                 try:
-                    for event in orch.stream_chat(message, attachments=attachments or None, thinking_enabled=thinking_enabled, github_tools_enabled=github_tools_enabled):
+                    for event in orch.stream_chat(message, attachments=attachments or None, thinking_enabled=thinking_enabled, github_tools_enabled=github_tools_enabled, approved_tokens=frozenset(approved_tokens)):
                         if cancel_event.is_set():
                             break
                         if event.get("type") == "done":
@@ -593,7 +680,8 @@ async def chat(
                 except Exception as e:
                     if not cancel_event.is_set():
                         loop.call_soon_threadsafe(
-                            queue.put_nowait, {"type": "error", "message": str(e)}
+                            queue.put_nowait,
+                            {"type": "error", "message": "Internal error — see server logs"},
                         )
                 finally:
                     loop.call_soon_threadsafe(queue.put_nowait, None)
@@ -662,9 +750,11 @@ async def compact(conversation_id: str = Form(...), _: None = Depends(_ready)):
 # ── Project endpoints ─────────────────────────────────────────────────────────
 
 class ProjectRequest(BaseModel):
-    name: str
-    local_path: str = ""
-    github_repo: str = ""
+    # Bounded so an unbounded body cannot be written straight to SQLite. Sizes are
+    # generous versus any real project name/path.
+    name: str = Field(max_length=200)
+    local_path: str = Field(default="", max_length=4096)
+    github_repo: str = Field(default="", max_length=200)
 
 
 @app.get("/projects")
@@ -681,8 +771,28 @@ async def create_project(body: ProjectRequest):
     github_repo = body.github_repo.strip() or None
     if not local_path and not github_repo:
         raise HTTPException(status_code=400, detail="at least one of local_path or github_repo is required")
-    if local_path and not Path(local_path).expanduser().is_dir():
-        raise HTTPException(status_code=400, detail=f"Path does not exist or is not a directory: {local_path}")
+    if local_path:
+        # A project's local_path becomes the orchestrator's workspace_root, which
+        # is the sandbox root for every filesystem tool AND for run_shell. So an
+        # unconstrained value here does not live inside the sandbox — it defines
+        # it. local_path="/" would make every containment check downstream pass
+        # for the whole filesystem.
+        #
+        # The guard is deliberately about WIDENING, not about location: a repo on
+        # an external volume is a legitimate project, so we allow any directory
+        # except the ones that would hand over everything at once.
+        resolved = Path(local_path).expanduser().resolve()
+        if not resolved.is_dir():
+            raise HTTPException(status_code=400, detail=f"Path does not exist or is not a directory: {local_path}")
+        _forbidden_roots = {Path(resolved.anchor), Path.home(), Path("/Users"), Path("/Volumes"),
+                            Path("/etc"), Path("/usr"), Path("/var"), Path("/System"), Path("/Library")}
+        if resolved in _forbidden_roots:
+            raise HTTPException(
+                status_code=400,
+                detail=("Project path is too broad — pick a specific project folder, "
+                        "not a filesystem, home, or system root"),
+            )
+        local_path = str(resolved)
     project_id = db.create_project(name, local_path, github_repo)
     return db.get_project(project_id)
 
@@ -712,7 +822,9 @@ async def delete_project(project_id: str):
 # ── Memory endpoints ──────────────────────────────────────────────────────────
 
 class MemoryRequest(BaseModel):
-    text: str
+    # Memories are injected into EVERY system prompt, so an unbounded one
+    # permanently consumes context on every turn of every conversation.
+    text: str = Field(max_length=2000)
 
 
 @app.get("/memories")
@@ -786,7 +898,7 @@ async def create_conversation(
 
 
 class RenameRequest(BaseModel):
-    title: str
+    title: str = Field(max_length=200)
 
 
 @app.patch("/conversations/{conv_id}")
@@ -914,8 +1026,8 @@ async def browse(path: str = "/"):
 
 
 class AskRequest(BaseModel):
-    prompt: str
-    system: str = ""
+    prompt: str = Field(max_length=100_000)
+    system: str = Field(default="", max_length=20_000)
 
 
 @app.post("/ask")
@@ -993,12 +1105,31 @@ if __name__ == "__main__":
             out = subprocess.run(["/sbin/ifconfig"], capture_output=True, text=True, timeout=5)
         except (FileNotFoundError, OSError, subprocess.SubprocessError):
             return None
-        for tok in out.stdout.split():
+
+        # Parse PER INTERFACE and only accept the tunnel. 100.64.0.0/10 is the
+        # shared CGNAT range, not a Tailscale-exclusive one: mobile hotspots and
+        # CGNAT ISPs hand out addresses from it on real interfaces. Scanning
+        # every token in ifconfig would happily bind :8443 to an ISP-facing
+        # address that also satisfies the source-IP allowlist — i.e. exactly the
+        # off-tailnet exposure this function exists to prevent.
+        iface = None
+        for line in out.stdout.splitlines():
+            if line and not line[0].isspace():          # "utun4: flags=..."
+                iface = line.split(":", 1)[0].strip().lower()
+                continue
+            if not iface or not (iface.startswith("utun") or iface.startswith("tailscale")):
+                continue
+            parts = line.split()
+            if len(parts) < 2 or parts[0] != "inet":
+                continue
+            tok = parts[1]
             try:
-                in_range = ipaddress.ip_address(tok) in cgnat
+                if ipaddress.ip_address(tok) not in cgnat:
+                    continue
             except ValueError:
                 continue
-            if in_range and _bindable(tok):
+            if _bindable(tok):
+                logger.info("Tailnet address %s found on interface %s", tok, iface)
                 return tok
         return None
 
@@ -1012,12 +1143,16 @@ if __name__ == "__main__":
         _yaml = Path(__file__).parent / "mira.yaml"
         try:
             if _yaml.exists() and (_yaml.stat().st_mode & 0o077):
+                # Tighten it rather than only warning: this file holds the sole
+                # credential for off-host access, and a warning in a log nobody
+                # reads leaves the token readable by every local account.
+                os.chmod(_yaml, 0o600)
                 logger.warning(
-                    "%s is group/other-readable but holds auth_token — run `chmod 600 %s`.",
-                    _yaml, _yaml,
+                    "%s held auth_token but was group/other-readable — permissions "
+                    "tightened to 600.", _yaml,
                 )
-        except OSError:
-            pass
+        except OSError as e:
+            logger.warning("Could not check/fix permissions on %s: %s", _yaml, e)
 
     # ── Bind policy ──────────────────────────────────────────────────────────
     # HTTP :8000 is loopback-only by default — no plaintext token/payload ever leaves

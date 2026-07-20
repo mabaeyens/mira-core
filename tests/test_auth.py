@@ -10,7 +10,7 @@ import server
 def client():
     # Module-scoped: see note in test_cancel.py — one lifespan per module keeps
     # DB init / scheduler start to once.
-    with TestClient(server.app) as c:
+    with TestClient(server.app, base_url="http://localhost") as c:
         yield c
 
 
@@ -75,3 +75,63 @@ def test_health_open_even_with_token(client, monkeypatch, allow_source):
     monkeypatch.setattr(server, "AUTH_TOKEN", "s3cret")
     resp = client.get("/health")
     assert resp.status_code != 401
+
+
+# ── Host / Origin gate ────────────────────────────────────────────────────────
+# These run BEFORE the token gate and apply even when no token is configured,
+# because they defend the tokenless-loopback default: a page the user visits can
+# reach 127.0.0.1 carrying the browser's ambient credentials, which neither the
+# source-IP allowlist nor a token the page cannot read will stop.
+
+def test_rebinding_host_is_rejected(client, allow_source):
+    """A hostname the attacker controls, resolved to 127.0.0.1 (DNS rebinding),
+    still carries their domain in the Host header."""
+    resp = client.get("/status", headers={"Host": "evil.com"})
+    assert resp.status_code == 403
+
+
+def test_rebinding_host_rejected_even_with_valid_token(client, monkeypatch, allow_source):
+    """The Host gate runs before the token gate — a stolen token does not help."""
+    monkeypatch.setattr(server, "AUTH_TOKEN", "s3cret")
+    resp = client.get("/status", headers={"Host": "evil.com",
+                                          "Authorization": "Bearer s3cret"})
+    assert resp.status_code == 403
+
+
+def test_lookalike_host_is_rejected(client, allow_source):
+    resp = client.get("/status", headers={"Host": "localhost.evil.com"})
+    assert resp.status_code == 403
+
+
+def test_cross_site_origin_rejected_on_post(client, allow_source):
+    """Classic CSRF: a cross-site page POSTing with a simple content type."""
+    resp = client.post("/projects", json={"name": "x", "local_path": ""},
+                       headers={"Origin": "http://evil.com"})
+    assert resp.status_code == 403
+
+
+def test_null_origin_rejected_on_post(client, allow_source):
+    """Sandboxed iframe / file:// documents send Origin: null."""
+    resp = client.post("/projects", json={"name": "x", "local_path": ""},
+                       headers={"Origin": "null"})
+    assert resp.status_code == 403
+
+
+def test_same_origin_post_allowed(client, allow_source):
+    """The bundled web UI is same-origin and must keep working."""
+    resp = client.post("/projects", json={"name": "", "local_path": ""},
+                       headers={"Origin": "http://localhost"})
+    assert resp.status_code != 403      # 400 for the empty name is fine
+
+
+def test_no_origin_post_allowed(client, allow_source):
+    """Native apps and CLIs send no Origin; they are not browser contexts."""
+    resp = client.post("/projects", json={"name": "", "local_path": ""})
+    assert resp.status_code != 403
+
+
+def test_cross_site_get_not_blocked_by_origin(client, allow_source):
+    """Only state-changing methods are Origin-gated; a cross-site GET cannot be
+    read back by the attacker anyway, and blocking it would break normal use."""
+    resp = client.get("/health", headers={"Origin": "http://evil.com"})
+    assert resp.status_code != 403

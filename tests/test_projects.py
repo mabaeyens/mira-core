@@ -10,7 +10,7 @@ from core import db
 
 @pytest.fixture(scope="module")
 def client():
-    with TestClient(server.app) as c:
+    with TestClient(server.app, base_url="http://localhost") as c:
         yield c
 
 

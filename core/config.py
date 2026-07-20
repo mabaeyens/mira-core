@@ -42,6 +42,25 @@ ALLOWED_SOURCE_CIDRS: list = _get(
     "allowed_source_cidrs", ["127.0.0.0/8", "::1/128", "100.64.0.0/10"]
 )
 
+# Extra Host header values to accept, beyond loopback and the discovered tailnet
+# address. Needed if you reach Mira by a name rather than an IP — a Tailscale
+# MagicDNS name like "mira.tail1234.ts.net", or a custom /etc/hosts alias.
+#
+# Why the Host header is checked at all: a browser can be pointed at a hostname
+# the attacker controls which resolves to 127.0.0.1 (DNS rebinding). The request
+# then arrives on loopback, from a real browser, carrying the attacker's page as
+# the origin — the source-IP allowlist cannot tell it apart. Pinning the accepted
+# Host values is what distinguishes "the user typed localhost" from "a page the
+# user visited pointed its own domain at localhost".
+ALLOWED_HOSTS: list = _get("allowed_hosts", [])
+
+# Whether fetch_url may reach loopback / private / link-local addresses. The URL
+# is chosen by the model, which reads attacker-influenceable text, so the default
+# is off: a crafted page should not be able to steer it at a LAN device, a
+# loopback service, or a metadata endpoint. Turn on if you genuinely want Mira
+# summarizing localhost or LAN pages.
+URL_FETCH_ALLOW_PRIVATE: bool = _get("url_fetch_allow_private", False)
+
 # mira-mlx is the default backend (see mira.yaml / README). These code defaults must
 # match mira.yaml.example so a fresh install with no mira.yaml behaves as documented.
 BACKEND: str = _get("backend", "mira-mlx")
@@ -123,6 +142,11 @@ MIRA_MLX_KV_GROUP_SIZE: int = _get("mira_mlx_kv_group_size", 64)
 # only enable for a deliberate profiling window.
 MIRA_MLX_PROFILE_EXPERTS: bool = _get("mira_mlx_profile_experts", False)
 MIRA_MLX_EXPERT_PROFILE_PATH: Optional[str] = _get("mira_mlx_expert_profile_path", None)
+# Executing a model repo's own Python at load time. Default off: with this on,
+# loading any repo runs that repo's tokenizer code in-process, so a model id is
+# equivalent to code execution. Enable only for a specific model you trust that
+# genuinely ships a custom tokenizer class.
+MIRA_MLX_TRUST_REMOTE_CODE: bool = _get("mira_mlx_trust_remote_code", False)
 # MoE expert disk offloading (specs/moe-expert-offload-02-runtime-cache.md).
 # Only `mira_mlx_resident_expert_fraction` of each MoE layer's experts stay
 # resident; the rest are fetched on demand from the model's own safetensors

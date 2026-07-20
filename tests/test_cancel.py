@@ -34,7 +34,7 @@ def client():
     # DB init / scheduler start to once. Locks are now per-conversation and created
     # lazily in the running loop (SessionManager), so they're no longer the reason
     # for module scope — efficiency is.
-    with TestClient(server.app) as c:
+    with TestClient(server.app, base_url="http://localhost") as c:
         yield c
 
 
