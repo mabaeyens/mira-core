@@ -217,7 +217,13 @@ def _write_fake_safetensors(path, tensors):
     with open(path, "wb") as f:
         f.write(_struct.pack("<Q", len(header_bytes)))
         f.write(header_bytes)
-        f.write(b"\x00" * offset)
+        # Sparse data section: seek past it rather than materializing `offset`
+        # bytes. Tests build multi-GB fake expert tables, and allocating those
+        # for real blows up CI runners (MemoryError) while buying nothing —
+        # only the header and st_size are ever read.
+        if offset:
+            f.seek(offset - 1, 1)
+            f.write(b"\x00")
 
 
 def test_estimate_active_weight_bytes_none_fraction_matches_full_size(monkeypatch):
