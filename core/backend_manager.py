@@ -376,7 +376,79 @@ def _omlx_request(path: str, timeout: int = 2):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
-def _wait_for_ready(url: str, timeout: int = 60, *, omlx: bool = False) -> None:
+class BackendIdentityError(RuntimeError):
+    """A process is answering the backend port but is not the model we expect.
+
+    Raised instead of silently adopting an unverified listener. The listener may
+    be a stale backend from a previous run serving a different model, or a local
+    process that has squatted the port and would otherwise inherit every prompt.
+    """
+
+
+# Opt-in escape hatch for the bench workflow, which sometimes hand-starts a
+# backend on the shared port and wants ensure_backend_running() to adopt it
+# without an identity match. Off by default so production fails closed.
+_ADOPT_UNVERIFIED = os.getenv("MIRA_ADOPT_UNVERIFIED_BACKEND") == "1"
+
+
+def _model_basename(model_id: str) -> str:
+    """Normalise a model id for comparison: drop any repo prefix, lowercase.
+
+    Backends report the served model differently — mira-mlx echoes the full
+    `mlx-community/Qwen3.6-35B-A3B-4bit` verbatim (verified), others may return
+    only the short name. Comparing on the basename tolerates both without
+    accepting an outright different model.
+    """
+    return (model_id or "").rsplit("/", 1)[-1].strip().lower()
+
+
+def _model_matches(served: str, expected: str) -> bool:
+    if not served or not expected:
+        return False
+    return _model_basename(served) == _model_basename(expected)
+
+
+def _served_model(url: str, *, omlx: bool = False) -> Optional[str]:
+    """Return data[0].id from /v1/models, or None if unreachable/unparseable.
+
+    None means "nobody home or not a model server"; "" means it answered but the
+    body had no model id (still not a match).
+    """
+    try:
+        resp = _omlx_request("/v1/models") if omlx else urllib.request.urlopen(url, timeout=2)
+        with resp:
+            body = json.loads(resp.read())
+        items = body.get("data") or []
+        return items[0].get("id", "") if items else ""
+    except Exception:
+        return None
+
+
+def _verify_or_adopt(url: str, expect_model: Optional[str], *, omlx: bool = False) -> bool:
+    """True if the port serves the expected model (safe to adopt).
+
+    False if nobody is listening. Raises BackendIdentityError if something IS
+    listening but serves a different model — that is the case we must never
+    silently adopt (stale backend or port squatter). The bench escape hatch
+    downgrades the raise to adoption.
+    """
+    served = _served_model(url, omlx=omlx)
+    if served is None:
+        return False  # nothing there — caller should start the backend
+    if not expect_model or _model_matches(served, expect_model):
+        return True
+    if _ADOPT_UNVERIFIED:
+        logger.warning("adopting unverified listener on %s: serves %r, expected %r "
+                       "(MIRA_ADOPT_UNVERIFIED_BACKEND=1)", url, served, expect_model)
+        return True
+    raise BackendIdentityError(
+        f"{url} is serving {served!r} but {expect_model!r} was expected. "
+        "Refusing to route prompts to an unverified process. If this is a "
+        "hand-started backend you trust, set MIRA_ADOPT_UNVERIFIED_BACKEND=1.")
+
+
+def _wait_for_ready(url: str, timeout: int = 60, *, omlx: bool = False,
+                    expect_model: Optional[str] = None) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -384,9 +456,18 @@ def _wait_for_ready(url: str, timeout: int = 60, *, omlx: bool = False) -> None:
                 _omlx_request("/v1/models")
             else:
                 urllib.request.urlopen(url, timeout=2)
-            return
         except Exception:
             time.sleep(1)
+            continue
+        # It answered. If we know which model to expect, prove identity before
+        # declaring ready — a squatter that 200s on /v1/models must not pass.
+        if expect_model is not None:
+            served = _served_model(url, omlx=omlx)
+            if not _model_matches(served or "", expect_model):
+                raise BackendIdentityError(
+                    f"{url} became reachable but serves {served!r}, "
+                    f"expected {expect_model!r}")
+        return
     raise TimeoutError(f"Server did not become ready at {url} after {timeout}s")
 
 
@@ -449,41 +530,45 @@ def ensure_backend_running(backend: str, model: Optional[str] = None) -> None:
     fresh process cold-started mira-mlx into MIRA_MLX_MODEL's hardcoded
     Ministral default instead of mira.yaml's configured Qwen3.6, silently
     diverging from the configured model on every restart)."""
+    # Identity gate: the "already running" short-circuits below are the actual
+    # attack surface — they run before any spawn, so a squatter (or a stale
+    # different-model backend) is met here first. _verify_or_adopt proves the
+    # listener serves the expected model BEFORE _warmup_model, which is itself
+    # the first disclosure (it POSTs the system prompt). A mismatch raises rather
+    # than adopting, so no prompt is ever sent to an unverified process.
     if backend == "dflash":
-        try:
-            urllib.request.urlopen(DFLASH_HOST + "/v1/models", timeout=2)
-            logger.info("dflash already running")
-        except Exception:
+        if not _verify_or_adopt(DFLASH_HOST + "/v1/models", DFLASH_MODEL):
             start_dflash()
+        else:
+            logger.info("dflash already running")
         _warmup_model(DFLASH_MODEL, host=DFLASH_HOST)
     elif backend == "mlx-lm":
-        try:
-            urllib.request.urlopen(MLX_LM_HOST + "/v1/models", timeout=2)
-            logger.info("mlx-lm already running")
-        except Exception:
+        if not _verify_or_adopt(MLX_LM_HOST + "/v1/models", MLX_LM_MODEL):
             start_mlx_lm()
+        else:
+            logger.info("mlx-lm already running")
         _warmup_model(MLX_LM_MODEL)
     elif backend == "omlx":
-        try:
-            _omlx_request("/v1/models")
-            logger.info("oMLX already running")
-        except Exception:
+        if not _verify_or_adopt(OMLX_HOST + "/v1/models", OMLX_MODEL, omlx=True):
             start_omlx()
+        else:
+            logger.info("oMLX already running")
         _warmup_model(OMLX_MODEL, host=OMLX_HOST, api_key=_omlx_api_key())
     elif backend == "vllm-mlx":
-        try:
-            urllib.request.urlopen(VLLM_MLX_HOST + "/v1/models", timeout=2)
-            logger.info("vllm-mlx already running")
-        except Exception:
+        if not _verify_or_adopt(VLLM_MLX_HOST + "/v1/models", VLLM_MLX_MODEL):
             start_vllm_mlx()
+        else:
+            logger.info("vllm-mlx already running")
         _warmup_model(VLLM_MLX_MODEL, host=VLLM_MLX_HOST)
     elif backend == "mira-mlx":
         target_model = model or MIRA_MLX_MODEL
-        try:
-            urllib.request.urlopen(MIRA_MLX_HOST + "/v1/models", timeout=2)
-            logger.info("mira-mlx already running")
-        except Exception:
+        # Compare the live listener against the TARGET model, not the default —
+        # a switch to the same backend/different model must restart, not adopt
+        # whatever is already up (see feedback_backend_switch_self_stop).
+        if not _verify_or_adopt(MIRA_MLX_HOST + "/v1/models", target_model):
             start_mira_mlx(target_model)
+        else:
+            logger.info("mira-mlx already running")
         _warmup_model(target_model, host=MIRA_MLX_HOST)
     else:
         try:
