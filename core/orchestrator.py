@@ -23,7 +23,7 @@ from .config import (
     THINKING_MODE, MAX_THINKING_TOKENS, TEMP_WORKSPACE_MAX_MB,
 )
 from .tools import TOOLS, GITHUB_TOOLS, _LOCAL_TOOLS, _TEMP_WORKSPACE_TOOLS
-from .prompts import build_system_prompt, current_time_note, SEARCH_RESULT_TEMPLATE
+from .prompts import build_system_prompt, current_time_note, SEARCH_RESULT_TEMPLATE, wrap_untrusted
 from .search_engine import SearchEngine
 from .rag_engine import RagEngine
 from . import url_fetcher
@@ -497,7 +497,7 @@ class ChatOrchestrator:
         images = []
         if attachments:
             text_parts = [
-                f"[File: {att['name']}]\n{att['content']}\n---"
+                wrap_untrusted(f"[File: {att['name']}]\n{att['content']}", source="attachment")
                 for att in attachments
                 if att["type"] == "text" and att["content"]
             ]
@@ -508,7 +508,10 @@ class ChatOrchestrator:
                     ocr_text = file_handler.ocr_image_from_base64(att["content"])
                     if ocr_text:
                         ocr_parts.append(
-                            f"[OCR text extracted from screenshot '{att['name']}']\n{ocr_text}\n---"
+                            wrap_untrusted(
+                                f"[OCR text extracted from screenshot '{att['name']}']\n{ocr_text}",
+                                source="ocr",
+                            )
                         )
                 if ocr_parts:
                     text_parts.extend(ocr_parts)
@@ -534,8 +537,9 @@ class ChatOrchestrator:
                 attached_names = ", ".join(
                     f"`{att['name']}`" for att in (attachments or []) if att["type"] == "rag"
                 )
-                context = "\n\n".join(
-                    f"[File: {c['source']}]\n{c['text']}" for c in rag_chunks
+                context = wrap_untrusted(
+                    "\n\n".join(f"[File: {c['source']}]\n{c['text']}" for c in rag_chunks),
+                    source="attachment",
                 )
                 framing = (
                     f"The user attached these files: {attached_names}. "
@@ -545,9 +549,12 @@ class ChatOrchestrator:
                 )
                 full_message = f"{framing}\n\n[Attached file content]\n{context}\n\n---\n\n{full_message}"
             else:
-                context = "\n\n".join(
-                    f"[Source: {c['source']} | Score: {c['score']:.2f}]\n{c['text']}"
-                    for c in rag_chunks
+                context = wrap_untrusted(
+                    "\n\n".join(
+                        f"[Source: {c['source']} | Score: {c['score']:.2f}]\n{c['text']}"
+                        for c in rag_chunks
+                    ),
+                    source="rag",
                 )
                 full_message = f"[Relevant document sections]\n{context}\n\n---\n\n{full_message}"
 
@@ -937,7 +944,10 @@ class ChatOrchestrator:
                     "name": name,
                     "content": SEARCH_RESULT_TEMPLATE.format(
                         query=query,
-                        results_text=self.search_engine.format_tool_result(web_results)
+                        results_text=wrap_untrusted(
+                            self.search_engine.format_tool_result(web_results),
+                            source="web_search",
+                        ),
                     ),
                 })
             elif name == "fetch_url":
@@ -955,7 +965,7 @@ class ChatOrchestrator:
                     "role": "tool",
                     "tool_call_id": tc_id,
                     "name": name,
-                    "content": content,
+                    "content": wrap_untrusted(content, source="fetch_url"),
                 })
             else:
                 _, label_done_fn = _tool_ui_labels(name, args)
@@ -977,11 +987,19 @@ class ChatOrchestrator:
                 if diverged:
                     yield {"type": "divergence_guard", "tool": name, "step": step + 1}
                 yield {"type": "agent_step", "step": step + 1, "tool": name, "status": observation["status"]}
+                # Wrap only genuine retrieved DATA as untrusted (RULE 10). Errors and
+                # approval-gate confirmations are Mira-generated control metadata, not
+                # attacker content — labelling them "data, not instruction" would blur
+                # RULE 4's destructive-action surfacing.
+                obs_json = json.dumps(observation)
+                is_control = observation["status"] == "error" or (
+                    isinstance(result, dict) and result.get("requires_confirmation")
+                )
                 self.conversation_history.append({
                     "role": "tool",
                     "tool_call_id": tc_id,
                     "name": name,
-                    "content": json.dumps(observation),
+                    "content": obs_json if is_control else wrap_untrusted(obs_json, source=name),
                 })
 
     def _call_llm(

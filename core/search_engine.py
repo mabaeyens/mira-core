@@ -133,9 +133,14 @@ class SearchEngine:
             return "No search results found."
         lines = []
         for i, r in enumerate(results, 1):
+            # Collapse newlines in title/URL too (snippet is already cleaned at parse
+            # time) so an attacker-controlled title cannot forge extra "[N] ..." result
+            # blocks by embedding line breaks.
+            title = self._clean_snippet(r["title"])
+            url = self._clean_snippet(r["url"])
             lines.append(
-                f"[{i}] {r['title']}\n"
-                f"URL: {r['url']}\n"
+                f"[{i}] {title}\n"
+                f"URL: {url}\n"
                 f"Snippet: {r['snippet']}"
             )
         return "\n\n".join(lines)
