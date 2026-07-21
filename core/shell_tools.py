@@ -1,22 +1,69 @@
-"""Shell command execution — cwd always sandboxed to the active workspace root.
+"""Shell command execution — cwd confined and wrapped in an OS sandbox.
 
-Security note: commands are executed with shell=True so that pipelines and
-redirects work.  This means a prompt-injection attack could, in principle,
-smuggle arbitrary shell code through model output.  Mitigations in place:
-  1. CWD is always confined to the workspace root via safe_path().
-  2. Commands referencing absolute paths outside the workspace are rejected.
-  3. Known-destructive patterns require explicit user confirmation (force=True).
-The denylist below is defence-in-depth; it is not a complete sandbox.
+Commands run under macOS `sandbox-exec` with a deny-by-default profile that
+confines *writes* to the workspace and temp dirs. This is the structural control:
+regex prefiltering runs on the literal string and the shell re-interprets it
+afterwards (quote removal, command substitution, base64|sh), so the denylist
+below cannot contain a shell — the OS sandbox can. Layers, outermost first:
+  1. sandbox-exec confines writes to the workspace + TMPDIR (fails closed).
+  2. CWD is confined to the workspace root via safe_path().
+  3. Commands referencing absolute paths outside the workspace are rejected.
+  4. Known-destructive patterns require explicit out-of-band approval.
+Reads stay broad on purpose — the tool is for inspecting code, and narrowing
+reads breaks git/python/compilers. The threat closed here is destruction and
+exfiltration-by-write outside the workspace.
 """
 
+import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .config import SHELL_TIMEOUT, WORKSPACE_ROOT
+from .config import (
+    SHELL_TIMEOUT,
+    WORKSPACE_ROOT,
+    SHELL_SANDBOX,
+    SHELL_SANDBOX_ALLOW_NETWORK,
+)
 from .workspace import safe_path, rel
 from .approvals import approval_token
+
+_SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+
+
+def _sandbox_available() -> bool:
+    return os.path.exists(_SANDBOX_EXEC) and os.access(_SANDBOX_EXEC, os.X_OK)
+
+
+def _sandbox_profile(workspace_root: str, allow_network: bool) -> str:
+    """Build a deny-by-default sbpl profile confining writes to the workspace.
+
+    Raises ValueError if the resolved workspace path cannot be safely embedded
+    in the profile language (contains a quote or newline) — better to refuse
+    than to emit a profile an attacker-influenced path could break out of.
+    """
+    root = str(Path(workspace_root).expanduser().resolve())
+    if '"' in root or "\n" in root or "\\" in root:
+        raise ValueError(f"workspace path not sandbox-safe: {root!r}")
+    net = "" if allow_network else "(deny network*)\n"
+    return (
+        "(version 1)\n"
+        "(deny default)\n"
+        "(allow process-exec process-fork signal)\n"
+        "(allow sysctl-read mach-lookup)\n"
+        "(allow file-read*)\n"
+        "(allow file-write*\n"
+        f'  (subpath "{root}")\n'
+        '  (subpath "/private/tmp")\n'
+        '  (subpath "/private/var/folders")\n'
+        '  (subpath "/tmp"))\n'
+        "(allow file-write-data\n"
+        '  (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr")\n'
+        '  (literal "/dev/dtracehelper") (literal "/dev/tty"))\n'
+        + net
+    )
 
 
 def _normalize(cmd: str) -> str:
@@ -100,10 +147,33 @@ def run_shell(command: str, cwd: str = ".", force: bool = False, root: Optional[
                 }
             break  # user confirmed — allow it
 
+    # Wrap in the OS sandbox unless explicitly disabled in config. If the sandbox
+    # is enabled but unavailable, fail closed — never silently drop to an
+    # unsandboxed shell.
+    if SHELL_SANDBOX:
+        if not _sandbox_available():
+            return {
+                "error": (
+                    "Shell sandbox is enabled but sandbox-exec is unavailable; "
+                    "refusing to run the command unsandboxed. Set shell_sandbox: "
+                    "false in mira.yaml only if you accept an unsandboxed shell."
+                ),
+                "command": command,
+            }
+        try:
+            profile = _sandbox_profile(effective_root, SHELL_SANDBOX_ALLOW_NETWORK)
+        except ValueError as e:
+            return {"error": str(e), "command": command}
+        argv = [_SANDBOX_EXEC, "-p", profile, "/bin/sh", "-c", command]
+        use_shell = False
+    else:
+        argv = command
+        use_shell = True
+
     try:
         result = subprocess.run(
-            command,
-            shell=True,
+            argv,
+            shell=use_shell,
             cwd=str(work_dir),
             capture_output=True,
             text=True,

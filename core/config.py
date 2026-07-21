@@ -121,6 +121,13 @@ VLLM_MLX_CLI: str = _paths.get("vllm_mlx_cli", str(Path.home() / ".local" / "bin
 # ── Workspace ─────────────────────────────────────────────────────────────────
 WORKSPACE_ROOT = os.getenv("WORKSPACE_ROOT", str(Path.home() / "workspace"))
 SHELL_TIMEOUT = 30  # seconds per shell command
+# run_shell wraps every command in an OS sandbox (macOS sandbox-exec) that
+# confines writes to the workspace + temp dirs. Regex prefiltering cannot contain
+# a shell; this can. Fails closed if sandbox-exec is unavailable.
+SHELL_SANDBOX: bool = _get("shell_sandbox", True)
+# Network defaults ON — git pull / npm install / curl are legitimate here. Set
+# false in mira.yaml for untrusted sessions to also block outbound connections.
+SHELL_SANDBOX_ALLOW_NETWORK: bool = _get("shell_sandbox_allow_network", True)
 TEMP_WORKSPACE_MAX_MB = 100  # per-conversation attachment workspace size cap
 
 # ── Conversation persistence ──────────────────────────────────────────────────
