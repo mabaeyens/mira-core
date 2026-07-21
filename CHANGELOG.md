@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.9.4 — July 2026
+
+- **⚠️ BREAKING CHANGE — destructive tool calls now require out-of-band approval.**
+  The model can no longer approve its own destructive actions (`rm -rf`,
+  `git reset --hard`, `sudo`, file/branch deletion, PR merge). The server refuses
+  them and emits an `approval_required` event; the client must show it to the user
+  and echo back a content-derived approval token before the command runs. **Clients
+  older than the app's build 38 / v0.2.1 do not understand this handshake**, so on
+  those clients destructive commands are refused with no way to approve them.
+  Everyday non-destructive commands are unaffected. Update the app before relying on
+  destructive tools. Wire format: `approval_required` SSE event carrying
+  `{tool, action, approval_token, target, matched, message}`.
+- Hardened request handling: `Host`/`Origin` are validated ahead of the auth token,
+  request models are bounded, project paths are confined, and tailnet interface
+  discovery is narrowed to interfaces that can carry it.
+- Upload filenames are normalised to a bare name before joining the workspace root;
+  `url_fetcher` declines private and loopback targets unless explicitly allowed.
+- Remote code execution (`trust_remote_code`) is now opt-in via config rather than
+  on by default.
+- Inference: shard names from a model index are constrained to bare filenames and
+  safetensors header reads are capped; fixes a HuggingFace-cache symlink case that
+  broke expert offload for cached models.
+- `mlx-lm` is pinned to an explicit commit instead of a branch, so the installed
+  tree is reproducible and cannot change under a force-push.
+
 ## v0.9.3 — July 2026
 
 - **`context_window` in `mira.yaml` now actually reaches mira-mlx** — the top-level
