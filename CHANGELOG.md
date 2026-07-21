@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.9.5 — July 2026
+
+- Retrieved content is now handled as data, not instructions. Tool output —
+  file and GitHub reads, fetched pages, search results, RAG chunks, attachments,
+  and OCR text — is wrapped in a per-session trust boundary, and a new
+  system-prompt rule tells the model to report, never obey, any instructions
+  embedded in that content. The out-of-band approval gate remains the
+  load-bearing control for destructive actions.
+- `run_shell` now runs inside an OS sandbox that confines its file writes to the
+  active workspace.
+- Inference backends verify a listener's model identity before adopting it, so a
+  mismatched or unexpected backend process is not silently trusted.
+- Corrected the destructive-action confirmation wording (approval is out of band,
+  not a flag the model sets) and normalised search-result titles and URLs so a
+  crafted result cannot forge additional result blocks.
+
 ## v0.9.4 — July 2026
 
 - **⚠️ BREAKING CHANGE — destructive tool calls now require out-of-band approval.**
