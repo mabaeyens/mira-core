@@ -35,8 +35,13 @@ jobs:
         run: |
           # mlx is macOS-only and excluded on Linux runners → use the CPU reranker.
           printf 'reranker_backend: crossencoder\n' > mira.yaml
+          # run_shell's OS sandbox uses macOS sandbox-exec, which is absent on Linux
+          # runners; SHELL_SANDBOX defaults on, so run_shell would fail closed. Disable
+          # it here so shell-tool tests exercise real command execution. The sandbox
+          # behaviour itself is covered by test_shell_sandbox.py (skipped off macOS).
+          printf 'shell_sandbox: false\n' >> mira.yaml
           # run_shell defaults its root to WORKSPACE_ROOT (~/workspace); the server
-          # expects this dir to exist. Create it so shell-tool tests have a sandbox.
+          # expects this dir to exist. Create it so shell-tool tests have a workspace.
           mkdir -p "$HOME/workspace"
 
       - name: Prefetch models (warms HF cache; retries transient errors)
