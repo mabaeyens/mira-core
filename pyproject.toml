@@ -69,4 +69,4 @@ package = true
 # 2026-07 "Text-based state machine for tool/reasoning parsing" refactor
 # (PR #1501) renamed/replaced it with TextStateMachine, a different API.
 [tool.uv.sources]
-mlx-lm = { git = "https://github.com/mabaeyens/mlx-lm.git", rev = "e2b26fd18fe18a7415938199ca0331d6b2891c12" }
+mlx-lm = { git = "https://github.com/mabaeyens/mlx-lm.git", rev = "65fcb4c054c4b5b6fb339144bf8128034697e281" }
