@@ -146,7 +146,17 @@ def get_project(project_id: str) -> Optional[Dict]:
 
 
 def delete_project(project_id: str) -> None:
+    """Delete a project and unfile its conversations, which are NOT deleted.
+
+    Clearing project_id matters now that conversations can be moved between
+    projects: without it the rows keep pointing at a project that no longer
+    exists, and a client that groups by project has nowhere to put them.
+    """
     with _conn() as conn:
+        conn.execute(
+            "UPDATE conversations SET project_id = NULL WHERE project_id = ?",
+            (project_id,),
+        )
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
 
 
@@ -215,6 +225,17 @@ def update_title(conv_id: str, title: str) -> None:
         conn.execute(
             "UPDATE conversations SET title = ? WHERE id = ?", (title, conv_id)
         )
+
+
+def update_project(conv_id: str, project_id: Optional[str]) -> None:
+    """Move a conversation into a project, or out of every project when None."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE conversations SET project_id = ? WHERE id = ?",
+            (project_id, conv_id),
+        )
+    if project_id:
+        touch_project(project_id)
 
 
 # ── Messages ──────────────────────────────────────────────────────────────────

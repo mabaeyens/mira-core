@@ -897,16 +897,44 @@ async def create_conversation(
     return {"id": conv_id, "title": "New conversation", "project_id": project_id}
 
 
-class RenameRequest(BaseModel):
-    title: str = Field(max_length=200)
+class ConversationUpdate(BaseModel):
+    """Partial update. Every field optional, at least one required.
+
+    `project_id` distinguishes three cases, which is why it cannot just default
+    to None: absent means "leave the project alone", null means "remove from its
+    project", and a string means "move it there". Pydantic's
+    `model_fields_set` is what tells absent from explicit null apart.
+    """
+    title: Optional[str] = Field(default=None, max_length=200)
+    project_id: Optional[str] = None
+
+
+# Kept as an alias: `RenameRequest` was this endpoint's only shape until the
+# endpoint learned to move conversations between projects.
+RenameRequest = ConversationUpdate
 
 
 @app.patch("/conversations/{conv_id}")
-async def rename_conversation(conv_id: str, body: RenameRequest):
-    title = body.title.strip()
-    if not title:
-        raise HTTPException(status_code=400, detail="title required")
-    db.update_title(conv_id, title)
+async def update_conversation(conv_id: str, body: ConversationUpdate):
+    supplied = body.model_fields_set
+    if not supplied:
+        raise HTTPException(status_code=400, detail="nothing to update")
+
+    if not db.get_conversation(conv_id):
+        raise HTTPException(status_code=404, detail=f"Conversation not found: {conv_id}")
+
+    if "title" in supplied:
+        title = (body.title or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title required")
+        db.update_title(conv_id, title)
+
+    if "project_id" in supplied:
+        project_id = (body.project_id or "").strip() or None
+        if project_id and not db.get_project(project_id):
+            raise HTTPException(status_code=400, detail=f"Project not found: {project_id}")
+        db.update_project(conv_id, project_id)
+
     return {"status": "ok"}
 
 
