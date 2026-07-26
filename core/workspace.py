@@ -2,12 +2,17 @@
 
 from pathlib import Path
 from typing import Optional
-from .config import WORKSPACE_ROOT
+
+# Imported as a module, not `from .config import WORKSPACE_ROOT`: a by-value
+# import copies the string into this namespace, so every importing module ends
+# up with its own sandbox root and patching one leaves the others pointing at
+# the real workspace. Read it through `config` so there is one place to patch.
+from . import config
 
 
 def safe_path(user_path: str, root: Optional[str] = None) -> Path:
     """Resolve path and verify it sits within root (defaults to WORKSPACE_ROOT)."""
-    r = Path(root or WORKSPACE_ROOT).expanduser().resolve()
+    r = Path(root or config.WORKSPACE_ROOT).expanduser().resolve()
     resolved = (r / user_path).resolve()
     if not str(resolved).startswith(str(r) + "/") and resolved != r:
         raise ValueError(f"Path '{user_path}' is outside the workspace ({r})")
@@ -31,7 +36,7 @@ def safe_filename(name: Optional[str], fallback: str = "attachment") -> str:
 
 def rel(path: Path, root: Optional[str] = None) -> str:
     """Return a path relative to root (defaults to WORKSPACE_ROOT) as a string."""
-    r = Path(root or WORKSPACE_ROOT).expanduser().resolve()
+    r = Path(root or config.WORKSPACE_ROOT).expanduser().resolve()
     try:
         return str(path.resolve().relative_to(r))
     except ValueError:

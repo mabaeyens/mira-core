@@ -21,12 +21,19 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from . import config
 from .config import (
     SHELL_TIMEOUT,
-    WORKSPACE_ROOT,
     SHELL_SANDBOX,
     SHELL_SANDBOX_ALLOW_NETWORK,
 )
+
+# WORKSPACE_ROOT is deliberately NOT imported by value. `from .config import
+# WORKSPACE_ROOT` copies the string into this module's namespace, so the
+# sandbox root a test patches and the one run_shell reads become two different
+# objects. That silently pointed the run_shell tests at the real workspace for
+# ~3 months, including the one that runs `rm -rf .` to prove the guard blocks
+# it. Read it through the module so there is exactly one place to patch.
 from .workspace import safe_path, rel
 from .approvals import approval_token
 
@@ -79,6 +86,12 @@ _DANGEROUS = [
     (re.compile(r"/[a-z/]*\brm\s+.*-[rRf]", re.I),          "rm via absolute path"),
     (re.compile(r"\b(command|env)\s+rm\s+.*-[rRf]", re.I),  "rm via command/env wrapper"),
     (re.compile(r"\bxargs\s+.*\brm\b", re.I),               "xargs rm"),
+    # find's own delete actions reach the same blast radius as `rm -rf .`
+    # (recursive, whole subtree, no prompt) but carry none of rm's flags, so
+    # the patterns above never see them. Gating them keeps the rule consistent:
+    # anything that can empty the workspace in one command needs approval.
+    (re.compile(r"\bfind\b.*\s-delete\b", re.I),            "find -delete"),
+    (re.compile(r"\bfind\b.*-exec\s+rm\b", re.I),           "find -exec rm"),
     # Git destructive ops
     (re.compile(r"\bgit\s+push\b.*--force", re.I),           "git push --force"),
     (re.compile(r"\bgit\s+reset\s+--hard\b", re.I),          "git reset --hard"),
@@ -111,7 +124,7 @@ def _abs_outside_ws_pattern(workspace_root: str) -> re.Pattern:
 
 def run_shell(command: str, cwd: str = ".", force: bool = False, root: Optional[str] = None, timeout: int = SHELL_TIMEOUT) -> Dict[str, Any]:
     timeout = max(1, min(timeout, 300))
-    effective_root = root or WORKSPACE_ROOT
+    effective_root = root or config.WORKSPACE_ROOT
     try:
         work_dir = safe_path(cwd, effective_root)
     except ValueError as e:

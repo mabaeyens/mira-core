@@ -9,17 +9,19 @@ from unittest.mock import patch
 
 @pytest.fixture()
 def ws(tmp_path):
-    """Patch WORKSPACE_ROOT everywhere it is bound.
+    """Redirect the sandbox root to a temp dir.
 
-    core.workspace is NOT the single source of truth it was once described as:
-    core.shell_tools does its own `from .config import WORKSPACE_ROOT`, so it
-    holds a separate module-level binding and run_shell reads that one. With
-    only core.workspace patched, run_shell executed against the real
-    workspace instead of the fixture, which is why the four run_shell tests
-    below were failing (and, worse, running `rm` outside the sandbox).
+    One patch point on purpose. core.workspace, core.shell_tools and
+    core.github_tools all read `config.WORKSPACE_ROOT` through the module
+    rather than importing it by value, so patching core.config covers every
+    consumer and a new consumer cannot silently opt out of isolation.
+
+    This used to patch core.workspace only, while run_shell read its own
+    by-value copy, so the run_shell tests executed against the real
+    ~/workspace for ~3 months — including the one that runs `rm -rf .` to
+    prove the guard blocks it. See test_workspace_root_has_one_binding.
     """
-    with patch("core.workspace.WORKSPACE_ROOT", str(tmp_path)), \
-         patch("core.shell_tools.WORKSPACE_ROOT", str(tmp_path)):
+    with patch("core.config.WORKSPACE_ROOT", str(tmp_path)):
         yield tmp_path
 
 
@@ -271,6 +273,35 @@ def test_run_shell_git_reset_hard_blocked(ws):
     from core import shell_tools
     result = shell_tools.run_shell("git reset --hard HEAD")
     assert result.get("requires_confirmation") is True
+
+
+@pytest.mark.parametrize("cmd,label", [
+    ("find . -name '*.txt' -delete", "find -delete"),
+    ("find . -type f -exec rm {} \\;", "find -exec rm"),
+])
+def test_run_shell_find_delete_blocked(ws, cmd, label):
+    """find's delete actions must gate like `rm -rf .` does.
+
+    Same blast radius (recursive, whole subtree, no prompt) but none of rm's
+    flags, so the rm patterns never matched and these emptied the workspace
+    with no approval. Verified against a real file before the guard landed.
+    """
+    from core import shell_tools
+    (ws / "victim.txt").write_text("x")
+    result = shell_tools.run_shell(cmd)
+    assert result.get("requires_confirmation") is True
+    assert result.get("matched") == label
+    assert (ws / "victim.txt").exists(), "guard must fire before anything is deleted"
+
+
+def test_run_shell_ordinary_find_still_allowed(ws):
+    """The guard must not swallow non-destructive find, which agents use a lot."""
+    from core import shell_tools
+    (ws / "a.txt").write_text("x")
+    result = shell_tools.run_shell("find . -name '*.txt'")
+    assert result.get("requires_confirmation") is None
+    assert result["exit_code"] == 0
+    assert "a.txt" in result["stdout"]
 
 
 def test_run_shell_sudo_blocked(ws):

@@ -47,9 +47,9 @@ def github_clone_repo(repo: str, dest: str = "") -> Dict[str, Any]:
     """Clone a GitHub repo with gh CLI (SSH). Returns the local path on success."""
     if err := _validate_repo(repo):
         return err
-    from .config import WORKSPACE_ROOT
+    from . import config
     repo_name = repo.split("/")[-1]
-    clone_path = Path(dest).expanduser() if dest else Path(WORKSPACE_ROOT).expanduser() / repo_name
+    clone_path = Path(dest).expanduser() if dest else Path(config.WORKSPACE_ROOT).expanduser() / repo_name
     # `dest` is model-supplied and the result is later registered as a project
     # local_path (i.e. a sandbox root), so an unconstrained value here is a way
     # to widen the sandbox from inside it. Keep clones under $HOME.
