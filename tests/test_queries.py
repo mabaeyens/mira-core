@@ -416,4 +416,7 @@ def test_stats_token_capture_with_real_counts(orchestrator):
     assert orchestrator.last_prompt_tokens == 1024
     assert orchestrator.total_input_tokens == 1024
     assert orchestrator.total_output_tokens == 32
-    assert orchestrator.context_pct == round(1024 / 65536 * 100)
+    # Against the orchestrator's own window, not a hardcoded 65536: CONTEXT_WINDOW
+    # is derived from available RAM, so the literal only held on the machine the
+    # test was written on and the assertion was really testing the hardware.
+    assert orchestrator.context_pct == round(1024 / orchestrator.context_window * 100)

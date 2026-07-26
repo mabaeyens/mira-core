@@ -9,8 +9,17 @@ from unittest.mock import patch
 
 @pytest.fixture()
 def ws(tmp_path):
-    """Patch WORKSPACE_ROOT in the workspace module (the single source of truth)."""
-    with patch("core.workspace.WORKSPACE_ROOT", str(tmp_path)):
+    """Patch WORKSPACE_ROOT everywhere it is bound.
+
+    core.workspace is NOT the single source of truth it was once described as:
+    core.shell_tools does its own `from .config import WORKSPACE_ROOT`, so it
+    holds a separate module-level binding and run_shell reads that one. With
+    only core.workspace patched, run_shell executed against the real
+    workspace instead of the fixture, which is why the four run_shell tests
+    below were failing (and, worse, running `rm` outside the sandbox).
+    """
+    with patch("core.workspace.WORKSPACE_ROOT", str(tmp_path)), \
+         patch("core.shell_tools.WORKSPACE_ROOT", str(tmp_path)):
         yield tmp_path
 
 
@@ -214,8 +223,11 @@ def test_run_shell_non_zero_exit_code(ws):
 
 def test_run_shell_captures_stderr(ws):
     from core import shell_tools
-    result = shell_tools.run_shell("ls /nonexistent_path_xyz_abc 2>&1 || true")
-    # Either stderr or stdout should mention the path doesn't exist
+    # Relative path, and no 2>&1 redirect. The original used an absolute path,
+    # which the absolute-path guard now refuses before the command ever runs,
+    # so the result was an error dict and this failed with KeyError: 'stdout'.
+    result = shell_tools.run_shell("ls nonexistent_path_xyz_abc")
+    assert result["stderr"], "ls of a missing path must surface on stderr"
     output = result["stdout"] + result["stderr"]
     assert len(output) > 0
 
@@ -323,7 +335,10 @@ def test_model_cannot_self_approve_destructive_command(ws):
 
 def test_run_shell_timeout(ws):
     from core import shell_tools
-    with patch("core.shell_tools.SHELL_TIMEOUT", 1):
-        result = shell_tools.run_shell("sleep 10")
+    # Passed explicitly rather than patched: run_shell's signature is
+    # `timeout: int = SHELL_TIMEOUT`, and a default argument is bound once at
+    # function-definition time, so patching the module global afterwards never
+    # reaches it and `sleep 10` just ran to completion under the real 30s.
+    result = shell_tools.run_shell("sleep 10", timeout=1)
     assert "error" in result
     assert "Timed out" in result["error"]

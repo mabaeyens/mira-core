@@ -1,5 +1,9 @@
 """Tests for the stop/cancel feature (server.py + index.html stop button)."""
 import json
+import shutil
+import tempfile
+from pathlib import Path
+
 import pytest
 from unittest.mock import patch
 from fastapi.testclient import TestClient
@@ -123,9 +127,24 @@ def test_history_rolled_back_on_cancel(client):
 
 # ── /browse endpoint tests ────────────────────────────────────────────────────
 
+@pytest.fixture()
+def home_dir(tmp_path_factory):
+    """A scratch directory inside $HOME.
+
+    /browse resolves through server._safe_path, which 403s anything outside
+    Path.home(). pytest's tmp_path lives under /private/var on macOS and /tmp
+    on Linux, both outside home, so these tests need a root of their own.
+    """
+    d = Path(tempfile.mkdtemp(prefix=".mira-browse-test-", dir=Path.home()))
+    try:
+        yield d
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_browse_home_directory(client):
-    """/browse with no path param returns a listing of the server root or home."""
-    resp = client.get("/browse?path=/tmp")
+    """/browse on the user's home directory returns a listing."""
+    resp = client.get(f"/browse?path={Path.home()}")
     assert resp.status_code == 200
     data = resp.json()
     assert "path" in data
@@ -133,13 +152,18 @@ def test_browse_home_directory(client):
     assert isinstance(data["entries"], list)
 
 
-def test_browse_entries_have_required_fields(client, tmp_path):
-    """Each entry in /browse response has name, is_dir, ext, path fields."""
-    # Create a temp dir with a file and a sub-directory
-    (tmp_path / "doc.pdf").write_text("x")
-    (tmp_path / "subdir").mkdir()
+def test_browse_outside_home_is_forbidden(client):
+    """The _safe_path guard must reject anything above $HOME."""
+    resp = client.get("/browse?path=/etc")
+    assert resp.status_code == 403
 
-    resp = client.get(f"/browse?path={tmp_path}")
+
+def test_browse_entries_have_required_fields(client, home_dir):
+    """Each entry in /browse response has name, is_dir, ext, path fields."""
+    (home_dir / "doc.pdf").write_text("x")
+    (home_dir / "subdir").mkdir()
+
+    resp = client.get(f"/browse?path={home_dir}")
     assert resp.status_code == 200
     entries = resp.json()["entries"]
     assert len(entries) == 2  # subdir first (sorted), then doc.pdf
@@ -150,12 +174,12 @@ def test_browse_entries_have_required_fields(client, tmp_path):
         assert "path" in e
 
 
-def test_browse_dirs_sorted_before_files(client, tmp_path):
+def test_browse_dirs_sorted_before_files(client, home_dir):
     """Directories must appear before files in /browse results."""
-    (tmp_path / "z_file.txt").write_text("x")
-    (tmp_path / "a_dir").mkdir()
+    (home_dir / "z_file.txt").write_text("x")
+    (home_dir / "a_dir").mkdir()
 
-    resp = client.get(f"/browse?path={tmp_path}")
+    resp = client.get(f"/browse?path={home_dir}")
     entries = resp.json()["entries"]
     dir_indices  = [i for i, e in enumerate(entries) if e["is_dir"]]
     file_indices = [i for i, e in enumerate(entries) if not e["is_dir"]]
@@ -163,17 +187,21 @@ def test_browse_dirs_sorted_before_files(client, tmp_path):
 
 
 def test_browse_nonexistent_path_returns_error(client):
-    """/browse with a non-existent path returns 4xx."""
-    resp = client.get("/browse?path=/nonexistent/path/xyz123")
+    """/browse with a non-existent path returns 4xx.
+
+    The path is kept inside $HOME on purpose: outside it the _safe_path guard
+    would 403 first and this would stop testing the not-a-directory branch.
+    """
+    resp = client.get(f"/browse?path={Path.home()}/nonexistent/path/xyz123")
     assert resp.status_code in (400, 404, 500)
 
 
-def test_browse_ext_field_is_lowercase_with_dot(client, tmp_path):
+def test_browse_ext_field_is_lowercase_with_dot(client, home_dir):
     """ext field must be lowercase with leading dot (e.g. '.pdf') or '' for no extension."""
-    (tmp_path / "Document.PDF").write_text("x")
-    (tmp_path / "Makefile").write_text("x")
+    (home_dir / "Document.PDF").write_text("x")
+    (home_dir / "Makefile").write_text("x")
 
-    resp = client.get(f"/browse?path={tmp_path}")
+    resp = client.get(f"/browse?path={home_dir}")
     entries = {e["name"]: e for e in resp.json()["entries"]}
     assert entries["Document.PDF"]["ext"] == ".pdf"
     assert entries["Makefile"]["ext"] == ""

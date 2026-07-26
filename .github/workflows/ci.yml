@@ -47,18 +47,8 @@ jobs:
       - name: Prefetch models (warms HF cache; retries transient errors)
         run: uv run --group dev python scripts/prefetch_models.py
 
-      # The 9 deselected tests are pre-existing rot tracked in BACKLOG.md
-      # (misfiled browse tests vs. the home-only path guard; run_shell shape drift),
-      # not regressions from this work. Remove the deselects as BACKLOG items land.
+      # No deselects. The 9 that used to live here were repaired 2026-07-26;
+      # they had been failing on macOS too, so "Linux runner" was a red herring.
       - name: Run tests
         run: >
           uv run --group dev python -m pytest -p no:cacheprovider -q
-          --deselect tests/test_cancel.py::test_browse_home_directory
-          --deselect tests/test_cancel.py::test_browse_entries_have_required_fields
-          --deselect tests/test_cancel.py::test_browse_dirs_sorted_before_files
-          --deselect tests/test_cancel.py::test_browse_nonexistent_path_returns_error
-          --deselect tests/test_cancel.py::test_browse_ext_field_is_lowercase_with_dot
-          --deselect tests/test_fs_shell_tools.py::test_run_shell_cwd_is_within_workspace
-          --deselect tests/test_fs_shell_tools.py::test_run_shell_captures_stderr
-          --deselect tests/test_fs_shell_tools.py::test_run_shell_force_bypasses_guard
-          --deselect tests/test_fs_shell_tools.py::test_run_shell_timeout
