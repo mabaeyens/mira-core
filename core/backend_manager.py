@@ -755,14 +755,32 @@ def switch_to_model(backend: str, model_id: str) -> dict:
     return preset
 
 
+# Every backend Mira can start. PRESETS omits mlx-lm (benched out of the default
+# picker) but the code path exists, so the library view still reports it.
+KNOWN_BACKENDS = ("mira-mlx", "omlx", "mlx-lm", "dflash", "vllm-mlx", "ollama")
+
+
 def list_models() -> dict:
-    """Return locally available models across all backends."""
-    from core.models_api import list_mlx_models, list_ollama_models
+    """Return locally available models across all backends.
+
+    `backends` is the real answer: one entry per backend Mira knows how to
+    start, saying whether it is installed and what it has. The flat `mlx_lm` and
+    `ollama` keys are the original shape and are kept so existing clients keep
+    decoding; they are the same data, minus five backends.
+    """
+    from core.models_api import list_backend_status
     from dataclasses import asdict
 
-    mlx = [asdict(m) for m in list_mlx_models()]
-    oll = [asdict(m) for m in list_ollama_models()]
-    return {"mlx_lm": mlx, "ollama": oll}
+    statuses = list_backend_status(KNOWN_BACKENDS)
+    by_name = {s.backend: s for s in statuses}
+
+    return {
+        "backends": [asdict(s) for s in statuses],
+        # Back-compat. mlx_lm and mira-mlx serve the same HuggingFace cache, so
+        # reporting mlx-lm's view here loses nothing.
+        "mlx_lm": [asdict(m) for m in by_name["mlx-lm"].models],
+        "ollama": [asdict(m) for m in by_name["ollama"].models],
+    }
 
 
 def _default_backends() -> list:
@@ -786,14 +804,68 @@ def _default_backends() -> list:
 
 
 def get_backends(active_backend: str, active_model: str) -> list:
-    """Return the configured preset list with an `active` flag on the matching entry."""
+    """Return the configured presets, annotated with whether each can be selected.
+
+    Two things beyond the raw mira.yaml list:
+
+    - Every entry carries `available` and, when false, a `detail` saying why.
+      A preset whose backend is not installed, or whose model is not on disk,
+      cannot be switched to; the client should not offer it as if it could.
+      `mira.yaml` is a wish list, and nothing was checking it against reality.
+
+    - The running (backend, model) pair is ALWAYS present and flagged active,
+      even when no preset declares it. It routinely does not: the default has
+      been mira-mlx + Qwen3.6-35B-A3B-4bit since 2026-07-09 and no preset pairs
+      those two, so every entry came back active=False and clients had no row
+      for the model actually serving them, nor any way back to it.
+    """
     from core.config import BACKENDS
+    from core.models_api import backend_status
+
     entries = BACKENDS if BACKENDS else _default_backends()
+
+    # One probe per distinct backend, not one per preset — four of the seven
+    # presets share a backend and the ollama probe talks to a socket.
+    probes = {}
+
+    def _probe(backend: str):
+        if backend not in probes:
+            probes[backend] = backend_status(backend)
+        return probes[backend]
+
     result = []
+    found_active = False
     for p in entries:
         entry = dict(p)
-        entry["active"] = (p["backend"] == active_backend and p["model"] == active_model)
+        is_active = (p["backend"] == active_backend and p["model"] == active_model)
+        found_active = found_active or is_active
+        entry["active"] = is_active
+
+        status = _probe(p["backend"])
+        if not status.available:
+            entry["available"], entry["detail"] = False, status.detail
+        elif any(_model_matches(m.model_id, p["model"]) for m in status.models):
+            entry["available"], entry["detail"] = True, ""
+        elif is_active:
+            # It is serving right now, so whatever the scan thinks, it exists.
+            entry["available"], entry["detail"] = True, ""
+        else:
+            entry["available"] = False
+            entry["detail"] = status.detail or f"{p['model']} is not installed for {p['backend']}"
         result.append(entry)
+
+    if not found_active and active_backend and active_model:
+        result.insert(0, {
+            "id": f"{active_backend}-{_model_basename(active_model)}",
+            "label": _model_basename(active_model),
+            "backend": active_backend,
+            "model": active_model,
+            "context_window": PRESETS.get(active_backend, {}).get("context_window", CONTEXT_WINDOW),
+            "active": True,
+            "available": True,
+            "detail": "",
+        })
+
     return result
 
 
