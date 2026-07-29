@@ -45,6 +45,27 @@ This was soobrosa's find, from writing the probe. I had shipped #1584 believing 
 closed the rotating-cache gap, and it closes most of it, but not the path the
 `--max-kv-size` flag documents.
 
+**Update 2026-07-28: this may never need implementing.** soobrosa filed
+[#1631](https://github.com/ml-explore/mlx-lm/issues/1631) and found that
+`cache.py:37` is the only nonzero `keep` in the package, so the generic fallback
+is the single producer of a shape two other subsystems refuse. If awni decides the
+`keep=4` default is superseded rather than deliberate (he added it in #1015), a
+one-line change there removes the case instead of anyone building sink tokens.
+Verified the count at `ff1e837` and posted it: 20 `RotatingKVCache(` construction
+sites package-wide, exactly one nonzero. Seventeen are in model files, five passing
+`keep=0` explicitly (`cohere2`, `exaone4`, `exaone_moe`, `gemma3n`,
+`gemma4_text`) and twelve omitting the argument entirely (`olmo3`,
+`recurrent_gemma`, `gemma3_text`, `mellum`, `mimo_v2_flash`, `llama`,
+`iquestloopcoder`, `step3p5`, `gpt_oss`, `afmoe`, `ministral3`, `baichuan_m1`).
+The other two are `generate.py:1777` and `cache.py:1690`, both defaulting.
+
+`cache.py:1690` is worth its own line: it sits in `BatchRotatingKVCache.extract()`,
+which rebuilds a single sequence out of a batch as `RotatingKVCache(self.max_size)`
+with no `keep` passed. Paired with `merge()` at `cache.py:1707`, which validates
+`max_size` across caches and never looks at `keep`, a `keep=4` cache that goes into
+a batch and comes back out returns as `keep=0`. Sink tokens are already dropped on
+the batching path today, quantized or not.
+
 ## Constraint 2: it inverts on the batched path
 
 `BatchGenerator._make_new_cache()` builds `RotatingKVCache(max_size=self.max_kv_size)`
@@ -70,6 +91,25 @@ works on that path.
 Which means a plain `mlx_lm.server --kv-bits 8`, no other flags, no `--max-kv-size`,
 lands on a config the batched path cannot serve. Anyone narrowing the batching
 disable by looking at `max_kv_size` alone would ship exactly that bug.
+
+**Correction 2026-07-28: the raise is structural, not a missing re-check.** The
+comment I wrote at `generate.py:1595` gives "no per-step re-check" as the reason,
+and that undersells it badly enough that I nearly offered on #1618 to just remove
+the raise. Checked before posting, and the offer would have been wrong three times
+over. Per-job caches exist only until the batch forms:
+`PromptProcessingBatch.__init__` calls `_merge_caches(caches)` at
+`generate.py:1120` and collapses them into one cache per layer for the whole batch,
+so afterwards there is no per-sequence object left to convert. Rows in a batch also
+sit at different offsets, so a per-sequence threshold has nothing to attach to on a
+shared cache. And a cache quantized mid-flight could not rejoin a batch anyway,
+because `_merge_caches` dispatches on `caches[0][i].merge(...)` (`generate.py:867`)
+and so needs one class across all jobs, while `QuantizedKVCache` (`cache.py:245`)
+defines no `merge` at all.
+
+Real deferral therefore means batch-level threshold semantics plus a
+`BatchKVCache.to_quantized()`, and no plain `BatchQuantizedKVCache` exists (only
+`BatchRotatingQuantizedKVCache`, `cache.py:1758`). Unimplemented rather than
+forbidden, but a feature, not plumbing. Do not describe it as cheap.
 
 ## What the follow-up owes
 
@@ -100,13 +140,19 @@ server-side change in soobrosa's file, so it belongs in a follow-up after both
 #1353 and #1584 merge, not bolted onto a cache PR that is already +1157 across
 four files with no review on it.
 
-I committed to opening that follow-up. It is gated on two merges that have zero
-maintainer reviews between them.
+I committed to opening that follow-up on 2026-07-27. **PhilipJohnBasile claimed it
+back the next day** and it is now tracked against #1618, on the argument that the
+probe has to know which generator will actually serve a request rather than
+validating one cache shape at load time, which makes it a capability-API concern
+rather than a `server.py` one. That argument is sound and I conceded it rather than
+contest the attribution. What I handed over instead were the two constraints above,
+since both are properties of my file that his API would otherwise harden around.
 
-The unaddressed piece underneath all of this is sink-token support in
-`RotatingQuantizedKVCache`. That is the only thing that fixes constraint 1 rather
-than routing around it, and I am not attempting it in #1584. It deserves its own
-issue.
+The piece underneath all of this was sink-token support in
+`RotatingQuantizedKVCache`, the only thing that fixes constraint 1 rather than
+routing around it. soobrosa filed it as #1631 on 2026-07-28 and, as recorded under
+constraint 1, it may be answered by deleting `keep=4` rather than by implementing
+anything. That decision is awni's.
 
 ## Where the discussion is
 
@@ -116,6 +162,18 @@ issue.
   [comment 5082713105](https://github.com/ml-explore/mlx-lm/pull/1618#issuecomment-5082713105)
 - The original silent-skip objection is on #1353:
   [comment 5083332147](https://github.com/ml-explore/mlx-lm/pull/1353#issuecomment-5083332147)
+- Conceding the narrowing follow-up, with the constraint-3 correction, is on #1618
+  (2026-07-28):
+  [comment 5100971172](https://github.com/ml-explore/mlx-lm/pull/1618#issuecomment-5100971172)
+- The `keep` construction-site count is on #1631 (2026-07-28):
+  [comment 5108906145](https://github.com/ml-explore/mlx-lm/issues/1631#issuecomment-5108906145)
+
+A note on #1573, which is adjacent and easy to conflate: it is **not** fixed by any
+of these. chrislyons' crash comes from mlx-vlm, which vendors its own 90KB copy of
+`cache.py` carrying the identical `RotatingKVCache Quantization NYI`, and
+`mlx_lm.server` has never had a `--kv-bits` flag at all. PhilipJohnBasile confirmed
+that independently on 2026-07-28. The equivalent fix has to be filed against
+`Blaizzy/mlx-vlm`, and as of this writing nobody has done so.
 
 Everything in this note was checked against the two diffs and the local checkout
 rather than recalled, which is how constraint 3 turned up. Line references are to
