@@ -18,6 +18,22 @@ With an `auth_token` set (see the README's *Access control*):
   and a source-IP allowlist (loopback + the `100.64.0.0/10` tailnet range) is enforced as
   defense-in-depth.
 
+**One thing you must configure: `allowed_hosts`.** Before the token or the source-IP
+allowlist, the server checks the `Host` header (this is what blocks DNS rebinding). It
+accepts loopback and any bare IP inside `allowed_source_cidrs` automatically — but a
+*name* is never accepted unless you list it. Your Tailscale certificate is issued for the
+MagicDNS name **only**, so remote clients have to connect by name, which means:
+
+```yaml
+# mira.yaml
+allowed_hosts:
+  - your-mac.tailXXXX.ts.net
+```
+
+`make install ARGS="--with-tailscale <host>"` writes this for you. If you skip it, the
+server answers **403 on every request** over a perfectly healthy connection — see the
+troubleshooting section below, because the symptom does not look like a 403.
+
 If Tailscale is **not running** when the server starts, `:8443` **fails closed to
 loopback** — remote access is simply off until you start Tailscale and restart:
 
@@ -93,6 +109,47 @@ Leaving Tailscale always-on is fine; a few settings keep it healthy and tight.
   name resolution without hijacking all queries.
 - You don't *have* to leave it on: since you only need it to reach Mira, flipping it on
   when needed sidesteps the battery/DNS/portal friction entirely. Always-on is also fine.
+
+## Troubleshooting: "could not reach server" when the network is fine
+
+The apps show one message for two very different failures — never got there, and got
+there and was refused. Find out which before touching anything else. From the Mac:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://<your-mac>.<tailnet>.ts.net:8443/health
+```
+
+| Result | Meaning |
+|---|---|
+| `200` | Server is fine. The problem is on the client (Tailscale off, wrong URL, wrong scheme). |
+| `403` | You reached it and it refused you — almost always `allowed_hosts`. See below. |
+| `401` | Reached and allowed, token wrong or missing. |
+| `000` + curl exit `60` | TLS failure. You're probably connecting by **IP** — the cert has no IP SAN. Use the MagicDNS name. |
+| `000` + curl exit `7`/`28` | Genuinely unreachable: Tailscale down, or `:8443` never bound (check `tailscale status` and `lsof -nP -iTCP:8443 -sTCP:LISTEN`). |
+
+**Confirming a 403 is the Host gate** — re-send the same request with the Host header
+overridden to the tailnet IP. Same socket, same TLS, only the header changes:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -H "Host: 100.x.y.z:8443" \
+  https://<your-mac>.<tailnet>.ts.net:8443/health
+```
+
+`200` with the IP and `403` with the name is conclusive: the name isn't in
+`allowed_hosts`. Add it (see the Default section), then restart — the allowlist is read
+at import, so a reload is required:
+
+```bash
+/mira-server restart
+```
+
+Why the symptom is confusing: `/health` is exempt from the *token* check but **not** from
+the Host check, so the very probe clients use to test reachability is the one being
+rejected. The app concludes the server is unreachable and points you at your network,
+while the server is up, the tailnet is healthy, and the token is correct.
+
+> Note: `:8443` binds the tailnet address only, so probing `https://127.0.0.1:8443` from
+> the Mac fails by design. Use the MagicDNS name even when testing locally.
 
 ## Opt-in: plain-WiFi LAN access (accept the risk)
 

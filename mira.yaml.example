@@ -18,6 +18,15 @@
 # docs/remote-access.md), add your LAN subnet here AND set MIRA_HOST=0.0.0.0.
 # allowed_source_cidrs: ["127.0.0.0/8", "::1/128", "100.64.0.0/10"]
 
+# Host header allowlist. Loopback and any IP inside allowed_source_cidrs are accepted
+# automatically; a NAME is not. The Tailscale cert is issued for the MagicDNS name only,
+# so remote clients must connect by name — and if that name isn't listed here the server
+# answers 403 on an otherwise healthy connection, which clients report as "cannot reach
+# server". Set this whenever you connect remotely. `setup.sh --with-tailscale <host>`
+# fills it in for you.
+# allowed_hosts:
+#   - your-mac.tailXXXX.ts.net
+
 # ── LLM backend ──────────────────────────────────────────────────────────────
 # Recommended: mira-mlx (Mira's own inference server — bundled, no separate app to
 # install; RAM-aware sizing, disk-backed prompt cache). Supports Qwen3.6 (MoE, the

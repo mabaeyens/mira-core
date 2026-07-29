@@ -140,6 +140,23 @@ if [ "$WITH_LAUNCHAGENT" = "1" ]; then
   ok "LaunchAgent loaded (server starts at login; logs at /tmp/com.mab.mira.log)"
 fi
 
+# ── Tailscale: allowlist the MagicDNS name ───────────────────────────────────
+# The Tailscale cert is issued for the MagicDNS name only, so remote clients must
+# connect by name. The Host-header gate rejects any name not in allowed_hosts,
+# answering 403 on a healthy connection — which every client reports as "cannot
+# reach server". Seed it here so the first remote connection just works.
+if [ -n "$TAILSCALE_HOST" ] && [ -f "$REPO_ROOT/mira.yaml" ]; then
+  if grep -q "^[[:space:]]*-[[:space:]]*$TAILSCALE_HOST[[:space:]]*$" "$REPO_ROOT/mira.yaml"; then
+    ok "allowed_hosts already lists $TAILSCALE_HOST"
+  elif grep -q "^allowed_hosts:" "$REPO_ROOT/mira.yaml"; then
+    warn "mira.yaml has allowed_hosts but not $TAILSCALE_HOST — add it by hand, or remote clients get 403"
+  else
+    printf '\n# Host header values accepted beyond loopback and the bare tailnet IP.\n# Added by setup.sh --with-tailscale.\nallowed_hosts:\n  - %s\n' \
+      "$TAILSCALE_HOST" >> "$REPO_ROOT/mira.yaml"
+    ok "Added $TAILSCALE_HOST to allowed_hosts in mira.yaml"
+  fi
+fi
+
 # ── oMLX (detect + instruct) ─────────────────────────────────────────────────
 info "Checking oMLX (default inference backend)"
 if [ -d "/Applications/oMLX.app" ]; then

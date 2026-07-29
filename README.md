@@ -145,9 +145,23 @@ default and never sends anything sensitive in plaintext:
   Tailscale isn't up yet, `:8443` **fails closed to loopback** and the server retries the
   bind every 15s until Tailscale comes up — no manual restart needed. A monthly LaunchAgent
   auto-renews the 90-day Tailscale HTTPS cert.
+- **Connecting remotely also needs `allowed_hosts`.** A `Host`-header check (anti-DNS-
+  rebinding) runs before auth. Loopback and bare IPs in the source allowlist pass
+  automatically, but a hostname must be listed — and since the Tailscale cert covers the
+  MagicDNS name only, remote clients must use that name. Install with
+  `--with-tailscale <host>` to have it written for you, or add it by hand:
+
+  ```yaml
+  allowed_hosts:
+    - your-mac.tailXXXX.ts.net
+  ```
+
+  Without it the server returns **403 to every request**, which the apps surface as
+  "could not reach server" even though the network and token are fine.
 
 See **[docs/remote-access.md](docs/remote-access.md)** for the full posture: travelling
-with Tailscale (and why Proton VPN conflicts on iOS), and the opt-in plain-LAN mode.
+with Tailscale (and why Proton VPN conflicts on iOS), the opt-in plain-LAN mode, and a
+troubleshooting table for "could not reach server".
 
 ## macOS LaunchAgent (optional)
 
