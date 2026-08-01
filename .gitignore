@@ -60,9 +60,6 @@ start-mira-server.sh
 COLLABORATION_NOTES.md
 collaboration-notes.md
 
-# Claude Code instructions (dev-machine-specific, not meaningful to public contributors)
-CLAUDE.md
-
 # Local runtime config (copy from mira.yaml.example)
 mira.yaml
 

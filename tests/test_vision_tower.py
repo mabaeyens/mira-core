@@ -7,12 +7,15 @@ tests, and are recorded in docs/architecture.md.
 
 import json
 
-import mlx.core as mx
 import numpy as np
 import pytest
 from PIL import Image
 
-from core.inference.vision_tower import (
+mx = pytest.importorskip("mlx.core")  # mlx is macOS-only (Apple Silicon), absent on Linux CI
+
+# Imported after the guard: vision_tower pulls in mlx at module level, so on Linux
+# this line would raise during collection rather than skip.
+from core.inference.vision_tower import (  # noqa: E402
     VisionTower,
     _smart_resize,
     splice_image_embeddings,
