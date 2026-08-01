@@ -1,7 +1,24 @@
 # Changelog
 
-## Unreleased
+## v1.0.0 — August 2026
 
+First 1.0. Mira has been usable for months; what changes here is that it stopped
+hedging. One backend it owns end to end, a model that can now actually look at
+what you show it, and the reasoning bug that was quietly corrupting thinking
+turns is gone.
+
+- **Mira can see.** Set `mira_mlx_vision: true` in `mira.yaml` and image
+  attachments are read by the model's own vision tower instead of being run
+  through OCR — screenshots, charts, diagrams, photos, things with no text in
+  them at all. It works on the default checkpoint: `Qwen3.6-35B-A3B-4bit` ships a
+  vision tower that stock `mlx-lm` throws away at load time, so nothing new needs
+  downloading. Off by default, because it costs about 1.1 GB of memory and OCR is
+  genuinely better for text-heavy screenshots. A 640x480 image spends 300 context
+  tokens, 1024x768 spends 768. Two things to know if you turn it on: image turns
+  skip the prompt cache on purpose (an image is N copies of one placeholder token,
+  so two same-sized screenshots would otherwise collide into a false cache hit),
+  and if the tower fails to load the backend keeps serving text and tells you why
+  under `vision.error` in `GET /v1/stats`.
 - **Retired the dflash and Ollama backends.** Mira's backend is mira-mlx; omlx is
   the backup, and mlx-lm and vllm-mlx stay because they are cheap to keep and
   useful for comparison. Both retired backends are gone from the code rather than
@@ -14,18 +31,7 @@
   made a retired backend look load-bearing. The Ollama-native web search went too;
   it had been dead code behind a flag that was never switched on, so Brave when
   keyed and DuckDuckGo otherwise is now all the module claims to do.
-- **Optional vision on mira-mlx.** Set `mira_mlx_vision: true` in `mira.yaml` and
-  image attachments are read by the model's own vision tower instead of being run
-  through OCR. Off by default. It works on the default checkpoint —
-  `Qwen3.6-35B-A3B-4bit` ships a vision tower that stock mlx-lm discards at load —
-  and costs about 1.1 GB active, with a 640x480 image spending 300 context tokens.
-  OCR remains the default path and is genuinely better for text-heavy screenshots.
-  Two notes for anyone turning it on: image turns skip the prompt cache on purpose,
-  because an image is N copies of one placeholder token and two same-sized
-  screenshots would otherwise collide into a false cache hit; and if the tower
-  fails to load, the backend keeps serving text and reports the reason under
-  `vision.error` in `GET /v1/stats`.
-- Fixed reasoning being served as the answer on thinking turns. Qwen3's chat
+- **Fixed reasoning being served as the answer on thinking turns.** Qwen3's chat
   template puts the opening `<think>` in the prompt, so the model's output starts
   inside the block and only ever emits the closing tag; the streaming stripper was
   waiting for an opening tag that never came and passed the whole chain of thought
