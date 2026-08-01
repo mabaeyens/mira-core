@@ -28,7 +28,7 @@ in [Issues](https://github.com/mabaeyens/mira-core/issues/new/choose). I read bo
 - **Autonomous Search**: Model searches the web via Brave Search and fetches full page content when snippets aren't enough (Jina fallback for JS-rendered pages) — sources are shown as clickable links
 - **Streaming responses**: Tokens buffered and rendered as formatted markdown
 - **Two interfaces**: Rich CLI and local web UI (FastAPI + SSE)
-- **File attachments**: PDFs (RAG), HTML, images, text/code files — attach a screenshot and ask about it; tested with books up to 34 MB. Backends with real multimodal vision (e.g. omlx) read images directly; mira-mlx (the default) has no vision seam, so it OCRs the image and folds the recovered text into the prompt instead
+- **File attachments**: PDFs (RAG), HTML, images, text/code files — attach a screenshot and ask about it; tested with books up to 34 MB. Backends with real multimodal vision (e.g. omlx) read images directly; mira-mlx (the default) does not load the model's vision tower, since `mlx-lm` discards those weights and its batched path takes token ids only, so it OCRs the image and folds the recovered text into the prompt instead
 - **RAG**: Large documents chunked, embedded, reranked with Qwen3-Reranker-0.6B-4bit (mlx, in-process) — retrieved automatically on every turn, with hallucination guard for meta-queries (summarize, translate)
 - **Adaptive thinking**: Qwen3.6-35B uses extended reasoning on complex questions; suppressed automatically for trivial queries — zero overhead (≤14ms warm)
 - **Multiple model families**: Qwen3.6 (MoE, the primary default) and Mistral-family models (Ministral 3 14B) both fully supported, including tool-calling — pick per-conversation from the model picker

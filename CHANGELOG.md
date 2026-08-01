@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Fixed reasoning being served as the answer on thinking turns. Qwen3's chat
+  template puts the opening `<think>` in the prompt, so the model's output starts
+  inside the block and only ever emits the closing tag; the streaming stripper was
+  waiting for an opening tag that never came and passed the whole chain of thought
+  through as answer text, stray `</think>` included. Thinking token counts were
+  also being undercounted, and the polluted text was persisted to conversation
+  history. Turning thinking off was never affected.
+- Moved to `mlx` 0.32.0 and `mlx-metal` 0.32.0. No behaviour change on the
+  paths mira actually uses: the four bugs 0.32 fixes were all reproduced on this
+  hardware but none of them reach mira's shapes. Batched decode gets about 24%
+  faster at eight concurrent sequences, which is above normal single-user load.
+  Done ahead of the vision work, which needs `mlx>=0.32.0` for `mlx-vlm`.
+
 ## v0.9.5 — July 2026
 
 - Retrieved content is now handled as data, not instructions. Tool output —
