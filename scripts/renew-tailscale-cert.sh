@@ -5,7 +5,7 @@
 # periodically (see com.mab.mira-cert-renew.plist, monthly).
 set -euo pipefail
 
-CERT_DIR="/Users/miguel/Documents/Projects/mira-apps/certs"
+CERT_DIR="/Users/miguel/Projects/mira-apps/certs"
 HOSTNAME="miguels-macbook-pro.tail51ad7d.ts.net"
 LOG="/tmp/com.mab.mira-cert-renew.log"
 
