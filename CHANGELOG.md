@@ -2,11 +2,6 @@
 
 ## v1.0.0 — August 2026
 
-First 1.0. Mira has been usable for months; what changes here is that it stopped
-hedging. One backend it owns end to end, a model that can now actually look at
-what you show it, and the reasoning bug that was quietly corrupting thinking
-turns is gone.
-
 - **Mira can see.** Set `mira_mlx_vision: true` in `mira.yaml` and image
   attachments are read by the model's own vision tower instead of being run
   through OCR — screenshots, charts, diagrams, photos, things with no text in
