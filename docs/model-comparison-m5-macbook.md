@@ -197,7 +197,7 @@ Head-to-head via Ollama API (`stream:false`, `num_predict:512`, `temperature:0.1
 | `llama.cpp.flash_attn` | `true` | Flash attention kernel pinned at model level. |
 
 ```bash
-ollama create gemma4-ultra -f ~/Documents/Projects/mira-core/models/gemma4-optimized.modelfile
+ollama create gemma4-ultra -f ~/Projects/mira-core/models/gemma4-optimized.modelfile
 ollama run gemma4-ultra "hello" --verbose
 ```
 

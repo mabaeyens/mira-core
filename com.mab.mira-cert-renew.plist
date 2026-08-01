@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/miguel/Documents/Projects/mira-core/scripts/renew-tailscale-cert.sh</string>
+        <string>/Users/miguel/Projects/mira-core/scripts/renew-tailscale-cert.sh</string>
     </array>
     <key>StartCalendarInterval</key>
     <dict>

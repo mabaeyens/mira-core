@@ -65,8 +65,15 @@ def test_writes_land_in_the_temp_dir():
         db.delete_conversation(conv_id)
 
 
-def test_real_database_is_untouched_by_this_run():
-    """Cheapest possible check on the thing we actually care about."""
+def test_no_test_only_marker_reached_the_real_database():
+    """Direct check on the real file, keyed to values ONLY the suite produces.
+
+    Deliberately not keyed to conversation *ids*: `__claude-test__` is also used
+    for live curl smoke tests against the running server, which write to the real
+    database legitimately, so asserting on it made this fail for the wrong reason.
+    `model_name` is the reliable marker — the fixtures here pass literals no real
+    turn ever uses, since a real one records an mlx-community repo id.
+    """
     real_db = REAL_DATA_DIR / "conversations.db"
     if not real_db.exists():
         return  # CI, or a machine that has never run Mira
@@ -74,8 +81,8 @@ def test_real_database_is_untouched_by_this_run():
 
     conn = sqlite3.connect(f"file:{real_db}?mode=ro", uri=True)
     try:
-        ids = {r[0] for r in conn.execute("SELECT id FROM conversations").fetchall()}
+        models = {r[0] for r in conn.execute("SELECT model_name FROM conversations")}
     finally:
         conn.close()
-    for planted in ("__claude-test__", "test-rollback-conv"):
-        assert planted not in ids, f"{planted} reached the real database"
+    for marker in ("isolation-probe", "test-model"):
+        assert marker not in models, f"a test wrote model_name={marker!r} to the real DB"
