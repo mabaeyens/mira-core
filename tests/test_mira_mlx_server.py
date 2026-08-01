@@ -23,13 +23,15 @@ from core.inference.mira_mlx_server import (
 # -- _prepare_messages --------------------------------------------------------
 
 def test_prepare_messages_none_content_becomes_empty_string():
-    out = _prepare_messages([{"role": "user", "content": None}])
+    out, images = _prepare_messages([{"role": "user", "content": None}])
     assert out[0]["content"] == ""
+    assert images == []
 
 
 def test_prepare_messages_leaves_normal_content_untouched():
-    out = _prepare_messages([{"role": "user", "content": "hello"}])
+    out, images = _prepare_messages([{"role": "user", "content": "hello"}])
     assert out[0]["content"] == "hello"
+    assert images == []
 
 
 def test_prepare_messages_parses_tool_call_argument_json_string():
@@ -38,7 +40,7 @@ def test_prepare_messages_parses_tool_call_argument_json_string():
         "content": None,
         "tool_calls": [{"function": {"name": "f", "arguments": '{"a": 1}'}}],
     }
-    out = _prepare_messages([msg])
+    out, _ = _prepare_messages([msg])
     assert out[0]["tool_calls"][0]["function"]["arguments"] == {"a": 1}
 
 
@@ -68,6 +70,72 @@ def test_prepare_messages_rejects_image_content():
     }
     with pytest.raises(ValueError, match="does not support image inputs"):
         _prepare_messages([msg])
+
+
+def _png_data_url(width=64, height=48):
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (10, 120, 200)).save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def test_prepare_messages_extracts_images_when_vision_on():
+    msg = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "what's in this image?"},
+            {"type": "image_url", "image_url": {"url": _png_data_url()}},
+        ],
+    }
+    out, images = _prepare_messages([msg], vision=True)
+    assert len(images) == 1
+    assert images[0].size == (64, 48)
+    # The image part is rewritten to the bare shape the chat template renders as
+    # a single <|image_pad|>; the text part is untouched.
+    assert out[0]["content"] == [
+        {"type": "text", "text": "what's in this image?"},
+        {"type": "image"},
+    ]
+
+
+def test_prepare_messages_preserves_image_order_across_messages():
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": _png_data_url(32, 32)}},
+                {"type": "image_url", "image_url": {"url": _png_data_url(64, 16)}},
+            ],
+        },
+    ]
+    _, images = _prepare_messages(msgs, vision=True)
+    assert [im.size for im in images] == [(32, 32), (64, 16)]
+
+
+def test_prepare_messages_refuses_remote_image_urls():
+    """Fetching a remote URL here would let a crafted conversation make the
+    server issue arbitrary outbound requests."""
+    msg = {
+        "role": "user",
+        "content": [
+            {"type": "image_url", "image_url": {"url": "https://example.com/x.png"}}
+        ],
+    }
+    with pytest.raises(ValueError, match="data URLs"):
+        _prepare_messages([msg], vision=True)
+
+
+def test_prepare_messages_vision_off_still_rejects():
+    msg = {
+        "role": "user",
+        "content": [{"type": "image_url", "image_url": {"url": _png_data_url()}}],
+    }
+    with pytest.raises(ValueError, match="does not support image inputs"):
+        _prepare_messages([msg], vision=False)
 
 
 # -- _build_state_machine -----------------------------------------------------

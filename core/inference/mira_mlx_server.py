@@ -34,7 +34,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
-from mlx_lm.generate import BatchGenerator, SequenceStateMachine
+from mlx_lm.generate import BatchGenerator, SequenceStateMachine, _embed_tokens
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_lm.server import ToolCallFormatter
 from mlx_lm.utils import load
@@ -46,15 +46,47 @@ logger = logging.getLogger("mira_mlx_server")
 DONE = object()  # sentinel pushed onto a job's out_queue when generation finishes
 
 
-def _prepare_messages(messages: list) -> list:
+def _decode_image_part(part: dict):
+    """Turn one OpenAI `image_url` content part into a PIL image.
+
+    Only data URLs are accepted. Fetching a remote URL here would give the model
+    a way to make the server issue arbitrary outbound requests, which is exactly
+    the SSRF shape the rest of the codebase guards against.
+    """
+    import base64
+    import io
+
+    from PIL import Image
+
+    url = part.get("image_url", {})
+    if isinstance(url, dict):
+        url = url.get("url", "")
+    if not isinstance(url, str) or not url.startswith("data:"):
+        raise ValueError(
+            "image parts must be data URLs; mira-mlx does not fetch remote images"
+        )
+    _, _, payload = url.partition(",")
+    return Image.open(io.BytesIO(base64.b64decode(payload)))
+
+
+def _prepare_messages(messages: list, vision: bool = False) -> tuple:
     """Normalize OpenAI-shape messages for `apply_chat_template`.
 
     Mirrors mlx_lm.server's `process_message_content`: chat templates render
     `content` as a string (None crashes Jinja's `len()` calls) and expect
     `tool_calls[].function.arguments` as a parsed object, not the JSON string
     the OpenAI wire format uses.
+
+    With `vision` on, image parts are decoded and pulled out, and the part is
+    rewritten to the bare `{"type": "image"}` the chat template understands. It
+    renders as a single `<|image_pad|>`, which the caller expands to one token
+    per image patch, since we drive the tokenizer directly and so never get the
+    HF processor that would normally do that expansion.
+
+    Returns (prepared_messages, images) where images is in prompt order.
     """
     prepared = []
+    images = []
     for message in messages:
         message = dict(message)
         content = message.get("content")
@@ -64,10 +96,25 @@ def _prepare_messages(messages: list) -> list:
             isinstance(part, dict) and part.get("type") in ("image_url", "image")
             for part in content
         ):
-            raise ValueError(
-                "mira-mlx does not support image inputs yet; switch to the omlx "
-                "backend for vision requests"
-            )
+            if not vision:
+                raise ValueError(
+                    "mira-mlx does not support image inputs yet; switch to the omlx "
+                    "backend for vision requests"
+                )
+            rewritten = []
+            for part in content:
+                if not isinstance(part, dict):
+                    rewritten.append(part)
+                elif part.get("type") == "image_url":
+                    images.append(_decode_image_part(part))
+                    rewritten.append({"type": "image"})
+                elif part.get("type") == "image":
+                    raise ValueError(
+                        "bare 'image' parts carry no data; send an image_url data URL"
+                    )
+                else:
+                    rewritten.append(part)
+            message["content"] = rewritten
         if tool_calls := message.get("tool_calls"):
             message["tool_calls"] = [dict(tc) for tc in tool_calls]
             for tc in message["tool_calls"]:
@@ -77,7 +124,7 @@ def _prepare_messages(messages: list) -> list:
                     func["arguments"] = json.loads(func["arguments"])
                     tc["function"] = func
         prepared.append(message)
-    return prepared
+    return prepared, images
 
 
 def _build_state_machine(tokenizer, stop_words=()):
@@ -141,6 +188,7 @@ class GenerationEngine:
         profile_experts: bool = False,
         expert_profile_path: Optional[str] = None,
         resident_expert_fraction: Optional[float] = None,
+        vision: bool = False,
     ):
         self.model_path = model_path
         self.max_tokens = max_tokens
@@ -158,6 +206,13 @@ class GenerationEngine:
         self.profile_experts = profile_experts
         self.expert_profile_path = expert_profile_path
         self.resident_expert_fraction = resident_expert_fraction
+        self.vision = vision
+        # Built on the model thread at startup when vision is on, so nothing
+        # about the tower touches the text-only path's RAM or startup time.
+        self.vision_tower = None
+        self._vision_error: Optional[str] = None
+        self._image_count = 0
+        self._image_tokens = 0
 
         self._inbox: "queue.Queue[ChatJob]" = queue.Queue()
         self._pending: dict[int, dict] = {}  # uid -> job bookkeeping
@@ -271,6 +326,35 @@ class GenerationEngine:
             self.prompt_cache = DiskBackedPromptCache(
                 max_bytes=self.prompt_cache_max_bytes, disk_store=disk_store
             )
+            if self.vision:
+                # Built here, on the model thread, because the tower's arrays
+                # have to live on the same MLX stream as everything else. A
+                # tower that fails to load is not fatal: the backend keeps
+                # serving text and the orchestrator's OCR fallback takes over.
+                try:
+                    from core.inference.vision_tower import VisionTower
+
+                    tower = VisionTower(self.model_path)
+                    tower.load()
+                    self.vision_tower = tower
+                    logger.info(
+                        "vision enabled: %.2f GB tower, image_token_id=%d",
+                        tower.weight_bytes / 1e9,
+                        tower.image_token_id,
+                    )
+                except BaseException as exc:  # noqa: BLE001
+                    self.vision = False
+                    self.vision_tower = None
+                    # Recorded, not just logged: this subprocess's stdout goes to
+                    # DEVNULL, so a warning here would be invisible and vision
+                    # would look like it was never asked for. /v1/stats is the
+                    # only channel that actually reaches anyone.
+                    self._vision_error = f"{type(exc).__name__}: {exc}"
+                    logger.warning(
+                        "vision requested but the tower failed to load (%s); "
+                        "continuing text-only, images will fall back to OCR",
+                        exc,
+                    )
         except BaseException as exc:  # noqa: BLE001 - surface to start()
             self._error = exc
             self._ready.set()
@@ -352,6 +436,8 @@ class GenerationEngine:
             cache_memory_bytes = self._cache_memory_bytes
             peak_memory_bytes = self._peak_memory_bytes
             wired_limit_bytes = self._wired_limit_bytes
+            image_count = self._image_count
+            image_tokens = self._image_tokens
 
         total_requests = hits + misses
 
@@ -395,6 +481,18 @@ class GenerationEngine:
             "cache_memory_bytes": cache_memory_bytes,
             "peak_memory_bytes": peak_memory_bytes,
             "wired_limit_bytes": wired_limit_bytes,
+            "vision": (
+                {
+                    "enabled": True,
+                    "tower_bytes": self.vision_tower.weight_bytes,
+                    "images_embedded": image_count,
+                    "image_tokens": image_tokens,
+                }
+                if self.vision_tower is not None
+                else {"enabled": False, "error": self._vision_error}
+                if self._vision_error
+                else None
+            ),
         }
 
     def _drain_inbox(self) -> bool:
@@ -408,13 +506,77 @@ class GenerationEngine:
             self._start_job(job)
         return drained_any
 
+    def _expand_image_tokens(self, prompt_tokens: list, images: list) -> tuple:
+        """Expand each image placeholder and build the prompt's embeddings.
+
+        The chat template emits exactly one `<|image_pad|>` per image; the HF
+        processor is what normally expands that to one token per merged patch,
+        and we drive the tokenizer directly, so we do it here. Then the prompt is
+        embedded through the model's own table and the image rows are overwritten
+        with the tower's output.
+
+        Returns (expanded_tokens, embeddings) where embeddings covers every
+        prompt token, which is the shape `insert_segments` expects.
+        """
+        from core.inference.vision_tower import splice_image_embeddings
+
+        tower = self.vision_tower
+        image_token_id = tower.image_token_id
+        placeholders = [i for i, t in enumerate(prompt_tokens) if t == image_token_id]
+        if len(placeholders) != len(images):
+            raise ValueError(
+                f"chat template emitted {len(placeholders)} image placeholders for "
+                f"{len(images)} images"
+            )
+
+        counts = [tower.num_image_tokens(img) for img in images]
+        expanded: list = []
+        next_image = 0
+        for token in prompt_tokens:
+            if token == image_token_id:
+                expanded.extend([image_token_id] * counts[next_image])
+                next_image += 1
+            else:
+                expanded.append(token)
+
+        if self.max_kv_size is not None and len(expanded) >= self.max_kv_size:
+            raise ValueError(
+                f"prompt is {len(expanded)} tokens once the {len(images)} image(s) "
+                f"expand ({sum(counts)} of them are image tokens), and this "
+                f"machine's context ceiling is {self.max_kv_size} tokens"
+            )
+
+        _t = time.time()
+        embeds = tower.embed(images)
+        text_embeddings = _embed_tokens(self.model, mx.array(expanded))
+        merged = splice_image_embeddings(
+            text_embeddings, expanded, embeds, image_token_id
+        )
+        mx.eval(merged)
+        logger.info(
+            "vision: %d image(s) -> %d tokens in %.2fs",
+            len(images),
+            sum(counts),
+            time.time() - _t,
+        )
+        with self._stats_lock:
+            self._image_count += len(images)
+            self._image_tokens += sum(counts)
+        return expanded, merged
+
     def _start_job(self, job: ChatJob) -> None:
         try:
             ckwargs = job.chat_template_kwargs or {}
+            messages, images = _prepare_messages(job.messages, vision=self.vision)
             prompt_tokens = self.tokenizer.apply_chat_template(
-                _prepare_messages(job.messages), tools=job.tools, add_generation_prompt=True,
+                messages, tools=job.tools, add_generation_prompt=True,
                 tokenize=True, **ckwargs
             )
+            image_embeds = None
+            if images:
+                prompt_tokens, image_embeds = self._expand_image_tokens(
+                    prompt_tokens, images
+                )
         except BaseException as exc:  # noqa: BLE001
             job.out_queue.put(exc)
             job.out_queue.put(DONE)
@@ -433,7 +595,18 @@ class GenerationEngine:
             return
 
         _t0 = time.time()
-        cache, rest = self.prompt_cache.fetch_nearest_cache(self.model_path, prompt_tokens)
+        if image_embeds is not None:
+            # The prompt cache keys on token ids alone, and an image is N copies
+            # of one placeholder id. Two different screenshots at the same size
+            # therefore produce a byte-identical prefix, so a cache hit would
+            # answer about the previous image. Skip the cache on image turns
+            # rather than key it on pixels: it costs one prefill, and it cannot
+            # be got subtly wrong later.
+            cache, rest = None, prompt_tokens
+        else:
+            cache, rest = self.prompt_cache.fetch_nearest_cache(
+                self.model_path, prompt_tokens
+            )
         _t1 = time.time()
         prompt_cache_count = len(prompt_tokens) - len(rest)
         logger.info(
@@ -462,6 +635,7 @@ class GenerationEngine:
             samplers=[sampler],
             logits_processors=[logits_processors],
             state_machines=[self.state_machine],
+            input_embeddings=[image_embeds] if image_embeds is not None else None,
         )
         logger.info("insert_segments took %.2fs (rest=%d tokens)", time.time() - _t2, len(rest))
         self._pending[uid] = {
@@ -690,6 +864,10 @@ def main() -> None:
     # None (default) = every expert resident, today's behavior. No-op on dense
     # models. See core/inference/expert_offload.py.
     parser.add_argument("--resident-expert-fraction", type=float, default=None)
+    # Off by default. On, this loads the checkpoint's own vision tower (about
+    # 0.89 GB for Qwen3.6-35B-A3B) so screenshots are read as images rather than
+    # run through OCR. Costs nothing when off: the tower is never imported.
+    parser.add_argument("--vision", action="store_true")
     args = parser.parse_args()
 
     engine = GenerationEngine(
@@ -709,6 +887,7 @@ def main() -> None:
         profile_experts=args.profile_experts,
         expert_profile_path=args.expert_profile_path,
         resident_expert_fraction=args.resident_expert_fraction,
+        vision=args.vision,
     )
     engine.start()
 

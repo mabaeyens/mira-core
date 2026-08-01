@@ -14,7 +14,7 @@ from typing import Optional
 from core.config import CONTEXT_WINDOW, DB_PATH
 from core.config import DFLASH_CLI as _DFLASH_CLI_PATH
 from core.config import DFLASH_DIAGNOSTICS, MLX_LM_CLI as _MLX_LM_CLI_PATH
-from core.config import MIRA_MLX_KV_BITS, MIRA_MLX_KV_GROUP_SIZE
+from core.config import MIRA_MLX_KV_BITS, MIRA_MLX_KV_GROUP_SIZE, MIRA_MLX_VISION
 from core.config import (
     MIRA_MLX_PROFILE_EXPERTS,
     MIRA_MLX_EXPERT_PROFILE_PATH,
@@ -110,7 +110,10 @@ PRESETS = {
         "model": MIRA_MLX_MODEL,
         "host": MIRA_MLX_HOST,
         "context_window": MIRA_MLX_CONTEXT,
-        "vision": False,
+        # Tracks the config flag rather than being hardcoded, so the capability
+        # the orchestrator reads stays honest: with vision off it must keep
+        # routing images to OCR, and with it on it must stop.
+        "vision": MIRA_MLX_VISION,
     },
 }
 
@@ -214,6 +217,8 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
         args += ["--resident-expert-fraction", str(resident_expert_fraction)]
     if MIRA_MLX_TRUST_REMOTE_CODE:
         args += ["--trust-remote-code"]
+    if MIRA_MLX_VISION:
+        args += ["--vision"]
 
     _mira_mlx_proc = subprocess.Popen(
         args,

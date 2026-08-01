@@ -143,6 +143,11 @@ DFLASH_DIAGNOSTICS: str = _get("dflash_diagnostics", "off")  # off | basic | ful
 # rtol=4e-2); 4-bit is unproven anywhere in this codebase.
 MIRA_MLX_KV_BITS: Optional[int] = _get("mira_mlx_kv_bits", None)
 MIRA_MLX_KV_GROUP_SIZE: int = _get("mira_mlx_kv_group_size", 64)
+# Load the checkpoint's own vision tower so screenshots are read as images
+# instead of run through OCR. Off by default: it costs about 0.89GB resident on
+# Qwen3.6-35B-A3B and only some checkpoints ship a tower at all. With this off,
+# nothing about vision is imported and images keep taking the OCR path.
+MIRA_MLX_VISION: bool = _get("mira_mlx_vision", False)
 # Opt-in MoE expert-routing logging for the expert-offloading go/no-go decision
 # (specs/moe-expert-offload-01-profiling.md). False (default) = zero overhead,
 # no-op on dense models. Not meant to stay on by default even for Qwen3.6 —

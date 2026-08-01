@@ -130,6 +130,22 @@ dflash_diagnostics: off
 # mira_mlx_kv_group_size: quantization group size for mira_mlx_kv_bits (default 64).
 mira_mlx_kv_group_size: 64
 
+# mira_mlx_vision: read screenshots as images instead of running them through
+# OCR. Off by default. Only works on a checkpoint that actually ships a vision
+# tower; Qwen3.6-35B-A3B-4bit does, and it costs about 0.89GB resident plus
+# roughly 0.4GB of forward activations. A 640x480 image spends 300 context
+# tokens, 1024x768 spends 768.
+#
+# With this off nothing about vision is imported, and images keep taking the
+# OCR path (which needs tesseract, and is cheaper for text-heavy screenshots
+# anyway). With it on, image turns skip the prompt cache, because an image is
+# represented as N copies of one placeholder token id and two different
+# screenshots of the same size would otherwise collide into a false cache hit.
+#
+# If the tower fails to load, the backend keeps serving text and says so in
+# /v1/stats under `vision.error` rather than failing the request.
+# mira_mlx_vision: false
+
 # mira_mlx_profile_experts: log MoE expert-routing decisions (which experts
 # fire per layer/token) to a JSONL file, for the expert-offloading go/no-go
 # analysis (specs/moe-expert-offload-01-profiling.md). No-op on dense models

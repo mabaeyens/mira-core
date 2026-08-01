@@ -329,12 +329,23 @@ _IMAGE_ATTACHMENT = [{
 }]
 
 
+def _no_vision_presets(backend):
+    """Force the backend's vision capability off for a test.
+
+    mira-mlx's preset now tracks `mira_mlx_vision` in mira.yaml, so these two
+    tests would otherwise pass or fail depending on whether the machine running
+    them happens to have vision switched on. Pin it instead of inheriting it.
+    """
+    from core.orchestrator import PRESETS
+
+    return {**PRESETS, backend: {**PRESETS.get(backend, {}), "vision": False}}
+
+
 def test_image_attachment_ocr_text_folded_into_message(orchestrator):
     """On a non-vision backend, an image that OCRs cleanly should be folded into the
     prompt as text — no error, no raw image sent to the backend."""
-    assert not orchestrator.backend == "omlx"  # mira-mlx (default) has no vision support
-
-    with patch.object(orchestrator, '_call_llm', return_value=_final_stream("It says disk full.")) as mock_llm, \
+    with patch('core.orchestrator.PRESETS', _no_vision_presets(orchestrator.backend)), \
+         patch.object(orchestrator, '_call_llm', return_value=_final_stream("It says disk full.")) as mock_llm, \
          patch('core.orchestrator.file_handler.ocr_image_from_base64', return_value="Error: disk full"):
         events, content = _consume(
             orchestrator.stream_chat("What does this say?", attachments=_IMAGE_ATTACHMENT)
@@ -351,7 +362,8 @@ def test_image_attachment_ocr_text_folded_into_message(orchestrator):
 def test_image_attachment_no_ocr_text_yields_error(orchestrator):
     """On a non-vision backend, an image with no readable text (photo/diagram, or no
     tesseract installed) must surface a clear error instead of silently dropping it."""
-    with patch.object(orchestrator, '_call_llm', return_value=_final_stream("unused")) as mock_llm, \
+    with patch('core.orchestrator.PRESETS', _no_vision_presets(orchestrator.backend)), \
+         patch.object(orchestrator, '_call_llm', return_value=_final_stream("unused")) as mock_llm, \
          patch('core.orchestrator.file_handler.ocr_image_from_base64', return_value=None):
         events, _ = _consume(
             orchestrator.stream_chat("What does this say?", attachments=_IMAGE_ATTACHMENT)
