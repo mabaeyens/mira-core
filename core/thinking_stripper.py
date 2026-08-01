@@ -45,24 +45,70 @@ class ThinkingStripper:
 
     ``thinking_chars`` and ``full_content`` accumulate the totals across the
     whole stream and are read by the caller once the stream completes.
+
+    Pass ``preopened=True`` when the prompt itself opened the block. Qwen3 chat
+    templates append a bare ``<think>\\n`` to the prompt whenever thinking is
+    enabled, so the model's output starts *inside* the block and only ever emits
+    the closing tag. Without this the opening tag never arrives, the whole
+    reasoning stream is emitted as visible answer text, and the stray
+    ``</think>`` rides along with it (``find("<think>")`` does not match
+    ``</think>``).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, preopened: bool = False) -> None:
         self._think_buf = ""
         self._in_thinking = False
         self._gemma_buf = ""
         self._in_gemma_thinking = False
         self.thinking_chars = 0
         self.full_content = ""
+        # Latch: armed at construction, spent on the first content token, and
+        # disarmed by saw_reasoning() if the backend turns out to split
+        # reasoning into its own channel (in which case `content` holds only the
+        # answer and must not be swallowed).
+        self._preopen_pending = preopened
+        # True while inside a pre-opened block that has not yet been closed.
+        self._preopen_active = False
+        # Everything emitted as thinking from that unclosed block, kept so drain()
+        # can reclassify it as visible if the close tag never arrives.
+        self._preopen_buf = ""
+
+    def saw_reasoning(self) -> None:
+        """Tell the stripper the backend delivers reasoning out of band.
+
+        Disarms the pre-opened latch: a server that splits reasoning into its
+        own delta field sends only the answer through ``content``, so assuming a
+        pre-opened block there would hide the answer.
+        """
+        self._preopen_pending = False
 
     def feed(self, raw_token: str) -> Iterator[Dict]:
         """Process one raw content token, yielding any complete events."""
+        if self._preopen_pending:
+            self._preopen_pending = False
+            self._in_thinking = True
+            self._preopen_active = True
         self._think_buf += raw_token
         yield from self._pass1_strip_think()
         yield from self._pass2_strip_gemma()
 
     def drain(self) -> Iterator[Dict]:
         """Flush buffered content at end of stream (no partial holds remain)."""
+        if self._preopen_active:
+            # A pre-opened block that never closed. The template promised the
+            # model would close it, so the safe reading is that this was never
+            # reasoning at all — emit it as the answer rather than swallowing
+            # the whole turn and saving an empty assistant message.
+            text = self._preopen_buf + self._think_buf
+            self.thinking_chars -= len(self._preopen_buf)
+            self._preopen_buf = ""
+            self._think_buf = ""
+            self._preopen_active = False
+            self._in_thinking = False
+            if text:
+                self.full_content += text
+                yield {"type": "token", "content": text}
+            return
         if self._think_buf:
             if self._in_thinking:
                 self.thinking_chars += len(self._think_buf)
@@ -92,6 +138,8 @@ class ThinkingStripper:
                     emit = self._think_buf[:len(self._think_buf) - hold] if hold else self._think_buf
                     if emit:
                         self.thinking_chars += len(emit)
+                        if self._preopen_active:
+                            self._preopen_buf += emit
                         yield {"type": "thinking", "content": emit}
                     self._think_buf = self._think_buf[len(self._think_buf) - hold:] if hold else ""
                     break
@@ -99,6 +147,10 @@ class ThinkingStripper:
                 if thinking_fragment:
                     self.thinking_chars += len(thinking_fragment)
                     yield {"type": "thinking", "content": thinking_fragment}
+                # The close tag arrived, so the block really was reasoning: drop
+                # the reclassification buffer drain() would otherwise fall back on.
+                self._preopen_active = False
+                self._preopen_buf = ""
                 self._in_thinking = False
                 self._think_buf = self._think_buf[close + len("</think>"):]
             else:

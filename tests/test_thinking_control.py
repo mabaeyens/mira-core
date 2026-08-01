@@ -8,10 +8,12 @@ either omitted (thinking_enabled=True) or sent at the wrong nesting level
 (thinking ON) and the per-turn toggle never took effect.
 """
 
+import types
+
 import pytest
 from unittest.mock import MagicMock, patch
 
-from core.orchestrator import ChatOrchestrator
+from core.orchestrator import ChatOrchestrator, _uses_qwen_thinking_template
 
 
 @pytest.fixture
@@ -67,3 +69,70 @@ def test_non_qwen_model_does_not_set_chat_template_kwargs(orchestrator):
         orchestrator, backend="omlx", model="gemma-4-26b-it", thinking_enabled=True
     )
     assert "extra_body" not in on
+
+
+# -- response side: the same template that honours enable_thinking also
+# pre-opens `<think>` in the prompt, so the stripper has to be told ------------
+
+def _chunk(content="", thinking=None, done=False):
+    msg = types.SimpleNamespace(content=content, tool_calls=None, thinking=thinking)
+    return types.SimpleNamespace(message=msg, done=done)
+
+
+def _stream_events(orchestrator, *, backend, model, thinking_enabled, chunks):
+    orchestrator.backend = backend
+    orchestrator.model = model
+    with patch.object(orchestrator, "_call_llm", return_value=iter(chunks)):
+        return list(orchestrator._stream_llm_with_thinking(thinking_enabled))
+
+
+@pytest.mark.parametrize("backend", ["mira-mlx", "omlx", "mlx-lm", "dflash"])
+def test_qwen3_thinking_on_does_not_leak_reasoning_into_the_answer(orchestrator, backend):
+    """The regression: Qwen3's template puts `<think>\\n` in the prompt, so the
+    model emits only the closing tag. Before the fix the whole reasoning stream
+    was served as the answer, with a stray `</think>` in it."""
+    events = _stream_events(
+        orchestrator, backend=backend, model="Qwen3.6-35B-A3B", thinking_enabled=True,
+        chunks=[_chunk("The user is asking about X."), _chunk("</think>"),
+                _chunk("The answer is 42."), _chunk(done=True)],
+    )
+    visible = "".join(e["content"] for e in events if e.get("type") == "token")
+    thinking = "".join(e["content"] for e in events if e.get("type") == "thinking")
+    done = [e for e in events if e.get("type") == "llm_done"][0]
+
+    assert visible == "The answer is 42."
+    assert "</think>" not in visible
+    assert thinking == "The user is asking about X."
+    assert done["full_content"] == "The answer is 42."
+    assert done["thinking_chars"] == len("The user is asking about X.")
+
+
+def test_qwen3_thinking_off_streams_the_answer_untouched(orchestrator):
+    """Thinking off means the template emits a pre-CLOSED empty block, so the
+    output carries no tags and must not be treated as pre-opened."""
+    events = _stream_events(
+        orchestrator, backend="mira-mlx", model="Qwen3.6-35B-A3B", thinking_enabled=False,
+        chunks=[_chunk("Here is "), _chunk("the answer."), _chunk(done=True)],
+    )
+    visible = "".join(e["content"] for e in events if e.get("type") == "token")
+    assert visible == "Here is the answer."
+    assert [e for e in events if e.get("type") == "llm_done"][0]["thinking_chars"] == 0
+
+
+def test_out_of_band_reasoning_backend_keeps_its_answer(orchestrator):
+    """A backend that sends reasoning in its own delta puts only the answer in
+    `content`; treating that as a pre-opened block would hide the whole turn."""
+    events = _stream_events(
+        orchestrator, backend="omlx", model="Qwen3.6-35B-A3B", thinking_enabled=True,
+        chunks=[_chunk(thinking="reasoning out of band"), _chunk("The answer is 42."),
+                _chunk(done=True)],
+    )
+    visible = "".join(e["content"] for e in events if e.get("type") == "token")
+    assert visible == "The answer is 42."
+    assert [e for e in events if e.get("type") == "llm_done"][0]["full_content"] == "The answer is 42."
+
+
+def test_template_predicate_shared_by_request_and_response_sides():
+    assert _uses_qwen_thinking_template("mira-mlx", "mlx-community/Qwen3.6-35B-A3B-4bit")
+    assert not _uses_qwen_thinking_template("mira-mlx", "gemma-4-26b-it")
+    assert not _uses_qwen_thinking_template("ollama", "Qwen3.6-35B-A3B")

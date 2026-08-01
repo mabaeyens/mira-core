@@ -10,9 +10,9 @@ import pytest
 from core.thinking_stripper import ThinkingStripper, _partial_marker_tail
 
 
-def _run(chunks):
+def _run(chunks, preopened=False):
     """Feed ``chunks`` (then drain) and return (visible_text, thinking_text, stripper)."""
-    s = ThinkingStripper()
+    s = ThinkingStripper(preopened=preopened)
     visible, thinking = [], []
     for c in chunks:
         for ev in s.feed(c):
@@ -83,6 +83,64 @@ def test_unterminated_think_drained_as_thinking():
     visible, thinking, _ = _run(["<think>never closed"])
     assert visible == ""
     assert thinking == "never closed"
+
+
+# -- Qwen pre-opened <think> (template put the opening tag in the PROMPT) ---
+#
+# Qwen3's chat template appends a bare "<think>\n" to the prompt whenever
+# thinking is enabled, so the model's output starts inside the block and only
+# ever emits the closing tag. Every test above feeds an explicit opening tag,
+# which is the case that never occurs with this model.
+
+def test_preopened_block_is_stripped():
+    visible, thinking, s = _run(
+        ["The user is asking ", "about Kalman filters.", "</think>", "\n\nA Kalman filter."],
+        preopened=True,
+    )
+    assert visible == "\n\nA Kalman filter."
+    assert thinking == "The user is asking about Kalman filters."
+    assert s.thinking_chars == len("The user is asking about Kalman filters.")
+    assert s.full_content == "\n\nA Kalman filter."
+
+
+def test_preopened_never_leaks_the_closing_tag():
+    # find("<think>") does not match "</think>", so without pre-open handling
+    # the stray closing tag rides through as visible answer text.
+    visible, _, s = _run(["reasoning", "</think>", "answer"], preopened=True)
+    assert "</think>" not in visible
+    assert "</think>" not in s.full_content
+
+
+def test_preopened_close_tag_split_across_chunks():
+    visible, thinking, _ = _run(["hidden</thi", "nk>shown"], preopened=True)
+    assert visible == "shown"
+    assert thinking == "hidden"
+
+
+def test_preopened_without_close_tag_is_reclassified_as_answer():
+    # The template promises the model closes the block. If it never does, the
+    # turn must not vanish into thinking and save an empty assistant message.
+    visible, _, s = _run(["Here is the answer, ", "no close tag at all."], preopened=True)
+    assert visible == "Here is the answer, no close tag at all."
+    assert s.full_content == "Here is the answer, no close tag at all."
+    assert s.thinking_chars == 0
+
+
+def test_saw_reasoning_disarms_preopen():
+    # Backends that split reasoning into their own delta send only the answer
+    # through `content`; assuming a pre-opened block there would hide it.
+    s = ThinkingStripper(preopened=True)
+    s.saw_reasoning()
+    visible = "".join(ev["content"] for ev in s.feed("The answer.") if ev["type"] == "token")
+    visible += "".join(ev["content"] for ev in s.drain() if ev["type"] == "token")
+    assert visible == "The answer."
+    assert s.thinking_chars == 0
+
+
+def test_preopened_off_by_default_keeps_old_behaviour():
+    visible, thinking, _ = _run(["plain answer, no tags"])
+    assert visible == "plain answer, no tags"
+    assert thinking == ""
 
 
 # -- Gemma channel ---------------------------------------------------------

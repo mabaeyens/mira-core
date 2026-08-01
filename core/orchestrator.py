@@ -111,6 +111,21 @@ _TRIVIAL = re.compile(
     re.IGNORECASE,
 )
 
+# Backends whose OpenAI-compatible server applies the model's own chat template,
+# so an `enable_thinking` kwarg reaches that template (and its side effects).
+_CHAT_TEMPLATE_BACKENDS = ("mlx-lm", "dflash", "omlx", "mira-mlx")
+
+
+def _uses_qwen_thinking_template(backend: str, model: str) -> bool:
+    """True when a turn goes through a Qwen3 chat template that honors
+    `enable_thinking`. Shared by the request side (which sends the kwarg) and
+    the response side (which must know the template pre-opened `<think>`), so
+    the two can never drift apart."""
+    return backend in _CHAT_TEMPLATE_BACKENDS and (
+        "Qwen3" in model or "qwen3" in model.lower()
+    )
+
+
 # Queries/commands that should never trigger thinking regardless of other signals.
 _NEVER_THINK = re.compile(
     r"^\s*(what\s+(time|day|date)|what'?s\s+the\s+(time|date|day))"
@@ -826,7 +841,14 @@ class ChatOrchestrator:
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 accumulated_tool_calls = None
-                stripper = ThinkingStripper()
+                # Qwen3 templates append a bare "<think>\n" to the prompt when
+                # thinking is on, so the model's output starts inside the block
+                # and never sends an opening tag. Tell the stripper, or the whole
+                # reasoning stream is served to the user as the answer.
+                stripper = ThinkingStripper(
+                    preopened=thinking_enabled
+                    and _uses_qwen_thinking_template(self.backend, self.model)
+                )
 
                 for chunk in self._call_llm(
                     self.conversation_history,
@@ -839,6 +861,10 @@ class ChatOrchestrator:
 
                     thinking_token = getattr(chunk.message, "thinking", None) or ""
                     if thinking_token:
+                        # This backend splits reasoning into its own channel, so
+                        # `content` carries only the answer — never treat it as a
+                        # pre-opened think block.
+                        stripper.saw_reasoning()
                         thinking_chars += len(thinking_token)
                         yield {"type": "thinking", "content": thinking_token}
 
@@ -1023,9 +1049,7 @@ class ChatOrchestrator:
             if self.backend == "dflash":
                 restart_dflash_if_dead(self.model)
             extra: dict = {}
-            if self.backend in ("mlx-lm", "dflash", "omlx", "mira-mlx") and (
-                "Qwen3" in self.model or "qwen3" in self.model.lower()
-            ):
+            if _uses_qwen_thinking_template(self.backend, self.model):
                 # Qwen3's chat template controls thinking via the enable_thinking
                 # kwarg, which the OpenAI-compatible servers (mlx-lm, dflash, omlx,
                 # mira-mlx) only honor when nested under chat_template_kwargs. omlx is
