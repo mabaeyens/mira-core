@@ -14,6 +14,23 @@ uv run python scripts/bench_standard.py --base-url http://localhost:8080   # pp/
 uv run python scripts/bench_compare.py --model <tag> --project-name <proj> # quality/agentic bench; --model is a label only, switch backend first via /models/switch
 ```
 
+## Data directory
+
+Everything Mira persists lives under one directory, `~/.local/share/mira` by
+default: `conversations.db`, the Chroma RAG store, mira-mlx's prompt cache and
+the expert-profile logs. Override it with **`MIRA_DATA_DIR`**:
+
+```bash
+MIRA_DATA_DIR=/tmp/mira-scratch uv run python server.py   # a throwaway instance
+```
+
+`tests/conftest.py` sets it to a fresh temp dir for every run. That is not
+cosmetic: before it existed the suite wrote to the real database and left rows in
+real conversation history. It has to be set before any project module is
+imported, because `core/config.py` resolves the paths at import time and
+`core/db.py` binds `DB_PATH` again — a fixture would run far too late.
+`tests/test_data_isolation.py` is the tripwire if that ordering is ever broken.
+
 ## Hardware
 
 MacBook Pro M5 32GB unified memory — see `docs/model-comparison-m5-macbook.md` for the current model verdict and benchmark history.

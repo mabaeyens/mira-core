@@ -134,8 +134,16 @@ SHELL_SANDBOX_ALLOW_NETWORK: bool = _get("shell_sandbox_allow_network", True)
 TEMP_WORKSPACE_MAX_MB = 100  # per-conversation attachment workspace size cap
 
 # ── Conversation persistence ──────────────────────────────────────────────────
-DB_PATH = Path.home() / ".local" / "share" / "mira" / "conversations.db"
-RAG_DIR = DB_PATH.parent / "chroma_db"
+# Everything Mira persists lives under one directory, overridable with
+# MIRA_DATA_DIR. The default is unchanged, so a normal install and the running
+# LaunchAgent see exactly the same paths as before. The override exists so the
+# test suite can point at a throwaway directory: without it `pytest` wrote to the
+# real conversations.db and left rows in the user's own history (22 of them in a
+# single session, found 2026-08-01). Also useful for running a second instance
+# against separate data.
+DATA_DIR = Path(os.getenv("MIRA_DATA_DIR", str(Path.home() / ".local" / "share" / "mira")))
+DB_PATH = DATA_DIR / "conversations.db"
+RAG_DIR = DATA_DIR / "chroma_db"
 MAX_CONVERSATIONS = 1000
 COMPRESS_THRESHOLD: int = _get("compress_threshold", 70)   # context_pct % at which summarize-and-compress fires
 COMPRESS_KEEP_RECENT: int = max(2, _get("compress_keep_recent", 6))  # number of recent messages kept verbatim (min 2)
