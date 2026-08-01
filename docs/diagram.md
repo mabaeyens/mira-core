@@ -23,7 +23,7 @@ graph TD
         SRV["server.py\nFastAPI + SSE"]
         ORCH["ChatOrchestrator\nstream_chat()"]
         RAG["RagEngine\nChromaDB + reranker"]
-        SEARCH["SearchEngine\nBrave / DuckDuckGo / native"]
+        SEARCH["SearchEngine\nBrave / DuckDuckGo"]
         FETCH["url_fetcher\nBeautifulSoup + Jina fallback"]
         FS["fs_tools / shell_tools\nworkspace-sandboxed"]
         GH["github_tools\nGitHub API"]
@@ -41,10 +41,9 @@ graph TD
     end
 
     subgraph infra["Local Infrastructure"]
-        MLX["oMLX (port 8080)\nQwen3.6-35B-A3B\n(mlx-lm / dFlash compatible API)"]
+        MLX["mira-mlx (port 8080)\nQwen3.6-35B-A3B\nOpenAI-compatible\n(or omlx / mlx-lm / vllm-mlx)"]
         ST["SentenceTransformer\nnomic-embed-text-v1.5\n(local, 768 dims)"]
-        OLLAMA["Ollama (port 11434)\n(optional inference backend)"]
-        WEB["Web search\nBrave / DuckDuckGo / native\n+ Jina fetch fallback"]
+        WEB["Web search\nBrave / DuckDuckGo\n+ Jina fetch fallback"]
         SQLITE[("SQLite\n~/.local/share/mira/")]
     end
 
@@ -64,7 +63,7 @@ sequenceDiagram
     participant Client as iOS/macOS/Web Client
     participant Server as server.py
     participant Orch as ChatOrchestrator
-    participant Ollama as oMLX (Qwen3.6-35B)
+    participant LLM as mira-mlx (Qwen3.6-35B)
     participant Tools as Tools (search/fetch/files/shell)
 
     Client->>Server: POST /chat (multipart: message + files)
@@ -75,19 +74,19 @@ sequenceDiagram
     Orch->>Orch: index attachments (RAG)
     Server-->>Client: rag_indexing, rag_done
 
-    Orch->>Ollama: stream chat (tool calling enabled)
+    Orch->>LLM: stream chat (tool calling enabled)
     Server-->>Client: thinking
 
     loop Tool calls (up to MAX_TOOL_STEPS=10)
-        Ollama-->>Orch: tool_call chunk
+        LLM-->>Orch: tool_call chunk
         Orch->>Tools: dispatch tool
         Server-->>Client: search_start / fetch_start
         Tools-->>Orch: result
         Server-->>Client: search_done / fetch_done
-        Orch->>Ollama: tool result + continue
+        Orch->>LLM: tool result + continue
     end
 
-    Ollama-->>Orch: final answer tokens
+    LLM-->>Orch: final answer tokens
     Server-->>Client: token (streamed)
 
     Orch->>Orch: save messages to SQLite
@@ -97,12 +96,12 @@ sequenceDiagram
     Server-->>Client: done (full content)
 
     opt First turn in new conversation
-        Orch->>Ollama: generate title
+        Orch->>LLM: generate title
         Server-->>Client: title (conv_id, title)
     end
 
     opt context_pct > COMPRESS_THRESHOLD (70%)
-        Orch->>Ollama: summarise old messages
+        Orch->>LLM: summarise old messages
         Orch->>Orch: replace history with summary
         Server-->>Client: compress
     end
@@ -138,7 +137,7 @@ flowchart LR
     subgraph ingest["Indexing (on attach)"]
         FILE["Attachment\n(PDF/HTML/text)"] --> FH["file_handler\nextract text"]
         FH --> CHUNK["Chunker\n400 words, 40 overlap"]
-        CHUNK --> EMBED["SentenceTransformer\nnomic-embed-text-v1.5\n768 dims\n(local, no Ollama needed)"]
+        CHUNK --> EMBED["SentenceTransformer\nnomic-embed-text-v1.5\n768 dims\n(local, in-process)"]
         EMBED --> CHROMA[("ChromaDB\nEphemeralClient\n(in-memory)")]
     end
 
@@ -187,7 +186,7 @@ flowchart TD
     READY -->|timeout| ERROR([Error state\nbackend unreachable])
 
     subgraph launchd["launchd (login item)"]
-        PLIST["com.mab.mira-server.plist\n~/Library/LaunchAgents/"]
+        PLIST["com.mab.mira.plist\n~/Library/LaunchAgents/"]
         PY["python server.py\n(mira-core)"]
         PLIST --> PY
     end

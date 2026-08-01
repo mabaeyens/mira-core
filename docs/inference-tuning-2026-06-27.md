@@ -1,5 +1,14 @@
 # Inference tuning — 2026-06-27 (Apple M5, 32 GB, macOS 26.5.1, omlx 0.4.4)
 
+> **Still relevant, but read the dates.** This measures **omlx**, which was Mira's
+> default backend when it was written and is now the backup (mira-mlx took over on
+> 2026-07-09). The `burst_decode_mode = aggressive` finding still applies to omlx;
+> omlx itself has since moved to 0.5.1, so re-check the admin API surface before
+> reapplying anything by hand. "DFlash" below means DFlash **speculative decoding
+> inside omlx**, not the dflash backend that Mira retired on 2026-08-01 — the
+> rejection here is one of the reasons that backend had so little left to offer.
+> The MoE reasoning in the next section is the durable part and has not changed.
+
 Goal: squeeze more tok/s out of the two served models (Qwen3.6-35B-A3B, Gemma4-26B-A4B)
 without changing the engine. Measured via omlx admin API + real `/v1/chat/completions`
 streaming (token-accurate with `stream_options.include_usage`).

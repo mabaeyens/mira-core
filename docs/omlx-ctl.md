@@ -1,8 +1,13 @@
 # omlx-ctl
 
-> **STATUS: SUPPORTED (updated 2026-06-06)** — omlx is a supported Mira backend with caveats. dflash is the recommended default. See bench verdict below.
+> **STATUS: SUPPORTED, and the backup backend (updated 2026-08-01).** mira-mlx is
+> the default; omlx is what you switch to when mira-mlx cannot serve something.
+> It is also the only backend besides mira-mlx with real vision, and the only one
+> with a model library of its own.
 
-oMLX 0.3.12 — multi-model OpenAI-compatible inference server for Apple Silicon.
+oMLX — multi-model OpenAI-compatible inference server for Apple Silicon.
+Installed here: **0.5.1** (this doc was written against 0.3.12, so treat the flag
+table below as a starting point and check `omlx serve --help` before relying on it).
 
 Binary: `/Applications/oMLX.app/Contents/MacOS/omlx-cli`  
 Symlink: `/Users/miguel/.local/bin/omlx`
@@ -12,10 +17,29 @@ Symlink: `/Users/miguel/.local/bin/omlx`
 - **0.3.8** — crashed on M5 base 32GB; app deleted May 2026
 - **0.3.9** — crashed again; permanently abandoned at that point
 - **0.3.12** — reinstalled May 2026; full Q1–Q13 bench completed without crashes
+- **0.4.2** — added Gemma 4 support
+- **0.4.3 / 0.4.4 / 0.5.1** — no crashes seen
 
-## Benchmark verdict (2026-06-06, updated)
+## The constraint that still decides when to use it
 
-Model: Qwen3.6-35B-A3B-4bit (same as dflash).
+oMLX holds all KV state in RAM. On 32GB with Qwen3.6 (~20GB weights), the KV
+ceiling is about 18K tokens on a fresh session, and it drops to 4–8K after a long
+generation. Large tool output can OOM it. The `OMLX_CONTEXT` value in
+`backend_manager.py` is metadata-only and does not affect oMLX's internal memory
+guard. This is the whole reason mira-mlx became the default: it sizes its own
+budgets from the RAM it finds (`core/hardware.py`) and overflows the prompt cache
+to disk instead of falling over.
+
+So: omlx for interactive, short-answer sessions where warm TTFT (~0ms) matters
+most, and restart oMLX.app between heavy workloads. mira-mlx for everything else.
+
+## Historical benchmarks
+
+Kept for the record. Both predate mira-mlx and one of the two backends compared
+below no longer exists.
+
+**2026-06-06, Qwen3.6-35B-A3B-4bit, omlx vs dflash** (dflash was retired
+2026-08-01):
 
 | Metric | omlx | dflash |
 |--------|------|--------|
@@ -25,15 +49,11 @@ Model: Qwen3.6-35B-A3B-4bit (same as dflash).
 | Session stability | degrades; restart required after heavy use | stable indefinitely |
 | Large tool output | OOM | works |
 
-**Recommendation:** dflash as default. Use omlx only for interactive/short-answer sessions where TTFT is the priority; restart oMLX.app between heavy workloads.
-
-**Key constraint:** oMLX holds all KV state in RAM. On 32GB with Qwen3.6 (~20GB weights), the KV ceiling is ~18K tokens on a fresh session — it drops to 4–8K after a long generation. The `OMLX_CONTEXT` value in `backend_manager.py` is metadata-only and does not affect oMLX's internal memory guard.
-
-## Benchmark verdict (2026-05-30)
+**2026-05-30, omlx vs mlx-lm:**
 
 - **gemma4-26b**: viable, throughput identical to mlx-lm, wall time 3–4× worse (no-cache required to avoid OOM). No advantage over mlx-lm.
-- **qwen3.6-35b**: not viable. 15–30× TTFT regression vs mlx-lm (5–6s per warm query vs 194–380ms). MoE architecture handled less efficiently by omlx engine.
-- **Memory note**: hot cache (8GB) + gemma4 (15.26GB) exceeds 23.2GB ceiling → OOM on large prompts. Must run `--no-cache --hot-cache-max-size 0` for full benchmark suite.
+- **qwen3.6-35b**: not viable at the time. 15–30× TTFT regression vs mlx-lm (5–6s per warm query vs 194–380ms). MoE architecture handled less efficiently by the omlx engine of that era; later versions closed this and omlx served as Mira's default backend from June to July 2026.
+- **Memory note**: hot cache (8GB) + gemma4 (15.26GB) exceeds the 23.2GB ceiling → OOM on large prompts. Must run `--no-cache --hot-cache-max-size 0` for a full benchmark suite.
 
 ## Architecture
 

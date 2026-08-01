@@ -2,7 +2,7 @@
 
 A local AI assistant with autonomous web search, file attachments (PDF/HTML/images/text), and RAG for large documents. Available as a CLI tool and a local web interface with streaming markdown responses.
 
-Runs entirely on local inference — no cloud APIs, no API keys. The default backend is **mira-mlx**, Mira's own MLX-based inference server (bundled, no extra app to install); [oMLX](https://omlx.ai), dflash, mlx-lm, vllm-mlx, and Ollama are also supported as alternative backends. RAG embeddings use `sentence-transformers` (`nomic-ai/nomic-embed-text-v1.5`) locally — no external services required.
+Runs entirely on local inference — no cloud APIs, no API keys. The default backend is **mira-mlx**, Mira's own MLX-based inference server (bundled, no extra app to install); [oMLX](https://omlx.ai) is the supported alternative, and mlx-lm and vllm-mlx also work. RAG embeddings use `sentence-transformers` (`nomic-ai/nomic-embed-text-v1.5`) locally — no external services required.
 
 See [CHANGELOG.md](CHANGELOG.md) for recent changes.
 
@@ -28,7 +28,7 @@ in [Issues](https://github.com/mabaeyens/mira-core/issues/new/choose). I read bo
 - **Autonomous Search**: Model searches the web via Brave Search and fetches full page content when snippets aren't enough (Jina fallback for JS-rendered pages) — sources are shown as clickable links
 - **Streaming responses**: Tokens buffered and rendered as formatted markdown
 - **Two interfaces**: Rich CLI and local web UI (FastAPI + SSE)
-- **File attachments**: PDFs (RAG), HTML, images, text/code files — attach a screenshot and ask about it; tested with books up to 34 MB. Backends with real multimodal vision (e.g. omlx) read images directly; mira-mlx (the default) does not load the model's vision tower, since `mlx-lm` discards those weights and its batched path takes token ids only, so it OCRs the image and folds the recovered text into the prompt instead
+- **File attachments**: PDFs (RAG), HTML, images, text/code files — attach a screenshot and ask about it; tested with books up to 34 MB. Images take one of two paths: OCR (default — the text is extracted with `tesseract` and folded into the prompt, which is cheaper and works well for error dialogs, menus and terminal output), or real vision. omlx always reads images directly; mira-mlx does too when you set `mira_mlx_vision: true`, which loads the Qwen3.6 checkpoint's own vision tower at a cost of about 1.1 GB
 - **RAG**: Large documents chunked, embedded, reranked with Qwen3-Reranker-0.6B-4bit (mlx, in-process) — retrieved automatically on every turn, with hallucination guard for meta-queries (summarize, translate)
 - **Adaptive thinking**: Qwen3.6-35B uses extended reasoning on complex questions; suppressed automatically for trivial queries — zero overhead (≤14ms warm)
 - **Multiple model families**: Qwen3.6 (MoE, the primary default) and Mistral-family models (Ministral 3 14B) both fully supported, including tool-calling — pick per-conversation from the model picker
@@ -70,14 +70,13 @@ The installer checks/installs `uv`, runs `uv sync`, and creates `mira.yaml`. Opt
 the extras with flags (the curl one-liner takes them after `-s --`):
 
 ```bash
-make install ARGS="--with-ollama --with-launchagent"
-# or:  curl -LsSf .../install.sh | bash -s -- --with-ollama --with-launchagent
+make install ARGS="--with-ocr --with-launchagent"
+# or:  curl -LsSf .../install.sh | bash -s -- --with-ocr --with-launchagent
 ```
 
 | Flag | Effect |
 |------|--------|
-| `--with-ollama` | `brew install ollama` + `ollama pull gemma4:26b` (optional Gemma4 backend) |
-| `--with-ocr` | `brew install tesseract` (OCR for scanned PDFs — see below) |
+| `--with-ocr` | `brew install tesseract` (OCR for scanned PDFs and image attachments — see below) |
 | `--with-launchagent` | install & load the macOS LaunchAgent (server runs at login) |
 | `--with-tailscale <host>` | configure HTTPS/Tailscale cert paths in the LaunchAgent |
 | `--skip-preflight` | skip the disk + memory check |
@@ -106,13 +105,16 @@ from [github.com/jundot/omlx/releases](https://github.com/jundot/omlx/releases),
 a model in its library, and set `backend: omlx` in `mira.yaml`.
 
 Run `mira doctor` (or `make doctor`) any time to confirm your configured backend is
-detected and see what else is missing. (`--with-ollama` installs Ollama as another
-alternative backend.)
+detected and see what else is missing.
+
+`mlx-lm` and `vllm-mlx` are supported too, if you already run them. The dflash and
+Ollama backends were removed on 2026-08-01; everything they served runs on one of the
+four above.
 
 > On first use, the `nomic-ai/nomic-embed-text-v1.5` embedding model and
 > `Qwen3-Reranker-0.6B-4bit` reranker download automatically from HuggingFace and cache
-> to `~/.cache/huggingface/`. For best ollama performance, add
-> `export OLLAMA_CONTEXT_LENGTH=65536` and `export OLLAMA_FLASH_ATTENTION=1` to `~/.zprofile`.
+> to `~/.cache/huggingface/`. Nothing else needs configuring — mira-mlx sizes its
+> context window and caches from the RAM it finds.
 
 ## Running
 
@@ -249,11 +251,12 @@ context_window: 65536
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `backend` | `mira-mlx` | Inference backend (`mira-mlx`, `omlx`, `dflash`, `mlx-lm`, `vllm-mlx`, or `ollama`) |
-| `model` | `mlx-community/Qwen3.6-35B-A3B-4bit` | Model identifier — an mlx-community repo id for mira-mlx/dflash/mlx-lm/vllm-mlx (e.g. `mlx-community/Ministral-3-14B-Instruct-2512-4bit` for the Mistral family), or omlx's own model name (`Qwen3.6-35B-A3B`) when `backend: omlx` |
+| `backend` | `mira-mlx` | Inference backend (`mira-mlx`, `omlx`, `mlx-lm`, or `vllm-mlx`) |
+| `model` | `mlx-community/Qwen3.6-35B-A3B-4bit` | Model identifier — an mlx-community repo id for mira-mlx/mlx-lm/vllm-mlx (e.g. `mlx-community/Ministral-3-14B-Instruct-2512-4bit` for the Mistral family), or omlx's own model name (`Qwen3.6-35B-A3B`) when `backend: omlx` |
 | `host` | `http://localhost:8080` | Backend host URL |
 | `embed_model` | `nomic-ai/nomic-embed-text-v1.5` | HuggingFace embedding model for RAG |
 | `context_window` | `65536` | Token context window |
+| `mira_mlx_vision` | `false` | Read image attachments with the model's own vision tower instead of OCR (mira-mlx only; ~1.1 GB) |
 
 Additional settings (not user-configurable via `mira.yaml` — edit `core/config.py` only if needed):
 

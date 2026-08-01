@@ -1,6 +1,27 @@
 # Model Comparison: MacBook Pro M5 (32GB RAM) Performance Guide
 
-## Current Verdict (2026-07-10)
+> Most of this file is a **benchmark archive**, not a guide to what runs today. The
+> current verdict is the next section; everything from "gemma4:26b" downward is dated
+> measurement kept for the record. Several backends measured here (Ollama, dflash,
+> llama.cpp) are no longer part of Mira. The numbers were real when taken and are
+> still useful for comparison, but do not read them as configuration advice.
+
+## Current Verdict (updated 2026-08-01)
+
+**Four backends, and mira-mlx is the one.** As of 2026-08-01, dflash and ollama are
+retired from the codebase entirely (see `CHANGELOG.md`). What remains: **mira-mlx**
+(default), **omlx** (backup, and the fallback when mira-mlx cannot serve something),
+plus **mlx-lm** and **vllm-mlx**, which stay because they are cheap to keep and useful
+for comparison. Nothing was lost model-wise — everything ollama served runs on
+mira-mlx, and Gemma 4 is still reachable through omlx.
+
+Also new on 2026-08-01: mira-mlx can do **real vision**, optionally, by loading the
+Qwen3.6 checkpoint's own vision tower (`mira_mlx_vision: true`). Off by default. It
+costs about 1.1GB active. See `docs/architecture.md`, "Vision on mira-mlx".
+
+The 2026-07-10 verdict below still stands for the model choice and the numbers.
+
+## Verdict of 2026-07-10 (model choice unchanged)
 
 **Winner: mira-mlx (Mira's own inference server) — Qwen3.6-35B-A3B as the normal default model**
 
@@ -91,8 +112,7 @@ context_window: 65536
 | Unified Memory | 32 GB (LPDDR5X) |
 | Memory Bandwidth | 153.6 GB/s |
 | Storage | 1 TB SSD |
-| OS | macOS 26.4.1 (Darwin 25.5.0) |
-| Ollama | 0.24.0 (ggml-Metal engine) |
+| OS | macOS 26.4.1 (Darwin 25.5.0) at the time of these benches |
 
 ---
 
@@ -104,27 +124,27 @@ context_window: 65536
 |--------|--------------|-----------|--------|---------------|---------|
 | **Qwen3.6-35B-A3B-4bit (mira-mlx)** | **56–66 t/s** | **~1.1–1.2s pp1024** | ⚠️ 18GB | **58.7%** | **⭐ Current Mira default backend — see "Current Verdict" above** |
 | Qwen3.6-35B-A3B-4bit (mlx-lm) | ~52–55 t/s | 300–450ms | ⚠️ 18GB | 58.7% | Historical entry below (2026-05); superseded by mira-mlx |
-| **qwen3.6:35b-mlx** (Ollama) | **~43 t/s** | **~60–245ms** | ⚠️ 21GB | **58.7%** | Quality leader (Ollama; benched 2026-05-25) |
 | **gemma-4-26b-a4b-it-4bit (mlx-lm)** | **~36 t/s** | **250–505ms** | ✅ 17GB | 42.3% | Manual fallback (demoted 2026-05-31) |
-| gemma4:26b-mlx (Ollama) | ~39 t/s | ~970–1,200ms | ✅ 17GB | 42.3% | Superseded by mlx-lm (2026-05-30) |
-| Qwen3.6-35B-A3B (llama.cpp) | ~29 t/s | ~1s | ⚠️ 23GB | 58.7% | Quality-first alternative |
-| gemma4:26b Q4_K_M (Ollama) | ~39 t/s | ~290–420ms warm / 31s cold | ✅ 17GB | 42.3% | Superseded by MLX |
-| qwen3.6:latest Q4_K_M (Ollama) | ~1.5–2 t/s | 14s | ❌ 24GB | — | Avoid |
-| oMLX | — | — | ❌ OOM | — | Dead end — do not revisit |
+| **qwen3.6:35b-mlx** (Ollama) | **~43 t/s** | **~60–245ms** | ⚠️ 21GB | **58.7%** | Archive — Ollama retired 2026-08-01 |
+| gemma4:26b-mlx (Ollama) | ~39 t/s | ~970–1,200ms | ✅ 17GB | 42.3% | Archive — Ollama retired 2026-08-01 |
+| Qwen3.6-35B-A3B (llama.cpp) | ~29 t/s | ~1s | ⚠️ 23GB | 58.7% | Archive — llama.cpp was never a Mira backend |
+| gemma4:26b Q4_K_M (Ollama) | ~39 t/s | ~290–420ms warm / 31s cold | ✅ 17GB | 42.3% | Archive — Ollama retired 2026-08-01 |
+| qwen3.6:latest Q4_K_M (Ollama) | ~1.5–2 t/s | 14s | ❌ 24GB | — | Archive — was "avoid" even then |
+| oMLX 0.3.9 | — | — | ❌ OOM | — | Fixed in 0.4.1; omlx is the current backup backend |
 
-**Current Mira config (2026-07-10)**: mira-mlx + `Qwen3.6-35B-A3B-4bit` (port 8080) — see "Current Verdict" at the top of this file. mlx-lm entries below are historical (2026-05); mira-mlx is built on the same mlx-lm continuous-batching primitives but as Mira's own server, with RAM-aware sizing and a disk-backed prompt cache. Ollama remains available as an optional inference backend (switchable via the in-app model browser); Gemma4 available as a manual fallback for workflows that need its leaderboard score.
+**Current Mira config (2026-08-01)**: mira-mlx + `Qwen3.6-35B-A3B-4bit` (port 8080). mlx-lm entries below are historical (2026-05); mira-mlx is built on the same mlx-lm continuous-batching primitives but as Mira's own server, with RAM-aware sizing and a disk-backed prompt cache. Gemma 4 stays available through omlx for workflows that want its leaderboard score.
 
 ### Backends Evaluated
 
 | Backend | Status | Notes |
 |---------|--------|-------|
-| mira-mlx | ✅ Default (2026-07-09) | Mira-owned MLX server (`core/inference/mira_mlx_server.py`); Qwen3.6 and Mistral/Ministral both supported, incl. tool-calling |
-| omlx | 🔄 Alternative backend | Still fully supported; ~0ms warm TTFT after startup warm-up |
-| vllm-mlx | 🔄 Alternative backend | Patched Mistral tool-call parser; used for Ministral-3-14B evaluation |
-| Ollama 0.24.0 | 🔄 Optional fallback | Switchable via in-app model browser |
-| mlx-lm 0.31.3 | 🔄 Alternative backend | Historical default (2026-05); superseded by mira-mlx. Thinking controlled per-request via `chat_template_kwargs`; warmup on startup |
-| llama.cpp b9260 | 🔧 Optional | Works but manual setup; no GPU sharing with Ollama |
-| oMLX v0.3.9 | ❌ Dead end (historical) | OOM crash on 32GB M5 — fixed in 0.4.1, see "Previous Verdict" below |
+| mira-mlx | ✅ Default (2026-07-09) | Mira-owned MLX server (`core/inference/mira_mlx_server.py`); Qwen3.6 and Mistral/Ministral both supported, incl. tool-calling; optional vision since 2026-08-01 |
+| omlx | 🔄 Backup backend | Fully supported; ~0ms warm TTFT after startup warm-up; real vision; its own model library |
+| mlx-lm | 🔄 Kept for comparison | Stock upstream server, no mira-mlx extras. Historical default (2026-05) |
+| vllm-mlx | 🔄 Kept for comparison | Patched Mistral tool-call parser; used for the Ministral-3-14B evaluation |
+| dflash | ❌ Retired 2026-08-01 | Was the large-context fallback; mira-mlx's disk-backed prompt cache covers that case |
+| Ollama | ❌ Retired 2026-08-01 | Only ever served `ministral-3:14b`, which runs on three remaining backends |
+| llama.cpp b9260 | ❌ Never integrated | Benchmarked May 2026 for comparison only; manual setup, no Mira backend ever existed |
 
 ---
 
@@ -398,6 +418,9 @@ For M5 MacBook: Q4_K_M is optimal for GGUF models; NVFP4 is the format used by Q
 | 2026-05-31 | Latency matrix: Qwen3.6 on mlx-lm wins (307ms warm TTFT, ≤14ms thinking overhead); Ollama cache saves 4.6× on warm prefix; Qwen3 becomes default |
 | 2026-06-06 | omlx 0.4.1 vs dFlash: omlx 4–10× faster TTFT (963ms–4.7s vs 5.4–29.6s); dFlash OOM-safe above 18K KV |
 | 2026-06-07 | TTFT shootout: omlx 0.4.1 (0ms warm) vs ollama 0.30.6 MLX (90ms) vs dFlash (~48s); omlx becomes default |
+| 2026-07-09 | mira-mlx promoted to default: bundled, RAM-aware sizing, disk-backed prompt cache, `/v1/stats` |
+| 2026-07-18 | KV quantization at 8 bits and MoE expert offload measured on both models — `docs/bench-results-2026-07-18.md` |
+| 2026-08-01 | mlx 0.32.0 verified against the real model (25/26 on the quality suite, no regression) — `docs/bench-results-2026-08-01.md`. dflash and ollama retired the same day |
 
 ---
 
@@ -437,7 +460,12 @@ Total:            ~23.0 GB   Headroom: ~9.0 GB ⚠️
 
 ### Performance Optimization Tips
 
-#### Ollama environment (`~/.zprofile`)
+#### Ollama environment (`~/.zprofile`) — no longer applicable
+
+Kept because it explains the numbers above. Ollama stopped being a Mira backend on
+2026-08-01, and mira-mlx has no equivalent knobs: it sizes context, prompt-cache pool
+and Metal cache limit from the RAM it finds (`core/hardware.py`). If these exports are
+still in your `~/.zprofile` they do nothing for Mira.
 
 ```zsh
 export OLLAMA_CONTEXT_LENGTH=65536   # 64k context window — without this Ollama defaults to 4k–8k

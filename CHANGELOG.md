@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **Retired the dflash and Ollama backends.** Mira's backend is mira-mlx; omlx is
+  the backup, and mlx-lm and vllm-mlx stay because they are cheap to keep and
+  useful for comparison. Both retired backends are gone from the code rather than
+  hidden from the picker, and their Python dependencies went with them. No model
+  coverage was lost: Ollama only ever served `ministral-3:14b`, which runs on three
+  of the remaining backends, and Gemma 4 is still reachable through omlx. The
+  `ollama` key stays in `GET /models`, always empty, so an older app build that
+  still decodes that field does not fail on a missing key. `OLLAMA_HOST` in
+  `config.py` is now `BACKEND_HOST` — it had stopped meaning Ollama long ago and
+  made a retired backend look load-bearing. The Ollama-native web search went too;
+  it had been dead code behind a flag that was never switched on, so Brave when
+  keyed and DuckDuckGo otherwise is now all the module claims to do.
+- **Optional vision on mira-mlx.** Set `mira_mlx_vision: true` in `mira.yaml` and
+  image attachments are read by the model's own vision tower instead of being run
+  through OCR. Off by default. It works on the default checkpoint —
+  `Qwen3.6-35B-A3B-4bit` ships a vision tower that stock mlx-lm discards at load —
+  and costs about 1.1 GB active, with a 640x480 image spending 300 context tokens.
+  OCR remains the default path and is genuinely better for text-heavy screenshots.
+  Two notes for anyone turning it on: image turns skip the prompt cache on purpose,
+  because an image is N copies of one placeholder token and two same-sized
+  screenshots would otherwise collide into a false cache hit; and if the tower
+  fails to load, the backend keeps serving text and reports the reason under
+  `vision.error` in `GET /v1/stats`.
 - Fixed reasoning being served as the answer on thinking turns. Qwen3's chat
   template puts the opening `<think>` in the prompt, so the model's output starts
   inside the block and only ever emits the closing tag; the streaming stripper was
