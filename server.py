@@ -541,6 +541,7 @@ async def chat(
     paths: List[str] = Form(default=[]),
     thinking_enabled: Optional[bool] = Form(default=None),
     github_tools_enabled: bool = Form(default=False),
+    tools_enabled: bool = Form(default=True),
     # Approval tokens for destructive actions the user confirmed in the client.
     # These come from the USER via the client UI, never from model output — that
     # is what makes the confirmation gate unforgeable by the model.
@@ -620,7 +621,7 @@ async def chat(
                 thinking_content = None
 
                 try:
-                    for event in orch.stream_chat(message, attachments=attachments or None, thinking_enabled=thinking_enabled, github_tools_enabled=github_tools_enabled, approved_tokens=frozenset(approved_tokens)):
+                    for event in orch.stream_chat(message, attachments=attachments or None, thinking_enabled=thinking_enabled, github_tools_enabled=github_tools_enabled, approved_tokens=frozenset(approved_tokens), tools_enabled=tools_enabled):
                         if cancel_event.is_set():
                             break
                         if event.get("type") == "done":

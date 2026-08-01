@@ -237,11 +237,15 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
         eval_tokens   — token count from done event (if present)
         eval_tps      — tokens/sec from done event (if present)
     """
-    # /chat takes Form fields, not JSON
+    # /chat takes Form fields, not JSON.
+    # `tools` was declared per question for a year and never sent, so every
+    # question ran with the full agentic toolset and a `tools: false` question
+    # could still short-circuit itself by calling task_done (bench Q4, 2026-08-01).
     form_data = {
         "message": prompt,
         "conversation_id": conversation_id,
         "thinking_enabled": str(thinking).lower(),
+        "tools_enabled": str(tools).lower(),
     }
 
     t_start = time.perf_counter()

@@ -234,6 +234,9 @@ class ChatOrchestrator:
         self._temp_workspace: Optional[str] = None
         self._attachment_registry: Dict[str, Dict] = {}
         self._github_tools_enabled: bool = False
+        # Per-turn kill switch for the whole toolset. Default on: every existing
+        # caller keeps today's behaviour without passing anything.
+        self._tools_enabled: bool = True
         # Fail closed: any dispatch path that does not go through stream_chat
         # (e.g. /ask) carries no approvals, so destructive actions are refused.
         self._approved_tokens: frozenset = frozenset()
@@ -245,6 +248,12 @@ class ChatOrchestrator:
 
     @property
     def _active_tools(self) -> List[Dict]:
+        # Asked for a pure-generation turn: hand the model nothing, not even
+        # task_done. Anything short of an empty list leaves it an escape hatch —
+        # a model that can declare itself finished sometimes will, and the user
+        # gets a one-line summary in place of the answer they asked for.
+        if not self._tools_enabled:
+            return []
         if self.workspace_root:
             base = TOOLS
         elif self._temp_workspace:
@@ -408,6 +417,7 @@ class ChatOrchestrator:
         thinking_enabled: Optional[bool] = None,
         github_tools_enabled: bool = False,
         approved_tokens: Optional[frozenset] = None,
+        tools_enabled: bool = True,
     ) -> Iterator[Dict]:
         """
         Process a user message and yield events for consumers (CLI, web).
@@ -416,6 +426,7 @@ class ChatOrchestrator:
         rag_indexing/done/context, stats, warning, done, error.
         """
         self._github_tools_enabled = github_tools_enabled
+        self._tools_enabled = tools_enabled
         # Scoped to this turn only: an approval the user gave for one command must
         # not silently authorise a later turn's command.
         self._approved_tokens = frozenset(approved_tokens or ())

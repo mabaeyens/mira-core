@@ -217,6 +217,12 @@ def get_conversation(conv_id: str) -> Optional[Dict]:
 
 def delete_conversation(conv_id: str) -> None:
     with _conn() as conn:
+        # `messages` cascades off the conversations row (FK + PRAGMA foreign_keys=ON),
+        # but messages_fts is a virtual table outside that cascade, so its copy of the
+        # text survived and the conversation stayed findable through
+        # search_conversations() after it was deleted. Clear it explicitly, first, so
+        # a failure here leaves the conversation intact rather than half-deleted.
+        conn.execute("DELETE FROM messages_fts WHERE conversation_id = ?", (conv_id,))
         conn.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))
 
 
