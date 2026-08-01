@@ -4,7 +4,6 @@ dynamic = ["version"]
 description = "Mira — local AI assistant with autonomous web search, RAG, and a web UI"
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "ollama>=0.4.0,<2.0.0",
     "ddgs>=6.0.0",
     "rich>=13.0.0,<15.0.0",
     "markdown>=3.5.0,<4.0.0",
@@ -23,7 +22,6 @@ dependencies = [
     "mlx>=0.32.0; sys_platform == 'darwin'",
     "mlx-lm>=0.31.3; sys_platform == 'darwin'",
     "mlx-metal>=0.32.0; sys_platform == 'darwin'",
-    "dflash-mlx>=0.1.8; sys_platform == 'darwin'",
     "openai>=2.37.0",
     "pyyaml>=6.0.3",
     "einops>=0.8.2",

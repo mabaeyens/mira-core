@@ -2,7 +2,7 @@
 
 Pure helpers that translate between Mira's stored conversation history and the
 two LLM wire formats it speaks (Ollama's Pydantic chat API and the
-OpenAI-compatible streaming API used by mlx-lm / dflash / omlx):
+OpenAI-compatible streaming API used by mira-mlx / mlx-lm / omlx / vllm-mlx):
 
   * message normalizers — reshape history for each backend's quirks;
   * :func:`normalize_oai_stream` — adapt an OpenAI-compatible stream into the
@@ -34,30 +34,6 @@ def inject_no_think(messages: List[Dict]) -> List[Dict]:
 def strip_think(text: str) -> str:
     """Remove <think>...</think> blocks from a string."""
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-
-
-def normalize_messages_for_ollama(messages: List[Dict]) -> List[Dict]:
-    """Ollama's Pydantic Message model requires tool_calls[].function.arguments as dict.
-    History stores them as JSON strings (OpenAI wire format). Parse them back."""
-    result = []
-    for msg in messages:
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            msg = dict(msg)
-            tcs = []
-            for tc in msg["tool_calls"]:
-                tc = dict(tc)
-                fn = dict(tc.get("function", {}))
-                args = fn.get("arguments")
-                if isinstance(args, str):
-                    try:
-                        fn["arguments"] = json.loads(args)
-                    except json.JSONDecodeError:
-                        fn["arguments"] = {}
-                tc["function"] = fn
-                tcs.append(tc)
-            msg["tool_calls"] = tcs
-        result.append(msg)
-    return result
 
 
 def normalize_messages_for_oai(messages: List[Dict]) -> List[Dict]:
@@ -164,7 +140,7 @@ def normalize_oai_stream(stream):
 
         content = delta.content or ""
         acc_content_parts.append(content)
-        # mlx_lm.server and dflash serve stream chain-of-thought in a separate field on
+        # mlx_lm.server and omlx stream chain-of-thought in a separate field on
         # the delta. The field name may be `reasoning` or `reasoning_content` depending
         # on the server version. The OpenAI SDK keeps non-standard fields on model_extra
         # and also exposes them as attributes — read both to be robust.

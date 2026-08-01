@@ -7,7 +7,7 @@
 # Clones the repo to ~/mira-core (override with $MIRA_HOME) on a fresh machine,
 # or reuses the current checkout if you're already inside one, then hands off to
 # scripts/setup.sh — which holds all the real logic. Pass any setup.sh flags
-# through, e.g.:  ... | bash -s -- --with-ollama --with-launchagent
+# through, e.g.:  ... | bash -s -- --with-launchagent
 set -euo pipefail
 
 REPO_URL="https://github.com/mabaeyens/mira-core.git"

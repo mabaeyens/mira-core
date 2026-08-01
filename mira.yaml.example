@@ -35,12 +35,12 @@
 #   - omlx: separate GUI app with its own model library; KV cache held in RAM → ~0ms TTFT
 #   - vllm-mlx: patched Mistral tool-call parser; another option for the Mistral family
 #   - mlx-lm: stock mlx-lm server, no mira-mlx extras (RAM-aware sizing, disk cache, stats)
-#   - dflash: higher throughput for long responses; SSD prefix cache (slower TTFT ~48s)
-#   - ollama: fallback; gemma4:26b-mlx is fast but quality is lower than Qwen3.6
-backend: mira-mlx             # mira-mlx | omlx | dflash | mlx-lm | vllm-mlx | ollama
-model: mlx-community/Qwen3.6-35B-A3B-4bit   # mlx-community repo id (mira-mlx/dflash/mlx-lm/vllm-mlx);
+# The dflash and ollama backends were removed on 2026-08-01. Everything they
+# served runs on one of the four above.
+backend: mira-mlx             # mira-mlx | omlx | mlx-lm | vllm-mlx
+model: mlx-community/Qwen3.6-35B-A3B-4bit   # mlx-community repo id (mira-mlx/mlx-lm/vllm-mlx);
                                              # omlx wants its own model name instead, e.g. Qwen3.6-35B-A3B
-host: http://localhost:8080  # default port for all local backends except ollama
+host: http://localhost:8080  # every backend listens here; only one runs at a time
 
 # ── Model picker presets ──────────────────────────────────────────────────────
 # Named backend+model combinations shown in the iOS/macOS model picker.
@@ -62,16 +62,6 @@ backends:
     backend: omlx
     model: Qwen3.6-35B-A3B
     context_window: 131072
-  - id: dflash-qwen3
-    label: "Qwen3.6 35B (dFlash)"
-    backend: dflash
-    model: mlx-community/Qwen3.6-35B-A3B-4bit
-    context_window: 65536
-  - id: ollama-gemma4
-    label: "Gemma 4 26B"
-    backend: ollama
-    model: gemma4:26b
-    context_window: 65536
 
 # ── Embedding model (for RAG) ─────────────────────────────────────────────────
 embed_model: nomic-ai/nomic-embed-text-v1.5   # HuggingFace model; downloaded once and cached locally
@@ -102,22 +92,17 @@ brave_api_key: "your-brave-search-api-key-here"
 
 # ── CLI paths ─────────────────────────────────────────────────────────────────
 # Absolute paths to inference server binaries on your machine.
-# Run `which mlx_lm.server` / `which dflash` to find them.
+# Run `which mlx_lm.server` / `which vllm-mlx` to find them.
 # omlx_cli is fixed at /Applications/oMLX.app/... for all macOS installs.
 # Omit any entry to use the built-in default.
 # paths:
 #   mlx_lm_cli: /path/to/mlx_lm.server       # e.g. ~/.local/bin/mlx_lm.server
-#   dflash_cli: /path/to/.venv/bin/dflash      # e.g. <project>/.venv/bin/dflash
 #   omlx_cli: /Applications/oMLX.app/Contents/MacOS/omlx-cli  # same for all macOS
 
-# ── Inference tuning (mira-mlx, dflash, and mlx-lm only — ignored by omlx) ──
+# ── Inference tuning (mira-mlx and mlx-lm only — ignored by omlx) ──
 # prefill_step_size: tokens processed per prefill chunk.
 # Valid powers of 2: 256 | 512 | 1024 | 2048 (2048 is experimental on 32GB RAM).
 prefill_step_size: 1024
-
-# dflash_diagnostics: write per-request structured logs to .artifacts/dflash/diagnostics/.
-# Values: off | basic (request/cache logs) | full (+memory waterfall). Default: off.
-dflash_diagnostics: off
 
 # mira_mlx_kv_bits: quantize mira-mlx's KV cache to this many bits (opt-in;
 # unset/null = today's unquantized fp16 cache). Only 8 is numerically validated
@@ -188,10 +173,9 @@ mira_mlx_resident_expert_fraction: 0.3
 # true; false = flat fraction everywhere.
 mira_mlx_expert_ram_aware: true
 
-# ── Performance Tips ─────────────────────────────────────────────────────────
-# For best performance with Ollama on MacBook Pro M5, add to ~/.zprofile:
-#   export OLLAMA_CONTEXT_LENGTH=65536
-#   export OLLAMA_FLASH_ATTENTION=1
-#   export OLLAMA_NUM_PARALLEL=1
-#   export OLLAMA_KV_CACHE_TYPE=q8_0
-# Then restart Ollama.
+# ── Performance tips ─────────────────────────────────────────────────────────
+# mira-mlx sizes its context window, prompt-cache pool and Metal cache limit from
+# the RAM it actually finds (core/hardware.py), so there is nothing to tune by
+# hand for a normal install. The knobs above are the ones worth touching:
+# mira_mlx_kv_bits: 8 buys roughly 1.9x the context for a small accuracy cost,
+# and mira_mlx_expert_offload lets a model larger than RAM open at all.

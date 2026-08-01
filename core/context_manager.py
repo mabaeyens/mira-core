@@ -10,7 +10,7 @@ lives here.
 
 from typing import List, Dict, Optional, Tuple
 
-# Ollama's eval_count covers only visible content tokens; thinking tokens arrive
+# A backend's eval_count covers only visible content tokens; thinking tokens arrive
 # separately and are not counted. We approximate them from character length so
 # the displayed output-token total reflects the real compute. ~3.5 chars/token
 # matches typical Qwen3/Gemma tokenization closely enough for a usage readout.

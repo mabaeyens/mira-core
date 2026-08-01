@@ -22,7 +22,7 @@ def _get(key: str, default):
     return _cfg.get(key, default)
 
 # ── Backend ───────────────────────────────────────────────────────────────────
-# "mlx-lm" and "omlx" use the OpenAI-compatible API; "ollama" uses the ollama Python client.
+# Every supported backend speaks the OpenAI-compatible API.
 # Shared-secret auth. When set, every sensitive route requires
 # `Authorization: Bearer <token>`. When unset, the server refuses to bind a
 # non-loopback host (see server.py __main__) so an open server stays local-only.
@@ -65,7 +65,10 @@ URL_FETCH_ALLOW_PRIVATE: bool = _get("url_fetch_allow_private", False)
 # match mira.yaml.example so a fresh install with no mira.yaml behaves as documented.
 BACKEND: str = _get("backend", "mira-mlx")
 MODEL_NAME: str = _get("model", "mlx-community/Qwen3.6-35B-A3B-4bit")
-OLLAMA_HOST: str = _get("host", os.getenv("OLLAMA_HOST", "http://localhost:11434"))
+# The inference backend's base URL. Named OLLAMA_HOST until 2026-08-01,
+# when the ollama backend was retired; it had long since stopped meaning
+# ollama and just meant whatever `host:` in mira.yaml points at.
+BACKEND_HOST: str = _get("host", os.getenv("MIRA_BACKEND_HOST", "http://localhost:8080"))
 
 # Named backend presets exposed via GET /backends and shown in the app model picker.
 # If empty (no `backends:` in mira.yaml), backend_manager falls back to its PRESETS dict.
@@ -90,7 +93,8 @@ SAME_TOOL_REPEAT_LIMIT = 15  # same tool name N times in one turn → bail (catc
 TOOL_SOFT_LIMIT = 10     # per-tool calls before pausing to check in with the user
 UNPRODUCTIVE_TOOL_REPEAT_LIMITS: dict = {}  # no per-tool hard caps; soft limit handles research use cases
 MAX_RETRIES = 3          # API-level error retries per model call
-USE_NATIVE_SEARCH = False  # Ollama native search off; Brave is primary when keyed, DDGS is the fallback (see docs/architecture.md)
+# Brave is primary when a key is set, DuckDuckGo is the fallback
+# (see docs/architecture.md).
 SEARCH_TIMEOUT = 30
 BRAVE_API_KEY: str = _get("brave_api_key", os.getenv("BRAVE_API_KEY", ""))
 
@@ -114,7 +118,6 @@ RAG_MAX_CHUNKS = 10_000     # warn user to unload documents above this total
 # ── CLI paths (local install locations; override in mira.yaml under paths:) ───
 _paths = _get("paths", {})
 MLX_LM_CLI: str = _paths.get("mlx_lm_cli", str(Path.home() / ".local" / "bin" / "mlx_lm.server"))
-DFLASH_CLI: str = _paths.get("dflash_cli", str(Path(__file__).parent.parent / ".venv" / "bin" / "dflash"))
 OMLX_CLI: str = _paths.get("omlx_cli", "/Applications/oMLX.app/Contents/MacOS/omlx-cli")
 VLLM_MLX_CLI: str = _paths.get("vllm_mlx_cli", str(Path.home() / ".local" / "bin" / "vllm-mlx"))
 
@@ -137,7 +140,6 @@ MAX_CONVERSATIONS = 1000
 COMPRESS_THRESHOLD: int = _get("compress_threshold", 70)   # context_pct % at which summarize-and-compress fires
 COMPRESS_KEEP_RECENT: int = max(2, _get("compress_keep_recent", 6))  # number of recent messages kept verbatim (min 2)
 PREFILL_STEP_SIZE: int = _get("prefill_step_size", 1024)  # tokens per prefill chunk; must be power of 2 (256/512/1024/2048)
-DFLASH_DIAGNOSTICS: str = _get("dflash_diagnostics", "off")  # off | basic | full; basic=request/cache logs, full=+memory waterfall
 # mira-mlx only. None (default) = unquantized fp16 KV cache, today's behavior.
 # 8 is the only numerically-validated bit width (mlx-lm fork's own test suite,
 # rtol=4e-2); 4-bit is unproven anywhere in this codebase.

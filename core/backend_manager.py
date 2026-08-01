@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.config import CONTEXT_WINDOW, DB_PATH
-from core.config import DFLASH_CLI as _DFLASH_CLI_PATH
-from core.config import DFLASH_DIAGNOSTICS, MLX_LM_CLI as _MLX_LM_CLI_PATH
+from core.config import MLX_LM_CLI as _MLX_LM_CLI_PATH
 from core.config import MIRA_MLX_KV_BITS, MIRA_MLX_KV_GROUP_SIZE, MIRA_MLX_VISION
 from core.config import (
     MIRA_MLX_PROFILE_EXPERTS,
@@ -43,30 +42,11 @@ MIRA_MLX_MODEL = "mlx-community/Ministral-3-14B-Instruct-2512-4bit"
 MIRA_MLX_CONTEXT = CONTEXT_WINDOW
 MIRA_MLX_CACHE_DIR = DB_PATH.parent / "mira_mlx_cache"
 
-DFLASH_CLI = _DFLASH_CLI_PATH
-DFLASH_PORT = 8080
-DFLASH_HOST = f"http://localhost:{DFLASH_PORT}"
-DFLASH_MODEL = "mlx-community/Qwen3.6-35B-A3B-4bit"
-DFLASH_CONTEXT = 65536
-# dflash's prefix/KV cache (regenerable). dflash is a secondary large-context fallback
-# here, so we trim this on stop rather than let it grow to tens of GB.
-DFLASH_CACHE_DIR = Path.home() / ".cache" / "dflash"
-
-# Validated target → draft pairings from the dflash-mlx README
-DFLASH_DRAFT_MODELS = {
-    "mlx-community/Qwen3.6-35B-A3B-4bit": "z-lab/Qwen3.6-35B-A3B-DFlash",
-    "mlx-community/gemma-4-26b-a4b-it-4bit": "z-lab/gemma-4-26B-A4B-it-DFlash",
-}
-
 OMLX_CLI = _OMLX_CLI_PATH
 OMLX_PORT = 8080
 OMLX_HOST = f"http://localhost:{OMLX_PORT}"
 OMLX_MODEL = "Qwen3.6-35B-A3B"
 OMLX_CONTEXT = 131072
-
-OLLAMA_HOST = "http://localhost:11434"
-OLLAMA_MODEL = "gemma4:26b"
-OLLAMA_CONTEXT = int(os.environ.get("OLLAMA_CONTEXT_LENGTH", 262144))
 
 VLLM_MLX_CLI = _VLLM_MLX_CLI_PATH
 VLLM_MLX_PORT = 8080
@@ -77,26 +57,12 @@ VLLM_MLX_CONTEXT = 65536
 PRESETS = {
     # mlx-lm is benched out (architecture gap) — not offered in the default picker.
     # The backend code path remains for anyone who configures it explicitly in mira.yaml.
-    "dflash": {
-        "backend": "dflash",
-        "model": DFLASH_MODEL,
-        "host": DFLASH_HOST,
-        "context_window": DFLASH_CONTEXT,
-        "vision": False,
-    },
     "omlx": {
         "backend": "omlx",
         "model": OMLX_MODEL,
         "host": OMLX_HOST,
         "context_window": OMLX_CONTEXT,
         "vision": True,
-    },
-    "ollama": {
-        "backend": "ollama",
-        "model": OLLAMA_MODEL,
-        "host": OLLAMA_HOST,
-        "context_window": OLLAMA_CONTEXT,
-        "vision": False,
     },
     "vllm-mlx": {
         "backend": "vllm-mlx",
@@ -118,7 +84,6 @@ PRESETS = {
 }
 
 _mlx_lm_proc = None
-_dflash_proc = None
 _omlx_proc = None
 _vllm_mlx_proc = None
 _mira_mlx_proc = None
@@ -294,76 +259,6 @@ def stop_mlx_lm() -> None:
         _mlx_lm_proc = None
 
 
-def start_dflash(model: str = DFLASH_MODEL) -> None:
-    global _dflash_proc
-    draft_model = DFLASH_DRAFT_MODELS.get(model, DFLASH_DRAFT_MODELS[DFLASH_MODEL])
-    args = [
-        DFLASH_CLI, "serve",
-        "--model", model,
-        "--draft-model", draft_model,
-        "--host", "127.0.0.1",
-        "--port", str(DFLASH_PORT),
-        "--max-tokens", "16384",
-        "--prefix-cache",
-        "--prefill-step-size", str(PREFILL_STEP_SIZE),
-    ]
-    # Qwen3 requires thinking mode disabled via chat template args
-    if "Qwen3" in model or "qwen3" in model.lower():
-        args += ["--chat-template-args", '{"enable_thinking": false}']
-    if DFLASH_DIAGNOSTICS != "off":
-        args += ["--diagnostics", DFLASH_DIAGNOSTICS]
-    _dflash_proc = subprocess.Popen(
-        args,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    _wait_for_ready(DFLASH_HOST + "/v1/models", timeout=120)
-
-
-def _clear_dflash_cache() -> None:
-    """Delete dflash's prefix/KV cache (regenerable). Trades a cold first-prefill on the
-    next dflash session for not letting the cache grow to tens of GB. Appropriate because
-    dflash is a secondary/large-context fallback here, not the primary server."""
-    cache = DFLASH_CACHE_DIR / "prefix_l2"
-    if cache.exists():
-        try:
-            shutil.rmtree(cache, ignore_errors=True)
-            logger.info("Cleared dflash prefix cache at %s", cache)
-        except Exception as e:
-            logger.warning("Failed to clear dflash cache %s: %s", cache, e)
-
-
-def stop_dflash() -> None:
-    global _dflash_proc
-    if _dflash_proc and _dflash_proc.poll() is None:
-        _dflash_proc.terminate()
-        try:
-            _dflash_proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            _dflash_proc.kill()
-        _dflash_proc = None
-        # Reclaim the prefix cache now that dflash is down (it rebuilds on next use).
-        _clear_dflash_cache()
-
-
-def restart_dflash_if_dead(model: str = DFLASH_MODEL) -> None:
-    """Restart dflash if the process has exited or the HTTP endpoint is unreachable.
-
-    Called before each LLM request so OOM crashes are recovered transparently.
-    """
-    global _dflash_proc
-    process_dead = _dflash_proc is None or _dflash_proc.poll() is not None
-    if not process_dead:
-        try:
-            urllib.request.urlopen(DFLASH_HOST + "/v1/models", timeout=2)
-            return  # alive and reachable
-        except Exception:
-            process_dead = True
-    logger.warning("dflash process dead or unreachable — restarting with model %s", model)
-    _dflash_proc = None
-    start_dflash(model)
-
-
 def _omlx_api_key() -> str:
     try:
         cfg = json.loads((Path.home() / ".omlx" / "settings.json").read_text())
@@ -483,14 +378,12 @@ def is_backend_ready(backend: str) -> bool:
             _omlx_request("/v1/models")
         elif backend == "mlx-lm":
             urllib.request.urlopen(MLX_LM_HOST + "/v1/models", timeout=2)
-        elif backend == "dflash":
-            urllib.request.urlopen(DFLASH_HOST + "/v1/models", timeout=2)
         elif backend == "vllm-mlx":
             urllib.request.urlopen(VLLM_MLX_HOST + "/v1/models", timeout=2)
         elif backend == "mira-mlx":
             urllib.request.urlopen(MIRA_MLX_HOST + "/v1/models", timeout=2)
         else:
-            urllib.request.urlopen(OLLAMA_HOST + "/api/version", timeout=2)
+            return False
         return True
     except Exception:
         return False
@@ -541,13 +434,7 @@ def ensure_backend_running(backend: str, model: Optional[str] = None) -> None:
     # listener serves the expected model BEFORE _warmup_model, which is itself
     # the first disclosure (it POSTs the system prompt). A mismatch raises rather
     # than adopting, so no prompt is ever sent to an unverified process.
-    if backend == "dflash":
-        if not _verify_or_adopt(DFLASH_HOST + "/v1/models", DFLASH_MODEL):
-            start_dflash()
-        else:
-            logger.info("dflash already running")
-        _warmup_model(DFLASH_MODEL, host=DFLASH_HOST)
-    elif backend == "mlx-lm":
+    if backend == "mlx-lm":
         if not _verify_or_adopt(MLX_LM_HOST + "/v1/models", MLX_LM_MODEL):
             start_mlx_lm()
         else:
@@ -576,23 +463,9 @@ def ensure_backend_running(backend: str, model: Optional[str] = None) -> None:
             logger.info("mira-mlx already running")
         _warmup_model(target_model, host=MIRA_MLX_HOST)
     else:
-        try:
-            urllib.request.urlopen(OLLAMA_HOST + "/api/version", timeout=2)
-            logger.info("Ollama already running")
-            return
-        except Exception:
-            pass
-        start_ollama()
-
-
-def stop_ollama() -> None:
-    subprocess.run(["osascript", "-e", 'quit app "Ollama"'], capture_output=True)
-    time.sleep(2)
-
-
-def start_ollama() -> None:
-    subprocess.run(["open", "-a", "Ollama"])
-    _wait_for_ready(OLLAMA_HOST + "/api/version", timeout=30)
+        raise ValueError(
+            f"Unknown backend {backend!r}. Must be one of: {list(KNOWN_BACKENDS)}"
+        )
 
 
 def stop_omlx() -> None:
@@ -616,6 +489,28 @@ def start_omlx() -> None:
     _wait_for_ready(OMLX_HOST + "/v1/models", timeout=60, omlx=True)
 
 
+def _stop_all_backends() -> None:
+    """Stop every Popen-managed backend, including the one being switched to.
+
+    They all share port 8080 by design, so exactly one may run at a time; and
+    stopping the target too is deliberate, since a same-backend different-model
+    switch that skips it orphans the old process and then misreports which model
+    is live (feedback_backend_switch_self_stop).
+    """
+    stop_mlx_lm()
+    stop_omlx()
+    stop_vllm_mlx()
+    stop_mira_mlx()
+
+
+_STARTERS = {
+    "mlx-lm": lambda *a: start_mlx_lm(*a),
+    "omlx": lambda *a: start_omlx(),
+    "vllm-mlx": lambda *a: start_vllm_mlx(*a),
+    "mira-mlx": lambda *a: start_mira_mlx(*a),
+}
+
+
 def switch_to(target: str) -> dict:
     """Stop the running inference server and start the target one.
 
@@ -628,48 +523,8 @@ def switch_to(target: str) -> dict:
     if target not in PRESETS:
         raise ValueError(f"Unknown backend {target!r}. Must be one of: {list(PRESETS)}")
     logger.info("Switching backend to %s", target)
-    if target == "dflash":
-        stop_ollama()
-        stop_omlx()
-        stop_mlx_lm()
-        stop_vllm_mlx()
-        stop_mira_mlx()
-        start_dflash()
-    elif target == "mlx-lm":
-        stop_ollama()
-        stop_omlx()
-        stop_dflash()
-        stop_vllm_mlx()
-        stop_mira_mlx()
-        start_mlx_lm()
-    elif target == "omlx":
-        stop_ollama()
-        stop_mlx_lm()
-        stop_dflash()
-        stop_vllm_mlx()
-        stop_mira_mlx()
-        start_omlx()
-    elif target == "vllm-mlx":
-        stop_ollama()
-        stop_mlx_lm()
-        stop_dflash()
-        stop_omlx()
-        stop_mira_mlx()
-        start_vllm_mlx()
-    elif target == "mira-mlx":
-        stop_ollama()
-        stop_mlx_lm()
-        stop_dflash()
-        stop_omlx()
-        stop_vllm_mlx()
-        start_mira_mlx()
-    else:
-        stop_mlx_lm()
-        stop_dflash()
-        stop_omlx()
-        stop_vllm_mlx()
-        stop_mira_mlx()
-        start_ollama()
+    _stop_all_backends()
+    _STARTERS[target]()
     logger.info("Backend switch to %s complete", target)
     return PRESETS[target]
 
@@ -701,60 +556,26 @@ def get_preset_for(backend: str, model_id: str) -> dict:
 def switch_to_model(backend: str, model_id: str) -> dict:
     """Switch to a specific model on the given backend.
 
-    For mlx-lm: stops the current server and starts a new one with model_id.
-    For ollama: switches to ollama and uses model_id as the active model.
-    Returns an updated preset dict.
+    Every backend except omlx takes its model at launch, so the switch is a
+    stop-and-restart. omlx serves a whole library from one process and picks the
+    model per request instead. Returns an updated preset dict.
     """
-    if backend not in PRESETS and backend not in ("mlx-lm", "mira-mlx"):
-        raise ValueError(f"Unknown backend {backend!r}.")
+    if backend not in _STARTERS:
+        raise ValueError(
+            f"Unknown backend {backend!r}. Must be one of: {list(_STARTERS)}"
+        )
     logger.info("Switching to model %s on %s", model_id, backend)
-    if backend == "dflash":
-        stop_ollama()
-        stop_omlx()
-        stop_mlx_lm()
-        stop_vllm_mlx()
-        stop_mira_mlx()
-        stop_dflash()
-        start_dflash(model_id)
-    elif backend == "mlx-lm":
-        stop_ollama()
-        stop_omlx()
-        stop_dflash()
-        stop_vllm_mlx()
-        stop_mira_mlx()
-        stop_mlx_lm()
-        start_mlx_lm(model_id)
-    elif backend == "omlx":
-        stop_ollama()
-        stop_mlx_lm()
-        stop_dflash()
-        stop_vllm_mlx()
-        stop_mira_mlx()
-        stop_omlx()
-        start_omlx()
-    elif backend == "vllm-mlx":
-        stop_ollama()
-        stop_mlx_lm()
-        stop_dflash()
-        stop_omlx()
-        stop_mira_mlx()
-        stop_vllm_mlx()
-        start_vllm_mlx(model_id)
-    elif backend == "mira-mlx":
-        stop_ollama()
-        stop_mlx_lm()
-        stop_dflash()
-        stop_omlx()
-        stop_vllm_mlx()
-        stop_mira_mlx()
-        start_mira_mlx(model_id)
+    # Stops the target's own process too, not just the others: switching to the
+    # same backend with a different model must restart it, or the old process is
+    # orphaned and the reported model diverges from the live one
+    # (feedback_backend_switch_self_stop).
+    _stop_all_backends()
+    if backend == "omlx":
+        # omlx serves its whole model library from one process, so the model is
+        # selected per request rather than at launch.
+        _STARTERS[backend]()
     else:
-        stop_mlx_lm()
-        stop_dflash()
-        stop_omlx()
-        stop_vllm_mlx()
-        stop_mira_mlx()
-        start_ollama()
+        _STARTERS[backend](model_id)
     preset = get_preset_for(backend, model_id)
     logger.info("Model switch to %s/%s complete", backend, model_id)
     return preset
@@ -762,7 +583,7 @@ def switch_to_model(backend: str, model_id: str) -> dict:
 
 # Every backend Mira can start. PRESETS omits mlx-lm (benched out of the default
 # picker) but the code path exists, so the library view still reports it.
-KNOWN_BACKENDS = ("mira-mlx", "omlx", "mlx-lm", "dflash", "vllm-mlx", "ollama")
+KNOWN_BACKENDS = ("mira-mlx", "omlx", "mlx-lm", "vllm-mlx")
 
 
 def list_models() -> dict:
@@ -770,8 +591,10 @@ def list_models() -> dict:
 
     `backends` is the real answer: one entry per backend Mira knows how to
     start, saying whether it is installed and what it has. The flat `mlx_lm` and
-    `ollama` keys are the original shape and are kept so existing clients keep
-    decoding; they are the same data, minus five backends.
+    `ollama` keys are the original wire shape and are kept so older clients keep
+    decoding. `ollama` is now always empty: the backend was retired on
+    2026-08-01, and the key stays only so an app build that still decodes it
+    does not fail on a missing field.
     """
     from core.models_api import list_backend_status
     from dataclasses import asdict
@@ -784,7 +607,7 @@ def list_models() -> dict:
         # Back-compat. mlx_lm and mira-mlx serve the same HuggingFace cache, so
         # reporting mlx-lm's view here loses nothing.
         "mlx_lm": [asdict(m) for m in by_name["mlx-lm"].models],
-        "ollama": [asdict(m) for m in by_name["ollama"].models],
+        "ollama": [],
     }
 
 
@@ -792,9 +615,7 @@ def _default_backends() -> list:
     """Generate a preset list from the hardcoded PRESETS dict (fallback when mira.yaml has no `backends:`)."""
     label_map = {
         "omlx": "Qwen3.6 35B (omlx)",
-        "dflash": "Qwen3.6 35B (dFlash)",
         "mlx-lm": "Qwen3.6 35B (mlx-lm)",
-        "ollama": "Gemma 4 26B (ollama)",
     }
     return [
         {
@@ -830,7 +651,7 @@ def get_backends(active_backend: str, active_model: str) -> list:
     entries = BACKENDS if BACKENDS else _default_backends()
 
     # One probe per distinct backend, not one per preset — four of the seven
-    # presets share a backend and the ollama probe talks to a socket.
+    # presets share a backend.
     probes = {}
 
     def _probe(backend: str):

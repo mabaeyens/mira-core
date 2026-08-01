@@ -1,4 +1,4 @@
-"""Tool definitions for Ollama API."""
+"""Tool definitions passed to the model on every turn."""
 
 SEARCH_TOOL = {
     "type": "function",

@@ -20,7 +20,7 @@ model — please fill those in, they make bugs far easier to reproduce.
 | Python | 3.12+ (`>=3.12,<3.14`) |
 | [uv](https://docs.astral.sh/uv/) | latest |
 | macOS | Apple Silicon (MLX-based inference) |
-| Inference backend | oMLX 0.4.3+ or Ollama |
+| Inference backend | mira-mlx (bundled) or oMLX 0.4.3+ |
 
 The native macOS + iOS clients live in
 **[mira-apps](https://github.com/mabaeyens/mira-apps)** — this repo is the server they talk

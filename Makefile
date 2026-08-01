@@ -2,7 +2,7 @@
 # `make install` runs the idempotent installer; the rest wrap the mira CLI.
 .PHONY: install serve chat doctor
 
-install:        ## Install deps + config (flags: ARGS="--with-ollama --with-launchagent")
+install:        ## Install deps + config (flags: ARGS="--with-launchagent")
 	bash scripts/setup.sh $(ARGS)
 
 serve:          ## Start the web server (port 8000)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Main CLI entry point for ollama Search Tool."""
+"""Main CLI entry point for Mira's interactive chat."""
 
 import logging
 import readline  # noqa: F401 — enables arrow keys and history in input()
@@ -154,7 +154,7 @@ def _render_stream(orchestrator: ChatOrchestrator, user_input: str, attachments=
 
 def main():
     """Main entry point."""
-    print_header("🤖 ollama Search Tool (Gemma 4 + Ollama)")
+    print_header("🤖 Mira")
     print("Type your message. Use /help for commands, /quit to exit.\n")
 
     orchestrator = ChatOrchestrator(verbose=VERBOSE_DEFAULT)

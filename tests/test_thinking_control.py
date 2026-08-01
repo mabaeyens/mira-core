@@ -1,5 +1,5 @@
 """Regression tests for per-turn thinking control on the OpenAI-compatible
-backends (mlx-lm / dflash / omlx).
+backends (mira-mlx / mlx-lm / omlx / vllm-mlx).
 
 Bug: omlx is the default backend, but it was missing from the Qwen3
 thinking-control branch in `_call_llm`. As a result `enable_thinking` was
@@ -28,14 +28,13 @@ def _capture_create_kwargs(orchestrator, *, backend, model, thinking_enabled):
     orchestrator.model = model
     orchestrator._oai = MagicMock()
     with patch("core.orchestrator.bc.normalize_oai_stream", side_effect=lambda s: s), \
-         patch("core.orchestrator.bc.normalize_messages_for_oai", side_effect=lambda m: m), \
-         patch("core.orchestrator.restart_dflash_if_dead", return_value=None):
+         patch("core.orchestrator.bc.normalize_messages_for_oai", side_effect=lambda m: m):
         orchestrator._call_llm([{"role": "user", "content": "hi"}],
                                thinking_enabled=thinking_enabled)
     return orchestrator._oai.chat.completions.create.call_args.kwargs
 
 
-@pytest.mark.parametrize("backend", ["omlx", "mlx-lm", "dflash"])
+@pytest.mark.parametrize("backend", ["omlx", "mlx-lm", "vllm-mlx"])
 def test_qwen3_off_nests_enable_thinking_under_chat_template_kwargs(orchestrator, backend):
     kwargs = _capture_create_kwargs(
         orchestrator, backend=backend, model="Qwen3.6-35B-A3B", thinking_enabled=False
@@ -48,7 +47,7 @@ def test_qwen3_off_nests_enable_thinking_under_chat_template_kwargs(orchestrator
         isinstance(kwargs["extra_body"].get("chat_template_kwargs"), dict)
 
 
-@pytest.mark.parametrize("backend", ["omlx", "mlx-lm", "dflash"])
+@pytest.mark.parametrize("backend", ["omlx", "mlx-lm", "vllm-mlx"])
 def test_qwen3_on_nests_enable_thinking_under_chat_template_kwargs(orchestrator, backend):
     kwargs = _capture_create_kwargs(
         orchestrator, backend=backend, model="Qwen3.6-35B-A3B", thinking_enabled=True
@@ -86,7 +85,7 @@ def _stream_events(orchestrator, *, backend, model, thinking_enabled, chunks):
         return list(orchestrator._stream_llm_with_thinking(thinking_enabled))
 
 
-@pytest.mark.parametrize("backend", ["mira-mlx", "omlx", "mlx-lm", "dflash"])
+@pytest.mark.parametrize("backend", ["mira-mlx", "omlx", "mlx-lm", "vllm-mlx"])
 def test_qwen3_thinking_on_does_not_leak_reasoning_into_the_answer(orchestrator, backend):
     """The regression: Qwen3's template puts `<think>\\n` in the prompt, so the
     model emits only the closing tag. Before the fix the whole reasoning stream
@@ -135,4 +134,4 @@ def test_out_of_band_reasoning_backend_keeps_its_answer(orchestrator):
 def test_template_predicate_shared_by_request_and_response_sides():
     assert _uses_qwen_thinking_template("mira-mlx", "mlx-community/Qwen3.6-35B-A3B-4bit")
     assert not _uses_qwen_thinking_template("mira-mlx", "gemma-4-26b-it")
-    assert not _uses_qwen_thinking_template("ollama", "Qwen3.6-35B-A3B")
+    assert not _uses_qwen_thinking_template("unknown-backend", "Qwen3.6-35B-A3B")

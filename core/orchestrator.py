@@ -11,11 +11,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict, Optional, Iterator
 
-import ollama
 import openai as _openai
 
 from .config import (
-    MODEL_NAME, BACKEND, OLLAMA_HOST,
+    MODEL_NAME, BACKEND, BACKEND_HOST,
     MAX_RETRIES, MAX_AGENT_STEPS, AGENT_DIVERGENCE_LIMIT,
     MAX_TOOL_CALLS_PER_TURN, SAME_TOOL_REPEAT_LIMIT, UNPRODUCTIVE_TOOL_REPEAT_LIMITS, TOOL_SOFT_LIMIT, VERBOSE_DEFAULT,
     RAG_MAX_CHUNKS, CONTEXT_WINDOW,
@@ -28,7 +27,7 @@ from .search_engine import SearchEngine
 from .rag_engine import RagEngine
 from . import url_fetcher
 from . import tool_registry
-from .backend_manager import restart_dflash_if_dead, PRESETS
+from .backend_manager import PRESETS
 from . import file_handler
 from .thinking_stripper import ThinkingStripper
 from .workspace import safe_filename
@@ -113,7 +112,7 @@ _TRIVIAL = re.compile(
 
 # Backends whose OpenAI-compatible server applies the model's own chat template,
 # so an `enable_thinking` kwarg reaches that template (and its side effects).
-_CHAT_TEMPLATE_BACKENDS = ("mlx-lm", "dflash", "omlx", "mira-mlx")
+_CHAT_TEMPLATE_BACKENDS = ("mlx-lm", "omlx", "mira-mlx", "vllm-mlx")
 
 
 def _uses_qwen_thinking_template(backend: str, model: str) -> bool:
@@ -219,13 +218,8 @@ class ChatOrchestrator:
         self.context_window = CONTEXT_WINDOW
         self.thinking_mode = THINKING_MODE
 
-        if self.backend == "ollama":
-            self._ollama = ollama.Client(host=OLLAMA_HOST)
-            self._oai = None
-        else:
-            self._ollama = None
-            api_key = _read_omlx_api_key() if self.backend == "omlx" else "none"
-            self._oai = _make_oai_client(OLLAMA_HOST, api_key=api_key)
+        api_key = _read_omlx_api_key() if self.backend == "omlx" else "none"
+        self._oai = _make_oai_client(BACKEND_HOST, api_key=api_key)
 
         self.search_engine = SearchEngine()
         self.rag_engine = RagEngine()
@@ -290,13 +284,8 @@ class ChatOrchestrator:
         self.backend = backend
         self.model = model
         self.context_window = context_window
-        if backend == "ollama":
-            self._ollama = ollama.Client(host=host)
-            self._oai = None
-        else:
-            self._ollama = None
-            api_key = _read_omlx_api_key() if backend == "omlx" else "none"
-            self._oai = _make_oai_client(host, api_key=api_key)
+        api_key = _read_omlx_api_key() if backend == "omlx" else "none"
+        self._oai = _make_oai_client(host, api_key=api_key)
 
     def _add_system_prompt(self):
         if not self.system_prompt_added:
@@ -359,16 +348,8 @@ class ChatOrchestrator:
 
     def _llm_chat_sync(self, messages: List[Dict], format: Optional[dict] = None) -> str:
         """Non-streaming single-turn LLM call. Returns the text content."""
-        if self.backend == "ollama":
-            resp = self._ollama.chat(
-                model=self.model,
-                messages=bc.normalize_messages_for_ollama(messages),
-                stream=False,
-                **({"format": format} if format else {}),
-            )
-            return (resp.message.content or "").strip()
-        else:
-            kwargs = {"response_format": {"type": "json_object"}} if format else {}
+        kwargs = {"response_format": {"type": "json_object"}} if format else {}
+        if True:
             try:
                 resp = self._oai.chat.completions.create(
                     model=self.model, messages=messages, **kwargs
@@ -1035,24 +1016,12 @@ class ChatOrchestrator:
         thinking_enabled: bool = True,
     ):
         """Call the configured LLM backend with streaming. Mockable in tests."""
-        if self.backend == "ollama":
-            msgs = bc.normalize_messages_for_ollama(messages)
-            if not thinking_enabled:
-                # Belt-and-suspenders: Qwen3 respects /no_think in the system prompt
-                # independently of the `think` API parameter (Ollama version-agnostic).
-                msgs = bc.inject_no_think(msgs)
-            return self._ollama.chat(
-                model=self.model, messages=msgs,
-                tools=tools, stream=True, think=thinking_enabled,
-            )
-        else:
-            if self.backend == "dflash":
-                restart_dflash_if_dead(self.model)
+        if True:
             extra: dict = {}
             if _uses_qwen_thinking_template(self.backend, self.model):
                 # Qwen3's chat template controls thinking via the enable_thinking
-                # kwarg, which the OpenAI-compatible servers (mlx-lm, dflash, omlx,
-                # mira-mlx) only honor when nested under chat_template_kwargs. omlx is
+                # kwarg, which the OpenAI-compatible servers (mlx-lm, omlx,
+                # mira-mlx, vllm-mlx) only honor when nested under chat_template_kwargs. omlx is
                 # the default backend, so it MUST be included here — otherwise the
                 # per-turn thinking toggle silently falls through to the model's
                 # template default (thinking ON) and "off" never takes effect.

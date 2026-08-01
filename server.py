@@ -1,4 +1,4 @@
-"""FastAPI server for the ollama Search Tool web interface."""
+"""FastAPI server for Mira's web and app clients."""
 
 import asyncio
 import hmac
@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
-import ollama
 import uvicorn
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
@@ -31,10 +30,11 @@ logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
 import core.db as db
 import core.file_handler as file_handler
-from core.config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT, MODEL_NAME, BACKEND, OLLAMA_HOST, CONTEXT_WINDOW, AUTH_TOKEN, ALLOWED_SOURCE_CIDRS, ALLOWED_HOSTS, MIN_TOKEN_LENGTH
+from core.config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT, MODEL_NAME, BACKEND, BACKEND_HOST, CONTEXT_WINDOW, AUTH_TOKEN, ALLOWED_SOURCE_CIDRS, ALLOWED_HOSTS, MIN_TOKEN_LENGTH
 from core.orchestrator import ChatOrchestrator
 from core.session_manager import SessionManager
 from core import backend_manager as _bm
+from core.backend_manager import KNOWN_BACKENDS
 from core import workspace
 
 logging.basicConfig(
@@ -52,7 +52,7 @@ _init_lock: asyncio.Lock = asyncio.Lock()
 # single conversation so one device's cancel never aborts another device's turn.
 _active_cancels: Dict[str, tuple] = {}
 _initialized = False
-_ollama_ready = False
+_backend_ready = False
 
 def _detect_hardware() -> str:
     import subprocess as _sp, json as _json, re as _re
@@ -90,52 +90,28 @@ _HARDWARE = _detect_hardware()
 _rt: Dict = {
     "backend": BACKEND,
     "model": MODEL_NAME,
-    "host": OLLAMA_HOST,
+    "host": BACKEND_HOST,
     "context_window": CONTEXT_WINDOW,
 }
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global sessions, _initialized, _ollama_ready
+    global sessions, _initialized, _backend_ready
     async with _init_lock:
         if not _initialized:
             _initialized = True
             db.init_db()
             
-            # Verify configured model is installed; warn clearly if not.
-            # Uses list() (all installed models), not ps() (only loaded-in-memory models).
-            if BACKEND == "ollama":
-                try:
-                    client = ollama.Client(host=OLLAMA_HOST)
-                    installed = {m.model for m in client.list().models}
-                    model_found = any(
-                        MODEL_NAME == name or name.startswith(MODEL_NAME + ":")
-                        for name in installed
-                    )
-                    if not model_found:
-                        logger.warning(
-                            f"Model '{MODEL_NAME}' is not installed. "
-                            f"Run: ollama pull {MODEL_NAME}  "
-                            f"(installed: {sorted(installed)})"
-                        )
-                    else:
-                        logger.info(f"Model '{MODEL_NAME}' confirmed installed — warming up")
-                        client.generate(model=MODEL_NAME, prompt="", keep_alive="24h")
-                        logger.info(f"Model '{MODEL_NAME}' loaded and ready")
-                except Exception as e:
-                    logger.warning(f"Could not check Ollama models: {e}")
-
             # Per-conversation orchestrators are created lazily on first use (no
             # conversation is preloaded). Heavy RAG models are process-wide shared,
             # so each session is cheap.
             sessions = SessionManager(verbose=VERBOSE_DEFAULT)
             logger.info(f"Initialized session pool — backend: {BACKEND}, model: {MODEL_NAME}")
-            if BACKEND != "ollama":
-                logger.info(f"{BACKEND} backend — model {MODEL_NAME} at {OLLAMA_HOST}")
-            _ollama_ready = True
+            logger.info(f"{BACKEND} backend — model {MODEL_NAME} at {BACKEND_HOST}")
+            _backend_ready = True
             # Auto-start the inference backend in a background thread so the app is
-            # usable immediately (health returns 200) even while oMLX/Ollama loads.
+            # usable immediately (health returns 200) even while the model loads.
             # Skipped under tests: the warm-up would try (and time out) reaching a
             # backend that isn't running, leaving a lingering thread + noisy warning.
             if not os.getenv("MIRA_TESTING"):
@@ -157,7 +133,7 @@ async def lifespan(app: FastAPI):
         sessions = None
 
 
-app = FastAPI(title="ollama Search Tool", lifespan=lifespan)
+app = FastAPI(title="Mira", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Routes reachable without a token even when auth is enabled: liveness probe
@@ -310,7 +286,7 @@ async def index():
 
 @app.get("/health")
 async def health():
-    if not _ollama_ready:
+    if not _backend_ready:
         return JSONResponse({"status": "starting"}, status_code=503)
     backend_ready = await asyncio.get_event_loop().run_in_executor(
         None, _bm.is_backend_ready, _rt["backend"]
@@ -379,14 +355,17 @@ async def list_backends(_=Depends(_ready)):
 
 @app.post("/backend")
 async def switch_backend(request: Request, _=Depends(_ready)):
-    global _ollama_ready
+    global _backend_ready
     body = await request.json()
     target = body.get("backend", "")
-    if target not in ("ollama", "omlx", "mlx-lm", "dflash", "vllm-mlx", "mira-mlx"):
-        raise HTTPException(status_code=400, detail="backend must be 'ollama', 'omlx', 'mlx-lm', 'dflash', 'vllm-mlx', or 'mira-mlx'")
+    if target not in KNOWN_BACKENDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"backend must be one of: {', '.join(KNOWN_BACKENDS)}",
+        )
     if target == _rt["backend"]:
         return {"status": "ok", "backend": target, "message": "already active"}
-    _ollama_ready = False
+    _backend_ready = False
     try:
         loop = asyncio.get_event_loop()
         preset = await loop.run_in_executor(None, _bm.switch_to, target)
@@ -399,11 +378,11 @@ async def switch_backend(request: Request, _=Depends(_ready)):
         _rt.update(preset)
     except Exception as e:
         logger.error("Backend switch failed: %s", e)
-        _ollama_ready = True
+        _backend_ready = True
         # Generic detail on purpose: backend errors embed absolute venv/HF-cache
         # paths and the username. The full error is in the server log.
         raise HTTPException(status_code=500, detail="Backend switch failed — see server logs")
-    _ollama_ready = True
+    _backend_ready = True
     return {"status": "ok", "backend": _rt["backend"], "model": _rt["model"]}
 
 
@@ -440,17 +419,20 @@ async def _reconcile_stale_switch_failure(backend: str, model_id: str, grace_sec
 
 @app.post("/models/switch")
 async def switch_model(request: Request, _=Depends(_ready)):
-    global _ollama_ready
+    global _backend_ready
     body = await request.json()
     backend = body.get("backend", "")
     model_id = body.get("model_id", "")
-    if backend not in ("ollama", "mlx-lm", "omlx", "dflash", "vllm-mlx", "mira-mlx"):
-        raise HTTPException(status_code=400, detail="backend must be 'ollama', 'mlx-lm', 'omlx', 'dflash', 'vllm-mlx', or 'mira-mlx'")
+    if backend not in KNOWN_BACKENDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"backend must be one of: {', '.join(KNOWN_BACKENDS)}",
+        )
     if not model_id:
         raise HTTPException(status_code=400, detail="model_id is required")
     if backend == _rt["backend"] and model_id == _rt["model"]:
         return {"status": "ok", "backend": backend, "model": model_id, "message": "already active"}
-    _ollama_ready = False
+    _backend_ready = False
     try:
         loop = asyncio.get_event_loop()
         preset = await loop.run_in_executor(None, _bm.switch_to_model, backend, model_id)
@@ -475,15 +457,15 @@ async def switch_model(request: Request, _=Depends(_ready)):
                 host=recovered_preset["host"], context_window=recovered_preset["context_window"],
             )
             _rt.update(recovered_preset)
-            _ollama_ready = True
+            _backend_ready = True
             return {
                 "status": "ok", "backend": _rt["backend"], "model": _rt["model"],
                 "message": "recovered from a slow readiness check",
             }
-        _ollama_ready = True
+        _backend_ready = True
         logger.error("Model switch failed: %s", e)
         raise HTTPException(status_code=500, detail="Model switch failed — see server logs")
-    _ollama_ready = True
+    _backend_ready = True
     return {"status": "ok", "backend": _rt["backend"], "model": _rt["model"]}
 
 

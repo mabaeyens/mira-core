@@ -1,6 +1,6 @@
 """Unit tests for the backend wire-format adapters.
 
-These cover the pure normalizers and the OpenAI->Ollama stream adapter directly,
+These cover the pure normalizers and the OpenAI stream adapter directly,
 without the orchestrator or a live backend. The stream adapter in particular was
 previously only reachable by driving the whole agent loop.
 """
@@ -48,40 +48,6 @@ def test_strip_think_handles_multiline():
 
 def test_strip_think_leaves_plain_text():
     assert bc.strip_think("just text") == "just text"
-
-
-# -- normalize_messages_for_ollama -----------------------------------------
-
-def test_ollama_parses_string_tool_args_to_dict():
-    msgs = [{
-        "role": "assistant",
-        "tool_calls": [{"function": {"name": "f", "arguments": '{"x": 1}'}}],
-    }]
-    out = bc.normalize_messages_for_ollama(msgs)
-    assert out[0]["tool_calls"][0]["function"]["arguments"] == {"x": 1}
-
-
-def test_ollama_bad_json_args_become_empty_dict():
-    msgs = [{
-        "role": "assistant",
-        "tool_calls": [{"function": {"name": "f", "arguments": "not json"}}],
-    }]
-    out = bc.normalize_messages_for_ollama(msgs)
-    assert out[0]["tool_calls"][0]["function"]["arguments"] == {}
-
-
-def test_ollama_does_not_mutate_input():
-    msgs = [{
-        "role": "assistant",
-        "tool_calls": [{"function": {"name": "f", "arguments": '{"x": 1}'}}],
-    }]
-    bc.normalize_messages_for_ollama(msgs)
-    assert msgs[0]["tool_calls"][0]["function"]["arguments"] == '{"x": 1}'
-
-
-def test_ollama_leaves_plain_messages():
-    msgs = [{"role": "user", "content": "hi"}]
-    assert bc.normalize_messages_for_ollama(msgs) == msgs
 
 
 # -- normalize_messages_for_oai --------------------------------------------

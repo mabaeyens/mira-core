@@ -18,7 +18,7 @@ import threading
 from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple
 
-from .config import BACKEND, CONTEXT_WINDOW, MODEL_NAME, OLLAMA_HOST, VERBOSE_DEFAULT
+from .config import BACKEND, CONTEXT_WINDOW, MODEL_NAME, BACKEND_HOST, VERBOSE_DEFAULT
 from .orchestrator import ChatOrchestrator
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ class SessionManager:
         self._preset = {
             "backend": BACKEND,
             "model": MODEL_NAME,
-            "host": OLLAMA_HOST,
+            "host": BACKEND_HOST,
             "context_window": CONTEXT_WINDOW,
         }
         # A single conversation-less orchestrator for stateless one-shot LLM calls

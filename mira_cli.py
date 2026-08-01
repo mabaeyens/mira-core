@@ -28,7 +28,6 @@ from pathlib import Path
 
 # Kept in sync with core/backend_manager.py and server.py.
 OMLX_HOST = "http://localhost:8080"
-OLLAMA_HOST = "http://localhost:11434"
 SERVER_URL = "http://localhost:8000"
 OMLX_APP = Path("/Applications/oMLX.app")
 OMLX_MODEL = "Qwen3.6-35B-A3B"
@@ -39,7 +38,7 @@ GREEN, RED, YELLOW, DIM, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[2m", 
 GB = 1024 ** 3
 
 # Approximate on-disk sizes (GB) for a full install. Models the installer can't
-# fetch itself (oMLX is GUI-gated; dflash/HF pull on first use) are still counted
+# fetch itself (oMLX is GUI-gated; HF models pull on first use) are still counted
 # so the disk budget reflects where the user ends up — not just what setup.sh runs.
 # id -> (label, approx GB, category)
 COMPONENTS: "dict[str, tuple[str, float, str]]" = {
@@ -47,13 +46,11 @@ COMPONENTS: "dict[str, tuple[str, float, str]]" = {
     "rag":          ("embedding + reranker models",      1.0,  "auto"),
     "omlx-qwen3":   ("Qwen3.6-35B-A3B (oMLX, default)",  19.0, "omlx"),
     "omlx-gemma4":  ("Gemma 4 26B (oMLX)",               15.0, "omlx"),
-    "dflash-qwen3": ("Qwen3.6 dFlash (large context)",   19.0, "hf"),
-    "ollama":       ("ollama gemma4:26b",                16.0, "ollama"),
 }
 AUTO = ("venv", "rag")            # always installed by setup.sh
 DEFAULT_SELECTION = ("omlx-qwen3",)  # picked under -y / non-interactive
-OPTIONAL = ("omlx-qwen3", "omlx-gemma4", "dflash-qwen3", "ollama")
-LARGE_MODELS = ("omlx-qwen3", "omlx-gemma4", "dflash-qwen3")
+OPTIONAL = ("omlx-qwen3", "omlx-gemma4")
+LARGE_MODELS = ("omlx-qwen3", "omlx-gemma4")
 BREATHING_GB = 15.0               # keep this much free after install
 
 
@@ -137,8 +134,6 @@ def doctor() -> int:
                        {"Authorization": f"Bearer {_omlx_api_key()}"})
     _line(omlx_up, f"oMLX reachable on :8080 (model: {OMLX_MODEL})",
           f"open oMLX, load {OMLX_MODEL} in its model library")
-    _line(_http_ok(OLLAMA_HOST + "/api/version"),
-          "ollama reachable on :11434 (optional)", "mira setup --with-ollama")
     _line(_http_ok(SERVER_URL + "/"),
           "Mira server reachable on :8000", "mira serve")
 
