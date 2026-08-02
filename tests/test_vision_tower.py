@@ -161,6 +161,34 @@ def test_cap_collapses_a_phone_photo_to_a_sane_token_count(tmp_path):
     assert VisionTower(_write_checkpoint(tmp_path)).num_image_tokens(photo) == 16170
     capped = VisionTower(_write_checkpoint(tmp_path), max_pixels=2 * 1024 * 1024)
     assert capped.num_image_tokens(photo) == 2028
+    # 972, not the 1036 the 2026-08-02 quality run reported: that run simulated
+    # the 1 MP cap by pre-downscaling client-side to 1182x886 and letting the
+    # server's 2 MP cap no-op, whereas smart_resize working from the original
+    # floors to 1152x864. A ~5% linear difference, so the quality finding still
+    # holds, but the shipped path is slightly cheaper than what was measured.
+    capped = VisionTower(_write_checkpoint(tmp_path), max_pixels=1024 * 1024)
+    assert capped.num_image_tokens(photo) == 972
+
+
+def test_the_shipped_default_is_one_megapixel(tmp_path):
+    """Pins the default so changing it is a deliberate act with a test to update.
+    1 MP was chosen on measurement, not taste: across four real images from
+    2.4MP to 24MP it held every screenshot UI label while costing ~1k tokens."""
+    from core.config import MIRA_MLX_VISION_MAX_PIXELS
+
+    assert MIRA_MLX_VISION_MAX_PIXELS == 1024 * 1024
+
+
+def test_the_cap_makes_context_cost_independent_of_native_resolution(tmp_path):
+    """The property that makes the cap worth having: four wildly different
+    source resolutions all land within a few tokens of each other, so an image's
+    context cost stops depending on what came off the camera."""
+    tower = VisionTower(_write_checkpoint(tmp_path), max_pixels=1024 * 1024)
+    counts = [
+        tower.num_image_tokens(Image.new("RGB", size))
+        for size in [(2420, 1668), (1440, 1799), (4032, 3024), (5712, 4284)]
+    ]
+    assert max(counts) - min(counts) <= 20, counts
 
 
 def test_cap_keeps_preprocess_and_num_image_tokens_in_agreement(tmp_path):

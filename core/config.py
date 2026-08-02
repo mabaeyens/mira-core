@@ -161,10 +161,18 @@ MIRA_MLX_VISION: bool = _get("mira_mlx_vision", False)
 # Ceiling on an image's pixel count after Qwen's smart-resize. The checkpoint
 # asks for 16,777,216, which caps nothing in practice: a 5712x4284 phone photo
 # stays at 16,170 image tokens, 243s of tower time and 126MB of embeddings.
-# 2 MP holds that to ~2k tokens and ~4.4s. Lower it to 1 MP for ~1k tokens and
-# ~1.6s, at the cost of small screenshot text that OCR reads better anyway.
+# 1 MP holds any image to ~1k tokens and ~1.6s in the tower.
+#
+# 1 MP over 2 MP is measured, not assumed (2026-08-02, four real images from
+# 2.4MP to 24MP). A game screenshot at 1 MP still read every UI label and all
+# five skill names, so the "small text needs 2 MP" worry did not survive
+# contact: text held, and OCR covers the dense-text case anyway. What does
+# degrade is fine visual attributes - the same screenshot gave "glowing blue
+# and silver armor" at 2 MP and "blue skin, dark armor" at 1 MP. Raise this to
+# 2097152 if that kind of detail matters more than ~4s per turn.
+#
 # Only ever lowers the checkpoint's own ceiling, never raises it.
-MIRA_MLX_VISION_MAX_PIXELS: int = _get("mira_mlx_vision_max_pixels", 2 * 1024 * 1024)
+MIRA_MLX_VISION_MAX_PIXELS: int = _get("mira_mlx_vision_max_pixels", 1024 * 1024)
 # Seconds without an image before the vision tower's 0.89GB is released again.
 # The tower is loaded lazily on the first image turn, never at startup, so a
 # text-only session never pays for it. Reload is 0.14s page-cached (1.94s cold)

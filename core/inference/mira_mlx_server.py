@@ -976,10 +976,11 @@ def main() -> None:
     # Ceiling on an image's pixel count after Qwen's smart-resize, and the single
     # biggest lever on vision cost. The checkpoint asks for 16,777,216, which in
     # practice caps nothing: a 5712x4284 photo stays at 16,170 image tokens and
-    # 243s in the tower. 2 MP holds that to ~2k tokens and ~4.4s; 1 MP to ~1k and
-    # ~1.6s but starts losing small screenshot text, which OCR reads better and
-    # cheaper anyway. Only ever lowers the checkpoint's own ceiling.
-    parser.add_argument("--vision-max-pixels", type=int, default=2 * 1024 * 1024)
+    # 243s in the tower. 1 MP holds any image to ~1k tokens and ~1.6s; 2 MP to
+    # ~2k and ~4.4s, worth it only when fine visual detail matters (measured:
+    # 1 MP keeps screenshot text but blurs attributes like armor vs skin).
+    # Only ever lowers the checkpoint's own ceiling.
+    parser.add_argument("--vision-max-pixels", type=int, default=1024 * 1024)
     # Seconds without an image before the 0.89GB tower is released. It reloads in
     # 0.14s page-cached (1.94s cold) and Metal kernels survive the round trip, so
     # the next image after an idle stretch pays about two seconds. 0 disables the
