@@ -52,3 +52,15 @@ jobs:
       - name: Run tests
         run: >
           uv run --group dev python -m pytest -p no:cacheprovider -q
+
+      # A full sweep cannot catch this one. db.init_db() runs in production only
+      # from server.py's lifespan, and until 2026-08-02 the suite got its schema
+      # purely because tests/test_auth.py sorts early and starts a TestClient.
+      # conftest.py now calls init_db() itself, but a full run would stay green
+      # if that call were removed — test_auth would create the tables first, as
+      # before. Running modules that touch the DB without standing up the app is
+      # what actually proves the schema does not depend on test ordering.
+      - name: Schema must not depend on test order
+        run: >
+          uv run --group dev python -m pytest -p no:cacheprovider -q
+          tests/test_data_isolation.py tests/test_tools_enabled.py

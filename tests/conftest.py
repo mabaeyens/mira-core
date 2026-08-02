@@ -29,6 +29,24 @@ if "MIRA_DATA_DIR" not in os.environ:
 # Allow imports from the project root regardless of where pytest is invoked from
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Create the schema, once, here — and note this import sits BELOW the
+# MIRA_DATA_DIR block above for exactly the reason that block explains. Move it
+# up and `core.config` computes DB_PATH against the real home directory before
+# the override lands, which puts the suite back to writing Miguel's own
+# conversation history.
+#
+# Why it is needed at all: `db.init_db()` is called from exactly one place in
+# production, server.py's `lifespan` handler. Nothing in the harness calls it.
+# So the tables existed during a test run only when some earlier test happened
+# to stand up a TestClient first — tests/test_auth.py sorts early and does. The
+# full suite was green by alphabetical accident, while
+# `pytest tests/test_tools_enabled.py` on its own failed with
+# "no such table: memories". init_db() is CREATE TABLE IF NOT EXISTS throughout,
+# so calling it here is idempotent and leaves server.py's own call untouched.
+from core import db as _db  # noqa: E402
+
+_db.init_db()
+
 
 @pytest.fixture(autouse=True)
 def _no_local_auth_token(monkeypatch):

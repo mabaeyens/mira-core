@@ -65,6 +65,32 @@ def test_writes_land_in_the_temp_dir():
         db.delete_conversation(conv_id)
 
 
+def test_the_schema_exists_without_help_from_test_ordering():
+    """conftest.py calls db.init_db(); production calls it only from server.py's
+    lifespan handler.
+
+    Before 2026-08-02 the tables appeared during a test run only because
+    tests/test_auth.py sorts early and stands up a TestClient, which fires
+    lifespan as a side effect. The full suite passed; `pytest
+    tests/test_tools_enabled.py` alone failed with "no such table: memories".
+
+    This assertion only bites when the module runs in an invocation where
+    nothing has started the app — so CI runs it in isolation as well as in the
+    full sweep. In a full run test_auth would mask a removed conftest call.
+    """
+    with db._conn() as conn:
+        tables = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    for table in ("projects", "conversations", "messages", "memories", "reminders"):
+        assert table in tables, (
+            f"missing table {table!r} — init_db() did not run before the tests. "
+            "Check that conftest.py still calls it, below the MIRA_DATA_DIR block."
+        )
+
+
 def test_no_test_only_marker_reached_the_real_database():
     """Direct check on the real file, keyed to values ONLY the suite produces.
 
