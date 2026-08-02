@@ -75,6 +75,7 @@ class SearchEngine:
         """Normalize whitespace in a snippet — fixes concatenated words from HTML stripping."""
         return re.sub(r'\s+', ' ', text).strip()
 
+    @staticmethod
     def _format_brave_results(data: dict) -> List[Dict]:
         """Format Brave Search API results."""
         formatted = []
