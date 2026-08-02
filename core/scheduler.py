@@ -9,12 +9,37 @@ logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL = 30  # seconds between reminder checks
 
+# `osascript -e` evaluates its argument as AppleScript, so reminder text must
+# never be interpolated into the script body — a double quote in the text closes
+# the string literal and everything after it parses as code. An arg list is not
+# enough here: the boundary that matters is inside osascript, not the shell.
+# Pass the text as a run argument instead, where AppleScript only ever sees an
+# inert string.
+_NOTIFY_SCRIPT = (
+    "on run argv",
+    'display notification (item 1 of argv) with title "Mira"',
+    "end run",
+)
+
+
+def _notify_argv(text: str) -> list[str]:
+    """Build the osascript call for a notification, with `text` as data.
+
+    The trailing `--` is load-bearing: without it, a reminder whose text starts
+    with a dash is parsed as an osascript option and delivery fails with a
+    syntax error instead of showing the notification.
+    """
+    argv = ["osascript"]
+    for line in _NOTIFY_SCRIPT:
+        argv += ["-e", line]
+    return argv + ["--", text]
+
 
 def _fire_reminder(reminder: dict) -> None:
     text = reminder["text"]
     try:
         subprocess.run(
-            ["osascript", "-e", f'display notification "{text}" with title "Mira"'],
+            _notify_argv(text),
             check=True,
             capture_output=True,
         )
