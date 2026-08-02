@@ -73,7 +73,7 @@ def _smart_resize(
 class VisionTower:
     """Loads the checkpoint's vision tower and embeds images with it."""
 
-    def __init__(self, model_path: str | Path):
+    def __init__(self, model_path: str | Path, max_pixels: Optional[int] = None):
         self.model_path = self._resolve(model_path)
         config = json.loads((self.model_path / "config.json").read_text())
         vision_config = config.get("vision_config")
@@ -123,7 +123,24 @@ class VisionTower:
         )
         size = preprocessor.get("size", {})
         self.min_pixels = size.get("shortest_edge", 56 * 56)
-        self.max_pixels = size.get("longest_edge", 16777216)
+        checkpoint_max = size.get("longest_edge", 16777216)
+
+        # The checkpoint ships longest_edge = 16,777,216 (16.7 MP), which is no
+        # practical cap: a 5712x4284 phone photo survives at 16,170 image tokens,
+        # costing 243s in the tower, 126 MB of embeddings and 12% of a 128k
+        # context window. Measured on real photos, capping to ~2 MP costs about
+        # 4.4s and 2k tokens instead, and to 1 MP about 1.6s and 1k tokens -
+        # a 157x speedup at the top end with no code path of its own.
+        #
+        # Only ever lowers the ceiling: a checkpoint that already asks for less
+        # than the cap keeps its own value.
+        self.max_pixels = min(checkpoint_max, max_pixels) if max_pixels else checkpoint_max
+        if self.max_pixels < checkpoint_max:
+            logger.info(
+                "vision: capping max_pixels to %d (checkpoint asks for %d)",
+                self.max_pixels,
+                checkpoint_max,
+            )
 
         self.model: Optional[VisionModel] = None
         self._weight_bytes = 0

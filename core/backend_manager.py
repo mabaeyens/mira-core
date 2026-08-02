@@ -13,7 +13,13 @@ from typing import Optional
 
 from core.config import CONTEXT_WINDOW, DB_PATH
 from core.config import MLX_LM_CLI as _MLX_LM_CLI_PATH
-from core.config import MIRA_MLX_KV_BITS, MIRA_MLX_KV_GROUP_SIZE, MIRA_MLX_VISION
+from core.config import (
+    MIRA_MLX_KV_BITS,
+    MIRA_MLX_KV_GROUP_SIZE,
+    MIRA_MLX_VISION,
+    MIRA_MLX_VISION_MAX_PIXELS,
+    MIRA_MLX_VISION_TOWER_IDLE_TIMEOUT,
+)
 from core.config import (
     MIRA_MLX_PROFILE_EXPERTS,
     MIRA_MLX_EXPERT_PROFILE_PATH,
@@ -184,6 +190,11 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
         args += ["--trust-remote-code"]
     if MIRA_MLX_VISION:
         args += ["--vision"]
+        args += ["--vision-max-pixels", str(MIRA_MLX_VISION_MAX_PIXELS)]
+        args += [
+            "--vision-tower-idle-timeout",
+            str(MIRA_MLX_VISION_TOWER_IDLE_TIMEOUT),
+        ]
 
     _mira_mlx_proc = subprocess.Popen(
         args,

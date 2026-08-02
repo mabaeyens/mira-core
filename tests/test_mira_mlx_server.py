@@ -2,6 +2,7 @@
 oversized-single-prompt rejection path. No real model load needed."""
 import asyncio
 import json
+import time
 
 import httpx
 import pytest
@@ -380,3 +381,91 @@ def test_streaming_error_payload_is_a_mapping_with_message_not_a_bare_string():
     payload = json.loads(lines[0][len("data: "):])
     assert isinstance(payload["error"], dict), "error must be a mapping (openai SDK requires error.message)"
     assert "200000 tokens" in payload["error"]["message"]
+
+
+# -- lazy vision tower --------------------------------------------------------
+
+
+def test_vision_tower_is_not_loaded_at_construction():
+    """Startup must stay text-only. A session that never sends an image should
+    never pay the 0.89GB, which is the whole point of loading it lazily."""
+    engine = GenerationEngine(model_path="fake/model", vision=True)
+    assert engine.vision is True
+    assert engine.vision_tower is None
+
+
+def test_ensure_tower_records_the_failure_and_disables_vision():
+    """A bad checkpoint costs one load attempt, not one per image: the first
+    failure flips vision off so later turns take the OCR path immediately."""
+    engine = GenerationEngine(model_path="does/not/exist", vision=True)
+    assert engine._ensure_tower() is None
+    assert engine.vision is False
+    assert engine._vision_error
+    # Second call must not retry the load - vision is already off.
+    assert engine._ensure_tower() is None
+
+
+def test_stats_reports_vision_enabled_while_the_tower_is_released():
+    """`enabled` follows config, not residency. An idle release must not look
+    like a vision failure to anything reading /v1/stats."""
+    engine = GenerationEngine(model_path="fake/model", vision=True)
+    vision = engine.stats_snapshot()["vision"]
+    assert vision["enabled"] is True
+    assert vision["tower_resident"] is False
+    assert vision["tower_bytes"] == 0
+
+
+def test_idle_release_is_a_no_op_without_a_tower():
+    engine = GenerationEngine(model_path="fake/model", vision=True)
+    engine._release_idle_tower()  # must not raise on a None tower
+    assert engine.vision_tower is None
+
+
+def test_idle_release_respects_the_timeout_and_then_frees():
+    class FakeTower:
+        weight_bytes = 893142496
+
+    engine = GenerationEngine(
+        model_path="fake/model", vision=True, vision_tower_idle_timeout=60.0
+    )
+    engine.vision_tower = FakeTower()
+    engine._tower_last_used = time.time()
+    engine._release_idle_tower()
+    assert engine.vision_tower is not None, "released while still fresh"
+
+    engine._tower_last_used = time.time() - 61.0
+    engine._release_idle_tower()
+    assert engine.vision_tower is None, "not released after the idle timeout"
+    assert engine._tower_unloads == 1
+
+
+def test_idle_release_refreshes_the_memory_snapshot():
+    """_check_memory_pressure only runs while jobs are in flight, so without
+    this the stats stay frozen at their last active value and an idle release
+    reports as having reclaimed nothing."""
+
+    class FakeTower:
+        weight_bytes = 893142496
+
+    engine = GenerationEngine(
+        model_path="fake/model", vision=True, vision_tower_idle_timeout=1.0
+    )
+    engine.vision_tower = FakeTower()
+    engine._tower_last_used = time.time() - 2.0
+    engine._active_memory_bytes = 123456789  # a stale sample from an earlier turn
+    engine._release_idle_tower()
+    assert engine._active_memory_bytes != 123456789, "memory snapshot not refreshed"
+    assert engine.stats_snapshot()["vision"]["tower_last_reclaimed_bytes"] is not None
+
+
+def test_zero_timeout_keeps_the_tower_resident():
+    class FakeTower:
+        weight_bytes = 893142496
+
+    engine = GenerationEngine(
+        model_path="fake/model", vision=True, vision_tower_idle_timeout=0
+    )
+    engine.vision_tower = FakeTower()
+    engine._tower_last_used = time.time() - 100000
+    engine._release_idle_tower()
+    assert engine.vision_tower is not None

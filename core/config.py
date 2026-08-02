@@ -158,6 +158,20 @@ MIRA_MLX_KV_GROUP_SIZE: int = _get("mira_mlx_kv_group_size", 64)
 # Qwen3.6-35B-A3B and only some checkpoints ship a tower at all. With this off,
 # nothing about vision is imported and images keep taking the OCR path.
 MIRA_MLX_VISION: bool = _get("mira_mlx_vision", False)
+# Ceiling on an image's pixel count after Qwen's smart-resize. The checkpoint
+# asks for 16,777,216, which caps nothing in practice: a 5712x4284 phone photo
+# stays at 16,170 image tokens, 243s of tower time and 126MB of embeddings.
+# 2 MP holds that to ~2k tokens and ~4.4s. Lower it to 1 MP for ~1k tokens and
+# ~1.6s, at the cost of small screenshot text that OCR reads better anyway.
+# Only ever lowers the checkpoint's own ceiling, never raises it.
+MIRA_MLX_VISION_MAX_PIXELS: int = _get("mira_mlx_vision_max_pixels", 2 * 1024 * 1024)
+# Seconds without an image before the vision tower's 0.89GB is released again.
+# The tower is loaded lazily on the first image turn, never at startup, so a
+# text-only session never pays for it. Reload is 0.14s page-cached (1.94s cold)
+# and Metal kernels survive the round trip. 0 keeps it resident once loaded.
+MIRA_MLX_VISION_TOWER_IDLE_TIMEOUT: float = _get(
+    "mira_mlx_vision_tower_idle_timeout", 300.0
+)
 # Opt-in MoE expert-routing logging for the expert-offloading go/no-go decision
 # (specs/moe-expert-offload-01-profiling.md). False (default) = zero overhead,
 # no-op on dense models. Not meant to stay on by default even for Qwen3.6 —

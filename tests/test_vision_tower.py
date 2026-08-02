@@ -121,6 +121,60 @@ def test_preprocess_converts_non_rgb(tmp_path):
     assert pixel_values.shape[1] == 3 * 2 * 16 * 16
 
 
+# -- max_pixels cap -----------------------------------------------------------
+
+
+def test_uncapped_tower_keeps_the_checkpoint_ceiling(tmp_path):
+    tower = VisionTower(_write_checkpoint(tmp_path))
+    assert tower.max_pixels == 16777216
+
+
+def test_cap_lowers_the_ceiling(tmp_path):
+    tower = VisionTower(_write_checkpoint(tmp_path), max_pixels=2 * 1024 * 1024)
+    assert tower.max_pixels == 2 * 1024 * 1024
+
+
+def test_cap_never_raises_the_checkpoint_ceiling(tmp_path):
+    """A checkpoint asking for less than the cap keeps its own, smaller value.
+    The cap is a ceiling, not a target."""
+    path = _write_checkpoint(tmp_path)
+    (path / "preprocessor_config.json").write_text(
+        json.dumps(
+            {
+                "patch_size": 16,
+                "merge_size": 2,
+                "temporal_patch_size": 2,
+                "image_mean": [0.5, 0.5, 0.5],
+                "image_std": [0.5, 0.5, 0.5],
+                "size": {"shortest_edge": 65536, "longest_edge": 512 * 512},
+            }
+        )
+    )
+    tower = VisionTower(path, max_pixels=2 * 1024 * 1024)
+    assert tower.max_pixels == 512 * 512
+
+
+def test_cap_collapses_a_phone_photo_to_a_sane_token_count(tmp_path):
+    """The measurement that motivated the cap: a 5712x4284 photo costs 16,170
+    image tokens uncapped, which is 12% of a 128k context window for one image."""
+    photo = Image.new("RGB", (5712, 4284))
+    assert VisionTower(_write_checkpoint(tmp_path)).num_image_tokens(photo) == 16170
+    capped = VisionTower(_write_checkpoint(tmp_path), max_pixels=2 * 1024 * 1024)
+    assert capped.num_image_tokens(photo) == 2028
+
+
+def test_cap_keeps_preprocess_and_num_image_tokens_in_agreement(tmp_path):
+    """Both read self.max_pixels, and they must agree or the tower produces a
+    grid the placeholder count disagrees with - which does not raise, it just
+    answers wrongly."""
+    tower = VisionTower(_write_checkpoint(tmp_path), max_pixels=1024 * 1024)
+    img = Image.new("RGB", (4032, 3024))
+    pixel_values, grid = tower.preprocess(img)
+    _, grid_h, grid_w = [int(x) for x in np.array(grid)[0]]
+    assert pixel_values.shape[0] == grid_h * grid_w
+    assert (grid_h * grid_w) // 4 == tower.num_image_tokens(img)
+
+
 # -- guards -------------------------------------------------------------------
 
 

@@ -18,6 +18,7 @@ into MLX directly.
 
 import argparse
 import asyncio
+import gc
 import json
 import logging
 import queue
@@ -189,6 +190,8 @@ class GenerationEngine:
         expert_profile_path: Optional[str] = None,
         resident_expert_fraction: Optional[float] = None,
         vision: bool = False,
+        vision_max_pixels: Optional[int] = None,
+        vision_tower_idle_timeout: float = 300.0,
     ):
         self.model_path = model_path
         self.max_tokens = max_tokens
@@ -207,9 +210,16 @@ class GenerationEngine:
         self.expert_profile_path = expert_profile_path
         self.resident_expert_fraction = resident_expert_fraction
         self.vision = vision
-        # Built on the model thread at startup when vision is on, so nothing
-        # about the tower touches the text-only path's RAM or startup time.
+        self.vision_max_pixels = vision_max_pixels
+        self.vision_tower_idle_timeout = vision_tower_idle_timeout
+        # Loaded lazily on the first image turn and released again after
+        # vision_tower_idle_timeout, so a text-only session never pays the
+        # 0.89GB and an occasional image costs it only while in use.
         self.vision_tower = None
+        self._tower_last_used = 0.0
+        self._tower_loads = 0
+        self._tower_unloads = 0
+        self._tower_last_reclaimed_bytes = 0
         self._vision_error: Optional[str] = None
         self._image_count = 0
         self._image_tokens = 0
@@ -326,35 +336,10 @@ class GenerationEngine:
             self.prompt_cache = DiskBackedPromptCache(
                 max_bytes=self.prompt_cache_max_bytes, disk_store=disk_store
             )
-            if self.vision:
-                # Built here, on the model thread, because the tower's arrays
-                # have to live on the same MLX stream as everything else. A
-                # tower that fails to load is not fatal: the backend keeps
-                # serving text and the orchestrator's OCR fallback takes over.
-                try:
-                    from core.inference.vision_tower import VisionTower
-
-                    tower = VisionTower(self.model_path)
-                    tower.load()
-                    self.vision_tower = tower
-                    logger.info(
-                        "vision enabled: %.2f GB tower, image_token_id=%d",
-                        tower.weight_bytes / 1e9,
-                        tower.image_token_id,
-                    )
-                except BaseException as exc:  # noqa: BLE001
-                    self.vision = False
-                    self.vision_tower = None
-                    # Recorded, not just logged: this subprocess's stdout goes to
-                    # DEVNULL, so a warning here would be invisible and vision
-                    # would look like it was never asked for. /v1/stats is the
-                    # only channel that actually reaches anyone.
-                    self._vision_error = f"{type(exc).__name__}: {exc}"
-                    logger.warning(
-                        "vision requested but the tower failed to load (%s); "
-                        "continuing text-only, images will fall back to OCR",
-                        exc,
-                    )
+            # The tower is NOT built here. Startup stays text-only and a session
+            # that never sends an image never pays the 0.89GB. It is loaded on
+            # the first image turn instead - measured at 0.14s page-cached, 1.94s
+            # cold - and released again after an idle period. See _ensure_tower().
         except BaseException as exc:  # noqa: BLE001 - surface to start()
             self._error = exc
             self._ready.set()
@@ -397,7 +382,97 @@ class GenerationEngine:
                     self._handle_response(r)
                 self._check_memory_pressure()
             elif not drained:
+                self._release_idle_tower()
                 time.sleep(0.02)
+
+    def _ensure_tower(self):
+        """Load the vision tower on first use, on the model thread.
+
+        Called only from _start_job, which runs on this thread, because the
+        tower's arrays have to live on the same MLX stream as everything else.
+
+        A tower that fails to load is not fatal and, importantly, is not retried:
+        the first failure turns vision off for the process, so a broken
+        checkpoint costs one load attempt rather than one per image. The backend
+        keeps serving text and the orchestrator's OCR fallback takes over.
+        """
+        if self.vision_tower is not None:
+            self._tower_last_used = time.time()
+            return self.vision_tower
+        if not self.vision:
+            return None
+        try:
+            from core.inference.vision_tower import VisionTower
+
+            _t = time.time()
+            tower = VisionTower(self.model_path, max_pixels=self.vision_max_pixels)
+            tower.load()
+            self.vision_tower = tower
+            self._tower_last_used = time.time()
+            with self._stats_lock:
+                self._tower_loads += 1
+            logger.info(
+                "vision: tower loaded in %.2fs (%.2f GB, image_token_id=%d, "
+                "max_pixels=%d)",
+                time.time() - _t,
+                tower.weight_bytes / 1e9,
+                tower.image_token_id,
+                tower.max_pixels,
+            )
+            return tower
+        except BaseException as exc:  # noqa: BLE001
+            self.vision = False
+            self.vision_tower = None
+            # Recorded, not just logged: this subprocess's stdout goes to
+            # DEVNULL, so a warning here would be invisible and vision would
+            # look like it was never asked for. /v1/stats is the only channel
+            # that actually reaches anyone.
+            self._vision_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "vision requested but the tower failed to load (%s); "
+                "continuing text-only, images will fall back to OCR",
+                exc,
+            )
+            return None
+
+    def _release_idle_tower(self) -> None:
+        """Free the tower's 0.89GB after an idle stretch.
+
+        Only ever called from the idle branch of the model loop, so it can never
+        run while a job holds a reference to the tower. Metal kernels survive the
+        round trip - measured, a reload plus first embed runs at normal warm
+        speed - so the cost of getting it wrong is ~2s on the next image, not a
+        recompile.
+        """
+        if self.vision_tower is None or self.vision_tower_idle_timeout <= 0:
+            return
+        if time.time() - self._tower_last_used < self.vision_tower_idle_timeout:
+            return
+        claimed = self.vision_tower.weight_bytes
+        before = mx.get_active_memory()
+        self.vision_tower = None
+        gc.collect()
+        mx.clear_cache()
+        after = mx.get_active_memory()
+
+        # Sample memory here rather than trusting the tower's own weight_bytes.
+        # _check_memory_pressure only runs while jobs are in flight, so during an
+        # idle stretch the stats counters are frozen at their last active value
+        # and would report the release as having reclaimed nothing. Recording the
+        # measured delta is also the only way to notice if something still holds
+        # a reference and the memory does not actually come back.
+        with self._stats_lock:
+            self._tower_unloads += 1
+            self._active_memory_bytes = after
+            self._cache_memory_bytes = mx.get_cache_memory()
+            self._tower_last_reclaimed_bytes = before - after
+        logger.info(
+            "vision: tower released after %.0fs idle, %.2f GB reclaimed "
+            "(tower weights are %.2f GB)",
+            self.vision_tower_idle_timeout,
+            (before - after) / 1e9,
+            claimed / 1e9,
+        )
 
     def _check_memory_pressure(self) -> None:
         """Proactively shrink the prompt-cache pool if real MLX memory use is
@@ -438,6 +513,9 @@ class GenerationEngine:
             wired_limit_bytes = self._wired_limit_bytes
             image_count = self._image_count
             image_tokens = self._image_tokens
+            tower_loads = self._tower_loads
+            tower_unloads = self._tower_unloads
+            tower_reclaimed = self._tower_last_reclaimed_bytes
 
         total_requests = hits + misses
 
@@ -481,14 +559,33 @@ class GenerationEngine:
             "cache_memory_bytes": cache_memory_bytes,
             "peak_memory_bytes": peak_memory_bytes,
             "wired_limit_bytes": wired_limit_bytes,
+            # `enabled` follows the config, not whether the tower happens to be
+            # resident: with lazy loading it is None most of the time, and
+            # reporting that as disabled would make an idle release look like a
+            # failure. `tower_resident` is the one that answers "is the 0.89GB
+            # in memory right now".
             "vision": (
                 {
                     "enabled": True,
-                    "tower_bytes": self.vision_tower.weight_bytes,
+                    "tower_resident": self.vision_tower is not None,
+                    "tower_bytes": (
+                        self.vision_tower.weight_bytes
+                        if self.vision_tower is not None
+                        else 0
+                    ),
+                    "max_pixels": (
+                        self.vision_tower.max_pixels
+                        if self.vision_tower is not None
+                        else self.vision_max_pixels
+                    ),
+                    "idle_timeout_s": self.vision_tower_idle_timeout,
+                    "tower_loads": tower_loads,
+                    "tower_unloads": tower_unloads,
+                    "tower_last_reclaimed_bytes": tower_reclaimed,
                     "images_embedded": image_count,
                     "image_tokens": image_tokens,
                 }
-                if self.vision_tower is not None
+                if self.vision
                 else {"enabled": False, "error": self._vision_error}
                 if self._vision_error
                 else None
@@ -520,7 +617,15 @@ class GenerationEngine:
         """
         from core.inference.vision_tower import splice_image_embeddings
 
-        tower = self.vision_tower
+        # Loads on first use and after any idle release. Raising here rather
+        # than dereferencing None keeps a failed load on the existing error path
+        # in _start_job, which falls the turn back to OCR.
+        tower = self._ensure_tower()
+        if tower is None:
+            raise ValueError(
+                "vision was requested but the tower is unavailable; "
+                f"{self._vision_error or 'vision is off'}"
+            )
         image_token_id = tower.image_token_id
         placeholders = [i for i, t in enumerate(prompt_tokens) if t == image_token_id]
         if len(placeholders) != len(images):
@@ -868,6 +973,18 @@ def main() -> None:
     # 0.89 GB for Qwen3.6-35B-A3B) so screenshots are read as images rather than
     # run through OCR. Costs nothing when off: the tower is never imported.
     parser.add_argument("--vision", action="store_true")
+    # Ceiling on an image's pixel count after Qwen's smart-resize, and the single
+    # biggest lever on vision cost. The checkpoint asks for 16,777,216, which in
+    # practice caps nothing: a 5712x4284 photo stays at 16,170 image tokens and
+    # 243s in the tower. 2 MP holds that to ~2k tokens and ~4.4s; 1 MP to ~1k and
+    # ~1.6s but starts losing small screenshot text, which OCR reads better and
+    # cheaper anyway. Only ever lowers the checkpoint's own ceiling.
+    parser.add_argument("--vision-max-pixels", type=int, default=2 * 1024 * 1024)
+    # Seconds without an image before the 0.89GB tower is released. It reloads in
+    # 0.14s page-cached (1.94s cold) and Metal kernels survive the round trip, so
+    # the next image after an idle stretch pays about two seconds. 0 disables the
+    # release and keeps the tower resident once loaded.
+    parser.add_argument("--vision-tower-idle-timeout", type=float, default=300.0)
     args = parser.parse_args()
 
     engine = GenerationEngine(
@@ -888,6 +1005,8 @@ def main() -> None:
         expert_profile_path=args.expert_profile_path,
         resident_expert_fraction=args.resident_expert_fraction,
         vision=args.vision,
+        vision_max_pixels=args.vision_max_pixels,
+        vision_tower_idle_timeout=args.vision_tower_idle_timeout,
     )
     engine.start()
 
