@@ -1,5 +1,46 @@
 # Changelog
 
+## v1.1.0 — August 2026
+
+- **Vision stopped being expensive.** The Qwen3.6 checkpoint ships a
+  `preprocessor_config.json` asking for a 16,777,216-pixel ceiling, which caps
+  nothing on real photographs. A 5712x4284 image off a phone survived at 16,170
+  image tokens — twelve percent of a 128k context window for one picture — and
+  cost 243 seconds in the vision tower and 126MB of embeddings. There is now a
+  `mira_mlx_vision_max_pixels` ceiling, defaulting to 1 MP, which holds any image
+  to roughly 1,000 tokens and about 1.6 seconds whatever came off the camera.
+  End to end that turned a photo that took over four minutes into one that takes
+  about eight seconds. Context cost per image no longer depends on the source
+  resolution at all, which makes budgeting a conversation with pictures in it
+  actually possible.
+- **1 MP was chosen by measurement, not by taste.** The obvious fear is losing
+  small text in screenshots, so four real images from 2.4MP to 24MP were run at
+  both 1 MP and 2 MP. At 1 MP a game screenshot still named the game and still
+  read every UI label and all five skill names, and OCR remains the better path
+  for genuinely dense text. What does soften is fine visual detail: the same
+  screenshot gave "glowing blue and silver armor" at 2 MP and "blue skin, dark
+  armor" at 1 MP. If that matters more than four seconds a turn, set
+  `mira_mlx_vision_max_pixels: 2097152`. The setting only ever lowers the
+  checkpoint's own ceiling, never raises it.
+- **The vision tower is no longer resident.** It used to load at startup
+  whenever vision was on, so a session that never sent an image still paid about
+  0.89GB for the privilege. It now loads on the first image turn and is released
+  again after `mira_mlx_vision_tower_idle_timeout` seconds of no images (default
+  300, set 0 to keep it). The reload costs well under two seconds because Metal
+  kernels survive the round trip, and MLX materialises the weights lazily anyway,
+  so even a loaded tower costs nothing until an image is actually processed. On a
+  32GB machine this is the difference between vision being a standing tax and a
+  per-use one. A tower that fails to load now turns vision off for the process
+  instead of retrying on every image, so a checkpoint without one costs a single
+  attempt.
+- **`GET /v1/stats` says more about vision.** New `tower_resident`,
+  `tower_loads`, `tower_unloads`, `tower_last_reclaimed_bytes`, `max_pixels` and
+  `idle_timeout_s`. The reclaimed figure is measured at release rather than
+  assumed from the tower's own weight count, because anything still holding a
+  reference would otherwise free nothing quietly. `vision.enabled` now follows
+  your configuration rather than whether the tower happens to be in memory, so an
+  idle release does not read as a failure.
+
 ## v1.0.0 — August 2026
 
 - **Mira can see.** Set `mira_mlx_vision: true` in `mira.yaml` and image

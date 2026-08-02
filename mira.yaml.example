@@ -117,9 +117,10 @@ mira_mlx_kv_group_size: 64
 
 # mira_mlx_vision: read screenshots as images instead of running them through
 # OCR. Off by default. Only works on a checkpoint that actually ships a vision
-# tower; Qwen3.6-35B-A3B-4bit does, and it costs about 0.89GB resident plus
-# roughly 0.4GB of forward activations. A 640x480 image spends 300 context
-# tokens, 1024x768 spends 768.
+# tower; Qwen3.6-35B-A3B-4bit does. The tower is about 0.89GB, but it is no
+# longer loaded at startup: it loads on the first image turn and is released
+# again once idle (see mira_mlx_vision_tower_idle_timeout), so turning this on
+# costs nothing until an image actually arrives.
 #
 # With this off nothing about vision is imported, and images keep taking the
 # OCR path (which needs tesseract, and is cheaper for text-heavy screenshots
@@ -128,8 +129,32 @@ mira_mlx_kv_group_size: 64
 # screenshots of the same size would otherwise collide into a false cache hit.
 #
 # If the tower fails to load, the backend keeps serving text and says so in
-# /v1/stats under `vision.error` rather than failing the request.
+# /v1/stats under `vision.error` rather than failing the request. The failure
+# turns vision off for the process rather than being retried per image.
 # mira_mlx_vision: false
+
+# mira_mlx_vision_max_pixels: ceiling on an image's pixel count, and by far the
+# biggest lever on what vision costs. The checkpoint asks for 16,777,216, which
+# caps nothing in practice: a 5712x4284 phone photo survives at 16,170 image
+# tokens, 243 seconds in the tower and 126MB of embeddings, for one image.
+#
+# The default of 1048576 (1 MP) holds any image to roughly 1,000 tokens and
+# about 1.6 seconds, whatever came off the camera. That number was measured
+# against real files rather than guessed: a game screenshot at 1 MP still read
+# every UI label and skill name, so the obvious worry about losing small text
+# did not hold up, and OCR covers the dense-text case anyway. What does soften
+# is fine visual detail — the same screenshot gave "glowing blue and silver
+# armor" at 2 MP and "blue skin, dark armor" at 1 MP.
+#
+# Raise to 2097152 (~2,000 tokens, ~4.4s) if that kind of detail matters. This
+# only ever lowers the checkpoint's own ceiling, never raises it.
+# mira_mlx_vision_max_pixels: 1048576
+
+# mira_mlx_vision_tower_idle_timeout: seconds without an image before the
+# tower's 0.89GB is released again. It reloads in well under two seconds and
+# Metal kernels survive the round trip, so the next image after an idle stretch
+# is barely slower. Set to 0 to keep the tower resident once loaded.
+# mira_mlx_vision_tower_idle_timeout: 300
 
 # mira_mlx_profile_experts: log MoE expert-routing decisions (which experts
 # fire per layer/token) to a JSONL file, for the expert-offloading go/no-go
