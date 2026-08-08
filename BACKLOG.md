@@ -58,8 +58,7 @@
   `docs/moe-offload-lazy-load-design.md` (the lazy-load fix),
   `docs/moe-offload-prior-art.md` (how it relates to Eliseev & Mazur and LLM-in-a-Flash),
   `docs/offload-resident-sizing.md` (how to size the resident set).
-  Fork commits live on `mabaeyens/mlx-lm@mira-core-pin`; spec:
-  `specs/moe-expert-offload-02-runtime-cache.md`.
+  Fork commits live on `mabaeyens/mlx-lm@mira-core-pin`.
 - [2026-07-18] Fixed two `core/backend_manager.py`/`server.py` bugs found while switching mira-mlx between
   models during the expert-offloading profiling run above: (1) `ensure_backend_running("mira-mlx")` always
   called `start_mira_mlx()` with no model argument, silently defaulting to its own hardcoded `MIRA_MLX_MODEL`
@@ -87,7 +86,7 @@
   is run-to-run noise). The RAM win is 1.88x KV compression, lifting the RAM-derived context
   ceiling from ~131K to ~247-261K tokens on this machine, though it only becomes visible once
   `requested_context` is raised past where the ceiling binds. Results:
-  `docs/bench-results-2026-07-18.md`. Spec: `specs/mira-mlx-kv-quant.md`.
+  `docs/bench-results-2026-07-18.md`.
   Upstreaming status is tracked in `docs/mlx-lm-kv-quant-pr-stack.md` and the Pending entry below.
 - [2026-07-18] mira-mlx has no real vision support (mlx-lm's `BatchGenerator` has no image-tensor seam — VLM code only reachable via the non-batched `generate`/`stream_generate` path), so instead of just rejecting images, `orchestrator.py` now runs them through OCR (`file_handler.ocr_image_from_base64()`, reusing the same optional `tesseract` binary already used for scanned-PDF OCR) and folds recovered text into the prompt as regular text — handles the common case (screenshots of error dialogs, menus, terminal output) without real vision. `mira_mlx_server.py::_prepare_messages()` still raises a `ValueError` (→ 400) as a backstop if a raw image somehow reaches it. When OCR is unavailable or finds no text (photos, diagrams), the user gets a clear inline error pointing at omlx or `brew install tesseract`. `backend_manager.PRESETS[backend]["vision"]` is the single source of truth for which backends need this fallback (only `omlx` is `True`). Full write-up: `docs/architecture.md` "Model quirks". Tests: `tests/test_file_handler.py` (`ocr_image_from_base64`), `tests/test_queries.py` (OCR-success and no-text-found paths).
 - [2026-07-10] Fixed Qwen3.6 tool calls firing 0/7 on mira-mlx (Ministral got 6/7, omlx's Qwen3.6 got 7/7 — so this was mira-mlx-specific, not a Qwen3.6 capability gap). Three stacked bugs: `core/orchestrator.py`'s Qwen3-thinking backend allow-list omitted `mira-mlx`; mira-mlx's HTTP handler silently dropped `chat_template_kwargs`; the tool-text buffering fallback (needed for Mistral's one-sided marker) also captured Qwen's closing `</tool_call>` marker, corrupting the parser. Fixed all three; re-benched 7/7 on Qwen3.6, no regression on Ministral. Full writeup: `docs/architecture.md` "Model quirks", `docs/bench-results-2026-07-10.md`.

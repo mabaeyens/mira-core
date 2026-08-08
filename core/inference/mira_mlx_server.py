@@ -961,11 +961,11 @@ def main() -> None:
     parser.add_argument("--disk-cache-dir", default=None)
     parser.add_argument("--disk-cache-max-bytes", type=int, default=0)
     # Opt-in MoE expert-activation logging for the offloading go/no-go decision
-    # (specs/moe-expert-offload-01-profiling.md). No-op on dense models; zero
+    # (docs/moe-offload-case-study.md). No-op on dense models; zero
     # overhead unless explicitly set. See core/inference/expert_profiler.py.
     parser.add_argument("--profile-experts", action="store_true")
     parser.add_argument("--expert-profile-path", default=None)
-    # Opt-in MoE expert disk offloading (specs/moe-expert-offload-02-runtime-cache.md).
+    # Opt-in MoE expert disk offloading (docs/offload-resident-sizing.md).
     # None (default) = every expert resident, today's behavior. No-op on dense
     # models. See core/inference/expert_offload.py.
     parser.add_argument("--resident-expert-fraction", type=float, default=None)

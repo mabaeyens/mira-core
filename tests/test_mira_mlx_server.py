@@ -180,7 +180,7 @@ def test_build_state_machine_tool_calling_model_adds_tool_state():
     assert "tool" in sm._states
 
 
-# -- oversized single prompt (specs/mira-mlx-oversized-prompt.md) ------------
+# -- oversized single prompt --------------------------------------------------
 
 class FixedLengthTokenizer:
     def __init__(self, n_tokens):
@@ -298,7 +298,7 @@ def test_main_cli_kv_bits_threaded_through(monkeypatch):
     assert captured["kv_group_size"] == 32
 
 
-# -- stats_snapshot (specs/mira-mlx-stats-endpoint.md) -----------------------
+# -- stats_snapshot (docs/architecture.md, "mira-mlx specifics") -------------
 
 def test_stats_snapshot_counts_a_cache_miss():
     engine = GenerationEngine(model_path="fake/model", max_kv_size=None)

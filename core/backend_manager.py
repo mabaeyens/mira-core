@@ -174,7 +174,7 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
         "--fix-mistral-regex",
         # Entries evicted from the in-memory cache overflow here instead of
         # being discarded, surviving both memory-pressure trims and process
-        # restarts (specs/mira-mlx-cache-persistence.md).
+        # restarts (core/inference/disk_prompt_cache.py).
         "--disk-cache-dir", str(MIRA_MLX_CACHE_DIR),
         "--disk-cache-max-bytes", str(disk_cache_max_bytes),
     ]

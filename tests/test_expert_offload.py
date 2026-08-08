@@ -1,4 +1,4 @@
-"""Phase A correctness gate for specs/moe-expert-offload-02-runtime-cache.md:
+"""Correctness gate for MoE expert disk offloading (docs/moe-offload-case-study.md):
 enable_offload() must produce bit-identical output vs the unmodified
 eager/fully-resident path, both on a cold cache (every call is a miss) and a
 warm one (repeated calls hit the LRU), for both SwitchLinear and

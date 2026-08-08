@@ -29,8 +29,8 @@ fetch completes — this file has no mlx-lm import, so that conversion can't
 live here without creating a mira-core -> fork dependency in the wrong
 direction.
 
-See specs/moe-expert-offload-02-runtime-cache.md for the design this
-implements (Phase A).
+See docs/moe-offload-case-study.md for the design this implements and how it
+was arrived at.
 """
 import json
 import logging

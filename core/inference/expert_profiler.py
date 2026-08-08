@@ -1,4 +1,4 @@
-"""Opt-in MoE expert-activation logging (spec: specs/moe-expert-offload-01-profiling.md).
+"""Opt-in MoE expert-activation logging (docs/moe-offload-case-study.md).
 
 This is pure instrumentation for the expert-offloading go/no-go decision — it
 has no effect on generation output and must be explicitly enabled

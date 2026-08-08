@@ -301,6 +301,6 @@ are noted on the upstream offload PR.
 
 ---
 
-The full technical timeline and every measurement live in `BACKLOG.md`, the offload internals in
-`specs/moe-expert-offload-02-runtime-cache.md`, and the adversarial evaluation in
+The full technical timeline and every measurement live in `BACKLOG.md`, how to size the resident
+set in `docs/offload-resident-sizing.md`, and the adversarial evaluation in
 `~/.claude/plans/resilient-sprouting-owl.md`.

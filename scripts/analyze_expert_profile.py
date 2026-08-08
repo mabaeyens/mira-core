@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Analyze a JSONL expert-activation log (core/inference/expert_profiler.py)
-and answer the go/no-go question for specs/moe-expert-offload-01-profiling.md:
+and answer the go/no-go question behind docs/moe-offload-case-study.md:
 is expert activation skewed/correlated enough to make a resident-expert cache
 worthwhile (per Eliseev & Mazur's Mixtral-offloading paper and Alizadeh et
 al.'s "LLM in a Flash"), or close to uniform-random?

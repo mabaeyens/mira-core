@@ -181,7 +181,7 @@ MIRA_MLX_VISION_TOWER_IDLE_TIMEOUT: float = _get(
     "mira_mlx_vision_tower_idle_timeout", 300.0
 )
 # Opt-in MoE expert-routing logging for the expert-offloading go/no-go decision
-# (specs/moe-expert-offload-01-profiling.md). False (default) = zero overhead,
+# (docs/moe-offload-case-study.md). False (default) = zero overhead,
 # no-op on dense models. Not meant to stay on by default even for Qwen3.6 —
 # only enable for a deliberate profiling window.
 MIRA_MLX_PROFILE_EXPERTS: bool = _get("mira_mlx_profile_experts", False)
@@ -191,7 +191,7 @@ MIRA_MLX_EXPERT_PROFILE_PATH: Optional[str] = _get("mira_mlx_expert_profile_path
 # equivalent to code execution. Enable only for a specific model you trust that
 # genuinely ships a custom tokenizer class.
 MIRA_MLX_TRUST_REMOTE_CODE: bool = _get("mira_mlx_trust_remote_code", False)
-# MoE expert disk offloading (specs/moe-expert-offload-02-runtime-cache.md).
+# MoE expert disk offloading (docs/offload-resident-sizing.md).
 # Only `mira_mlx_resident_expert_fraction` of each MoE layer's experts stay
 # resident; the rest are fetched on demand from the model's own safetensors
 # shards and LRU-evicted. This makes a model whose expert table exceeds unified

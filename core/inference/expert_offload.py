@@ -1,4 +1,4 @@
-"""Opt-in MoE expert disk offloading (spec: specs/moe-expert-offload-02-runtime-cache.md).
+"""Opt-in MoE expert disk offloading (docs/moe-offload-case-study.md).
 
 Wires the fork's `SwitchLinear.enable_offload()`/`QuantizedSwitchLinear.enable_offload()`
 (mlx_lm/models/switch_layers.py, mira-core-pin branch) to a DiskExpertCacheStore
