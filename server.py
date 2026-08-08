@@ -30,7 +30,7 @@ logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
 import core.db as db
 import core.file_handler as file_handler
-from core.config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT, MODEL_NAME, BACKEND, BACKEND_HOST, CONTEXT_WINDOW, AUTH_TOKEN, ALLOWED_SOURCE_CIDRS, ALLOWED_HOSTS, MIN_TOKEN_LENGTH
+from core.config import VERBOSE_DEFAULT, COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT, MODEL_NAME, BACKEND, BACKEND_HOST, CONTEXT_WINDOW, AUTH_TOKEN, ALLOWED_SOURCE_CIDRS, ALLOWED_HOSTS, MIN_TOKEN_LENGTH, DISK_PROMPT_CACHE
 from core.orchestrator import ChatOrchestrator
 from core.session_manager import SessionManager
 from core import backend_manager as _bm
@@ -379,9 +379,12 @@ async def hardware_info(_=Depends(_ready)):
             hw.derive_prompt_cache_max_bytes(model, total_ram) / hw.BYTES_PER_GB, 1
         ),
         "active_context_window": _rt["context_window"],
+        # 0 when the disk store is off, which it is by default — reporting what
+        # the volume *could* afford while nothing is being written there reads as
+        # a 40GB budget in use.
         "derived_disk_cache_max_gb": round(
             hw.derive_disk_cache_max_bytes(_bm.MIRA_MLX_CACHE_DIR) / hw.BYTES_PER_GB, 1
-        ),
+        ) if DISK_PROMPT_CACHE else 0.0,
         # None when the backend does not report one (not mira-mlx, still
         # starting, or an older build). A client must treat absence as "no
         # information", never as "everything is fine".

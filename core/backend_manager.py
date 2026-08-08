@@ -27,6 +27,7 @@ from core.config import (
     MIRA_MLX_ENABLE_TF32,
     BOUNDARY_SNAPSHOT,
     PROACTIVE_DECOMPRESS,
+    DISK_PROMPT_CACHE,
 )
 from core.config import resolve_offload_fraction
 from core.config import OMLX_CLI as _OMLX_CLI_PATH, PREFILL_STEP_SIZE
@@ -173,7 +174,13 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
         kv_group_size=MIRA_MLX_KV_GROUP_SIZE,
         resident_expert_fraction=resident_expert_fraction,
     )
-    disk_cache_max_bytes = hardware.derive_disk_cache_max_bytes(MIRA_MLX_CACHE_DIR)
+    # A 0 budget is how the engine disables the store entirely
+    # (mira_mlx_server.py: `if self.disk_cache_dir and self.disk_cache_max_bytes > 0`),
+    # so the flag needs no second code path. See DISK_PROMPT_CACHE in config.py
+    # for why it defaults off: three weeks, 39.75GB, zero reads served.
+    disk_cache_max_bytes = (
+        hardware.derive_disk_cache_max_bytes(MIRA_MLX_CACHE_DIR) if DISK_PROMPT_CACHE else 0
+    )
     # A single response can't usefully exceed the machine's own derived context
     # ceiling — on a smaller machine than this one, a flat 4096 could exceed
     # what --max-kv-size (context_window, below) actually allows.

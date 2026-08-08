@@ -215,6 +215,28 @@ PROACTIVE_DECOMPRESS: bool = _get("proactive_decompress", False)
 # Off by default while it proves itself in real use, like proactive_decompress
 # before it: it changes the prefill path of every request.
 BOUNDARY_SNAPSHOT: bool = _get("boundary_snapshot", False)
+# Overflow prompt-cache entries evicted from memory to disk
+# (core/inference/disk_prompt_cache.py).
+#
+# OFF, because measured over three weeks of real use it served **zero reads**
+# while holding 39.75GB at its own 39.86GB cap, evicting entries to make room
+# for new ones that could not be read either. That is not a bug in the store: a
+# lookup is an exact-match sha256 over the *full* token list, while an entry is
+# keyed on prompt + everything generated. For a hit, a new prompt would have to
+# equal some earlier prompt-plus-completion byte for byte, which the chat
+# template alone makes impossible. The layer above it matches prefixes; this one
+# cannot, so it can only ever hit on a literal repeat.
+#
+# Verified three independent ways before turning it off (2026-08-08):
+# `disk_cache_hits` 0, no read spread over the period (the only later atimes
+# cluster into two analysis sweeps), and the structural argument above.
+#
+# The code stays because a *prefix-capable* disk layer is still a real idea
+# (specs/prefix-aware-disk-prompt-cache.md). It must not be revived on this flag
+# alone: entries are 38-262MB and a median load is ~0.02s, so a candidate search
+# that loads entries has to be measured against the ~4.8s prefill it replaces
+# before it is worth any disk at all.
+DISK_PROMPT_CACHE: bool = _get("disk_prompt_cache", False)
 # TF32 accumulation on the M5+ NAX kernels. MLX defaults this on and until now
 # Mira inherited that default without ever choosing it, which matters because
 # the flag changes numerics: mlx#3897 traced the M5 batch-vs-single attention
