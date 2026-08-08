@@ -33,8 +33,19 @@ _POLL_INTERVAL = 30  # matches the backend's own probe cadence; polling faster
 # the user needs one message, not a stream of them saying the same thing.
 _MIN_NOTIFY_INTERVAL_S = 15 * 60
 
+# Describes the state; deliberately does not predict what the next reply costs.
+# Since 13ba3db the engine can fault the model back in on its own idle branch,
+# so by the time this is read the eviction may already be fixed. It is not
+# reliably false either — that reclaim is skipped under critical pressure, on
+# battery, without headroom, or when `proactive_decompress` is off, which is the
+# default. Nothing here can tell which case the machine is in, so any sentence
+# of the form "the next reply will X" is a prediction this process cannot make.
+#
+# Says "your Mac" where the mira-apps banner says "the Mac running Mira": this
+# fires on the machine running the model, while the banner may be read on an
+# iPhone talking to a remote Mac. The two agree on the claim, not the wording.
 _TEXT = ("Something else on your Mac pushed Mira's model out of memory. "
-         "The next reply will be slow while it loads back in.")
+         "Replies may be slow until it loads back in.")
 
 
 def _read_advisory() -> str | None:

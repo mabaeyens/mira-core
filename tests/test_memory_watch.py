@@ -80,6 +80,30 @@ def test_never_notifies_for_ok_or_busy_or_unknown():
     assert _run_once(["ok", "busy", "critical", "unknown", "ok"]) == []
 
 
+# Every one of these is a claim about what the *next* reply will cost. The
+# engine's reclaim decision is made after this notification fires and depends on
+# four preconditions it cannot see, so none of them can be made honestly — in
+# either direction. "will load itself back in" is as much a prediction as "will
+# be slow"; the fix for the original wording must not swing to the opposite.
+_PREDICTIONS = ("next reply", "will be slow", "will be fast", "will load")
+
+
+def test_notification_does_not_predict_the_next_reply():
+    # Regression, 2026-08-08: the banner in mira-apps stopped predicting a slow
+    # reply in 29159fc and this notification did not, so the same eviction was
+    # described two ways — and the surface still making the claim is the one
+    # that interrupts. Nothing asserted what either surface said, which is
+    # exactly how they drifted: one was fixed, the other was not, nothing failed.
+    sent = _run_once(["ok", "evicted"])
+    assert len(sent) == 1
+    text = sent[0].lower()
+    for claim in _PREDICTIONS:
+        assert claim not in text, f"the notification cannot know this: {sent[0]!r}"
+    # Guards the other direction: an empty or vague string would pass the check
+    # above while telling the user nothing about what happened.
+    assert "memory" in text, f"says nothing about what happened: {sent[0]!r}"
+
+
 def test_start_returns_none_when_disabled():
     with patch.object(memory_watch, "MEMORY_ADVISORY_NOTIFICATIONS", False):
         assert memory_watch.start() is None
