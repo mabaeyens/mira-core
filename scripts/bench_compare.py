@@ -16,9 +16,12 @@ Outputs:
 """
 
 import argparse
+import atexit
 import json
 import os
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -64,6 +67,145 @@ HEADERS = _auth_headers()
 
 # Conversation ids created during a run, deleted in teardown (see feedback_bench_cleanup).
 _created_convs: list[str] = []
+
+LAUNCH_AGENT = "com.mab.mira"
+LAUNCH_AGENT_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT}.plist"
+ENGINE_PATTERN = "core.inference.mira_mlx_server"
+
+
+def _port_is_open(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.4)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _wait_for(predicate, timeout: float, interval: float = 1.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()
+
+
+class IsolatedServer:
+    """Run the bench against its own Mira server, with production stopped.
+
+    Why production has to stop rather than run alongside: `server.py` binds :8000
+    unconditionally, both instances would drive the single inference backend on
+    :8080, and a second API process loads its own embedding and reranker models
+    on a machine that is already holding a ~19GB LLM. One server at a time is the
+    only configuration that is both correct and measurable.
+
+    What this buys over the teardown that already existed: the bench's
+    conversations are written to a throwaway MIRA_DATA_DIR and never touch the
+    real conversations.db at all. The old cleanup deleted them afterwards, which
+    left them visible in the app for the whole run and left them permanently if
+    the run was interrupted before teardown. Isolation does not depend on the
+    run finishing.
+
+    Restoring production is registered with atexit and on SIGINT/SIGTERM, because
+    the failure this must not have is leaving Mira down after a crashed bench.
+    """
+
+    def __init__(self) -> None:
+        self.data_dir: str | None = None
+        self.proc: subprocess.Popen | None = None
+        self.agent_was_loaded = False
+        self._restored = False
+
+    # -- production ----------------------------------------------------------
+    @staticmethod
+    def _agent_loaded() -> bool:
+        return subprocess.run(["launchctl", "list", LAUNCH_AGENT],
+                              capture_output=True).returncode == 0
+
+    def _stop_production(self) -> None:
+        self.agent_was_loaded = self._agent_loaded()
+        if self.agent_was_loaded:
+            print(f"  stopping production ({LAUNCH_AGENT})...")
+            subprocess.run(["launchctl", "unload", str(LAUNCH_AGENT_PLIST)], check=False)
+        else:
+            print(f"  production ({LAUNCH_AGENT}) was not loaded; leaving it that way")
+
+        # The engine is a child of the server process and can outlive it. Kill it
+        # so the bench server cold-loads: a bench must never inherit a warm cache
+        # it did not create, or the first question measures someone else's state.
+        subprocess.run(["pkill", "-f", ENGINE_PATTERN], check=False)
+        if not _wait_for(lambda: not _port_is_open(8000) and not _port_is_open(8080), timeout=60):
+            raise RuntimeError(
+                "port 8000 or 8080 still open after stopping production — refusing to "
+                "start a second server on top of whatever is holding it"
+            )
+
+    def _restore_production(self) -> None:
+        if self._restored:
+            return
+        self._restored = True
+        if not self.agent_was_loaded:
+            print("  production was not running before the bench; not starting it")
+            return
+        print(f"  restoring production ({LAUNCH_AGENT})...")
+        subprocess.run(["launchctl", "load", str(LAUNCH_AGENT_PLIST)], check=False)
+        if _wait_for(lambda: _port_is_open(8000), timeout=120):
+            print("  production is back up")
+        else:
+            print("  WARNING: production did not come back up — check `launchctl list com.mab.mira`")
+
+    # -- bench server --------------------------------------------------------
+    def start(self) -> None:
+        # Registered before anything is stopped: if the very next call fails
+        # halfway, the handler still puts production back.
+        atexit.register(self.stop)
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, self._on_signal)
+
+        self._stop_production()
+
+        self.data_dir = tempfile.mkdtemp(prefix="mira_bench_data_")
+        env = os.environ.copy()
+        env["MIRA_DATA_DIR"] = self.data_dir
+        print(f"  bench data dir: {self.data_dir}  (thrown away afterwards)")
+
+        self.proc = subprocess.Popen(
+            [sys.executable, "server.py"],
+            cwd=str(SOURCE_REPO), env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        print("  starting bench server (cold model load, this takes a minute)...")
+
+        def ready() -> bool:
+            if self.proc.poll() is not None:
+                raise RuntimeError(f"bench server exited early (code {self.proc.returncode})")
+            try:
+                r = requests.get(f"{DEFAULT_BASE_URL}/health", timeout=3)
+                return r.status_code == 200 and r.json().get("backend_ready") is True
+            except Exception:
+                return False
+
+        if not _wait_for(ready, timeout=420, interval=3):
+            raise RuntimeError("bench server never reported backend_ready")
+        print("  bench server ready")
+
+    def _on_signal(self, signum, frame):  # noqa: ARG002
+        self.stop()
+        sys.exit(130)
+
+    def stop(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            print("  stopping bench server...")
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        self.proc = None
+        # Same reason as on the way in: never hand a warm engine to whatever runs next.
+        subprocess.run(["pkill", "-f", ENGINE_PATTERN], check=False)
+        if self.data_dir:
+            shutil.rmtree(self.data_dir, ignore_errors=True)
+            self.data_dir = None
+        self._restore_production()
 
 
 def get_project_id(project_name: str) -> tuple[str, str]:
@@ -521,14 +663,37 @@ def main():
                              "live --project-name repo (WILL mutate it). Explicit opt-in only.")
     parser.add_argument("--server", type=str, default=BASE_URL,
                         help=f"Mira server to drive (default: {BASE_URL}; env MIRA_BENCH_SERVER). "
-                             "Point this at a server started with its own MIRA_DATA_DIR to keep "
-                             "bench conversations out of the real history entirely, instead of "
-                             "relying on the teardown to delete them afterwards.")
+                             "Giving this explicitly means you are pointing the bench at a server "
+                             "you manage, so production is left alone and nothing is isolated for "
+                             "you — the conversations land in whatever database that server owns.")
+    parser.add_argument("--use-live-server", action="store_true",
+                        help="Drive the already-running production server instead of starting an "
+                             "isolated one. Bench conversations then land in the REAL history and "
+                             "are only removed by the teardown afterwards, which does not run if "
+                             "the bench is interrupted. Explicit opt-in only.")
     args = parser.parse_args()
 
     BASE_URL = args.server.rstrip("/")
     if BASE_URL != DEFAULT_BASE_URL:
         print(f"  server: {BASE_URL}")
+
+    # Isolation is the default. A bench must not put its conversations in the
+    # user's own history, and the only way to guarantee that is for the server
+    # writing them to own a different database — cleanup afterwards leaves them
+    # visible for the whole run and permanently if the run dies. Skipped when
+    # --server names a server this script did not start, since stopping
+    # production would then be both useless and destructive.
+    isolated = None
+    if not args.use_live_server and BASE_URL == DEFAULT_BASE_URL:
+        isolated = IsolatedServer()
+        try:
+            isolated.start()
+        except Exception as e:
+            print(f"ERROR: could not start an isolated bench server: {e}")
+            isolated.stop()
+            sys.exit(1)
+    elif args.use_live_server:
+        print("  --use-live-server: bench conversations WILL be written to the real history")
 
     questions = load_questions()
     if args.questions:
@@ -615,6 +780,12 @@ def main():
         # Always clean up: bench conversations, throwaway project, and the worktree.
         # (Skip project/worktree teardown in --no-worktree mode where they're the live repo.)
         teardown(source_repo, tmp_base, wt, project_id if not args.no_worktree else None)
+        # Ordered explicitly rather than left to atexit, so the "production is
+        # back up" line lands after the teardown output instead of underneath it.
+        # In isolated mode the teardown above is belt-and-braces: those rows are
+        # in a temp database that is about to be deleted either way.
+        if isolated is not None:
+            isolated.stop()
 
 
 if __name__ == "__main__":
