@@ -79,8 +79,19 @@ bench/
 mira_bench_test.txt
 files.txt
 
-# Raw bench JSONL logs — summarised in docs/bench-results-*.md
-scripts/bench_raw_*.jsonl
+# Raw JSONL logs — never committed. Benches summarise into docs/bench-results-*.md,
+# and everything else that emits JSONL is a trace or a scratch artifact.
+#
+# By filetype, not by filename. This was `scripts/bench_raw_*.jsonl`, which held
+# only because every JSONL on disk happened to match that one pattern: a bench
+# variant writing elsewhere, or any tool emitting a trace, landed as untracked and
+# was one `git add -A` from being committed. Nothing is tracked as JSONL today, so
+# this ignores no existing file.
+#
+# If a JSONL ever genuinely belongs in the repo (a fixture, say), add a negation
+# beside this line — `!scripts/bench_fixtures/whatever.jsonl` — rather than reaching
+# for `git add -f`, so the exception is visible to the next person.
+*.jsonl
 docs/model-cache.md
 
 # dflash diagnostics output
