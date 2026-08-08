@@ -21,7 +21,13 @@ import time
 from pathlib import Path
 from typing import Any, List, Optional
 
-from mlx_lm.models.cache import LRUPromptCache, PromptTrie, load_prompt_cache, save_prompt_cache
+from mlx_lm.models.cache import (
+    LRUPromptCache,
+    PromptTrie,
+    can_trim_prompt_cache,
+    load_prompt_cache,
+    save_prompt_cache,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +155,8 @@ class DiskBackedPromptCache(LRUPromptCache):
 
     def fetch_nearest_cache(self, model: Any, tokens: List[int]):
         cache, rest = super().fetch_nearest_cache(model, tokens)
+        if cache is None:
+            self._explain_miss(model, tokens)
         if cache is not None or self.disk_store is None:
             return cache, rest
         # Full in-memory miss — try an exact disk hit before giving up.
@@ -157,3 +165,55 @@ class DiskBackedPromptCache(LRUPromptCache):
             return cache, rest
         logger.info("disk prompt cache: exact-match hit for %d tokens", len(tokens))
         return disk_cache, []
+
+    def _explain_miss(self, model: Any, tokens: List[int]) -> None:
+        """Say WHY a lookup missed, which the hit/miss counters cannot.
+
+        fetch_nearest_cache has two ways to reuse an entry and they fail for
+        different reasons. `result.shorter` is an entry that is a *whole* prefix
+        of this prompt, and with Qwen3's chat template that essentially never
+        happens across turns: turn N's prompt ends with the generation prompt
+        `<|im_start|>assistant\\n<think>\\n`, which the template does not
+        reproduce when it replays that assistant turn from history, so the entry
+        diverges a handful of tokens before its own end. Real reuse therefore
+        comes from `result.longer`, an entry extending past the divergence that
+        gets trimmed back to `common_prefix` — and that path is gated on
+        can_trim_prompt_cache().
+
+        So the two numbers worth having are the divergence index (already
+        computed by search() and then discarded) and whether the extending entry
+        was trimmable. "Not a prefix" is expected design; "not trimmable" is a
+        bug, and without this line the two are indistinguishable."""
+        try:
+            result = self._trie.search(model, tokens)
+            stored = len(self._lru) if hasattr(self._lru, "__len__") else "?"
+            # An entry that merely *extends past* the divergence point is still
+            # reusable: fetch_nearest_cache trims it back to common_prefix. That
+            # path is gated on can_trim_prompt_cache(), so when it is False the
+            # request loses every one of those tokens with no other explanation
+            # in the log. Report it: "not a prefix" is design, "not trimmable"
+            # is a bug.
+            trimmable = None
+            if result.longer is not None:
+                try:
+                    entry = self._trie.get(result.model, result.longer)
+                    trimmable = can_trim_prompt_cache(entry.prompt_cache)
+                    kinds = sorted({type(c).__name__ for c in entry.prompt_cache})
+                except Exception:  # noqa: BLE001
+                    kinds = ["?"]
+            else:
+                kinds = []
+            logger.info(
+                "cache miss detail: %d prompt tokens, diverged at index %s, "
+                "longest whole-prefix entry=%s, extending entry=%s, trimmable=%s, "
+                "cache_types=%s, entries_held=%s",
+                len(tokens),
+                result.common_prefix,
+                len(result.shorter) if result.shorter else 0,
+                len(result.longer) if result.longer else 0,
+                trimmable,
+                ",".join(kinds),
+                stored,
+            )
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never break a request
+            logger.debug("cache miss detail unavailable: %s", exc)

@@ -118,12 +118,18 @@
 - **Score the 2026-08-08 agentic bench.** `docs/bench-results-2026-08-08.md` has the timings and
   tool traces for Q6–Q12 filled in and the quality column empty; that column is a human judgement
   and nothing else in the file is blocked on it.
-- **A 27,558-token cache entry did not match a 27,621-token prompt that should contain it.** Q10's
-  second turn reused zero tokens where the arithmetic says exact prefix, which is what turned a
-  continuation into a 48.7s full prefill and is the entire p95 tail. Undiagnosed, and it comes
-  before any other prompt-cache work because a trie that silently fails on a genuine prefix
-  invalidates the reasoning around it. Detail and the two cheap hypotheses in
-  `specs/prompt-cache-earns-nothing.md` §5.
+- **Every plain multi-turn chat with Qwen3.6 re-prefills the whole conversation, and the fix is not
+  designed yet.** Diagnosed 2026-08-08 (detail in `specs/prompt-cache-earns-nothing.md` §5 and
+  `docs/bench-results-2026-08-08.md`). Both of `fetch_nearest_cache`'s reuse paths are closed for
+  this model: the whole-prefix path because Qwen3's generation prompt ends `<|im_start|>assistant\n
+  <think>\n` and the template never re-emits `<think>\n` when it replays that turn from history, and
+  the trim-back path because the cache contains an `ArraysCache` whose `is_trimmable()` is False,
+  which disables trimming for the whole entry. **The narrowest candidate fix is Mira-side**: store
+  the entry against the form the next turn will render rather than the raw generated form
+  (`mira_mlx_server.py:959` and `:1112`). Two things to settle first: why agentic turns still hit
+  (their reuse equals the previous entry exactly, so tool histories replay identically and chat
+  turns do not), and whether `ArraysCache` is trimmable even in principle — if it holds a recurrent
+  state rather than per-token slots, `False` is correct and upstream has nothing to fix.
 - **Decide what the 39.82GB disk prompt cache is for.** It is at its cap, evicting to make room,
   and has never served a single read — not through a bug but by construction, since its lookup is
   exact-match on a hash of the full token list while the layer above it matches prefixes. Either

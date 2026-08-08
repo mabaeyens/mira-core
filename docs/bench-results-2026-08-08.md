@@ -80,6 +80,10 @@ falls back to `disk_store.load()`, which is exact-match on a sha256 of the *full
 entire prompt. Currently **302 entries, 39.82 GB, at its 39.84 GB cap** — it is evicting entries
 to make room for entries nothing will ever read. 13 were written by this run alone.
 
+> **Diagnosed later the same day — see "The anomaly, now diagnosed" below.** The section
+> immediately following is kept as written, because the reasoning it contains ("continuations hit
+> because the entry is a whole prefix") turned out to be only half the story.
+
 ### One anomaly, measured and unexplained
 
 Q10's second turn should have been an almost-free prefix hit and was not:
@@ -101,6 +105,43 @@ than a diagnosis.
 It is also the whole latency tail: those two turns took 45.9s and 48.7s and are what put
 `latency_p95_ms` at 45,757 against a p50 of 5,686 over 23 samples.
 
+### The anomaly, now diagnosed: Qwen3.6 multi-turn chat cannot reuse cache at all
+
+Found by making the engine report *why* a lookup missed rather than only that it did
+(`_explain_miss` in `core/inference/disk_prompt_cache.py`, permanent). Reproduced identically on a
+second Q10 run:
+
+```
+cache miss detail: 27621 prompt tokens, diverged at index 27503,
+  longest whole-prefix entry=0, extending entry=27558, trimmable=False,
+  cache_types=ArraysCache,RotatingQuantizedKVCache, entries_held=2
+```
+
+`fetch_nearest_cache` has two ways to reuse an entry, and **both are closed for this model.**
+
+**1. The whole-prefix path is broken by the chat template.** Turn N's prompt ends with the
+generation prompt `<|im_start|>assistant\n<think>\n`. Replaying that assistant turn from history
+emits `<|im_start|>assistant\n` and the content, and **never re-emits `<think>\n`**, so turn N's
+cached sequence is not a prefix of turn N+1. Verified offline against the real tokenizer: turn 1's
+render ends `'...<|im_start|>assistant\n<think>\n'` (ids `248068, 198`) and
+`t1 == t2[:len(t1)]` is **False**. The measured divergence at 27,503 against a 27,507-token turn-1
+prompt is exactly that: four tokens from the end.
+
+**2. The trim-back path is dead code for this model.** An entry extending past the divergence can
+be trimmed to `common_prefix` and reused — which should have returned 27,503 of 27,621 tokens and
+made this a fast turn. It is gated on `can_trim_prompt_cache()`, i.e. `all(c.is_trimmable())`.
+Qwen3.6's cache contains an **`ArraysCache`**, which never overrides `_BaseCache.is_trimmable()`
+and so returns **False**; one such entry disables trimming for the entire cache.
+
+So the 48.7s was not a fluke or a long-prompt cost. **Every plain multi-turn chat with this model
+re-prefills the entire conversation on every turn.** The agentic hits elsewhere in this run take
+the whole-prefix path (their reuse equals the previous entry's size exactly), so tool-step
+histories evidently replay token-identically where chat turns do not — which is worth confirming
+before designing a fix, since the two paths need different ones.
+
+Both facts are now pinned by `tests/test_cache_trimmability.py`, because neither is Mira's code and
+an mlx-lm upgrade could change either one silently, with a slow reply as the only symptom.
+
 ### Manual quality scores (fill in after review)
 
 Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
@@ -113,4 +154,52 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | 9 | expert | agentic-task-done | — |
 | 11 | hard | agentic-write-file | — |
 | 12 | hard | agentic-edit-file | — |
+| 10 | expert | multi-turn-long-context | — |
+
+---
+
+## Benchmark Results — 2026-08-08
+
+### Timing
+
+| Q | Difficulty | Category | q10-diag:q10-diag TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 10 | expert | multi-turn-long-context | 42742ms | 95.1s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | q10-diag calls | task_done |
+|---|---------|----------------|---|---|
+| 10 | multi-turn-long-context | 0 | none | no |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | q10-diag score |
+|---|-----------|---------|---|
+| 10 | expert | multi-turn-long-context | — |
+
+---
+
+## Benchmark Results — 2026-08-08
+
+### Timing
+
+| Q | Difficulty | Category | q10-diag2:q10-diag2 TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 10 | expert | multi-turn-long-context | 43119ms | 97.1s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | q10-diag2 calls | task_done |
+|---|---------|----------------|---|---|
+| 10 | multi-turn-long-context | 0 | none | no |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | q10-diag2 score |
+|---|-----------|---------|---|
 | 10 | expert | multi-turn-long-context | — |
