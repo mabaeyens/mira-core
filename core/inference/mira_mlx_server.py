@@ -69,7 +69,41 @@ TOUCH_TOKENS = 512
 # experts and quietly defeats the point of the length above.
 TOUCH_ID_STRIDE = 7919
 
+# Below this, a boundary snapshot is not worth the LRU slot it occupies. The
+# saving scales with how much of the next prompt is history: measured at 95% of
+# a long conversation's prompt but only ~44% of a short exchange, and the LRU
+# holds few entries, so a one-shot question would evict a useful one to store
+# something that saves a second.
+SNAPSHOT_MIN_BOUNDARY_TOKENS = 1024
+
+# Entry-count ceiling for the in-memory prompt cache. Two entries per turn now
+# (the completed turn and its boundary snapshot), so this is double mlx-lm's
+# default of 10 to keep the same number of conversations warm. Bytes are capped
+# separately by prompt_cache_max_bytes, which is what actually bounds memory.
+PROMPT_CACHE_MAX_ENTRIES = 20
+
 DONE = object()  # sentinel pushed onto a job's out_queue when generation finishes
+
+
+def plan_prefill_segments(rest, prompt_cache_count, boundary_n):
+    """Decide where prefill should stop to leave a reusable snapshot behind.
+
+    Returns (segments, boundary_to_cache). `boundary_to_cache` is None when the
+    prompt should be prefilled in one piece exactly as before.
+
+    `boundary_n` indexes the whole prompt, while `rest` is only what the cache
+    did not already cover, so the split point is the difference. A boundary at
+    or behind what was already reused needs no segment: the entry that supplied
+    the reuse already covers it. A boundary at or past the end of `rest` would
+    make a second segment empty, and an empty trailing segment has nothing to
+    generate from.
+    """
+    if boundary_n is None:
+        return [rest], None
+    split_at = boundary_n - prompt_cache_count
+    if not 0 < split_at < len(rest):
+        return [rest], None
+    return [rest[:split_at], rest[split_at:]], boundary_n
 
 
 def _decode_image_part(part: dict):
@@ -218,6 +252,7 @@ class GenerationEngine:
         vision_max_pixels: Optional[int] = None,
         vision_tower_idle_timeout: float = 300.0,
         proactive_decompress: bool = False,
+        boundary_snapshot: bool = False,
     ):
         self.model_path = model_path
         self.max_tokens = max_tokens
@@ -239,6 +274,12 @@ class GenerationEngine:
         self.vision_max_pixels = vision_max_pixels
         self.vision_tower_idle_timeout = vision_tower_idle_timeout
         self.proactive_decompress = proactive_decompress
+        self.boundary_snapshot = boundary_snapshot
+        self._snapshots_taken = 0
+        self._snapshots_skipped_short = 0
+        self._snapshot_failures = 0
+        self._snapshot_last_seconds = 0.0
+        self._snapshot_last_bytes = 0
         # Loaded lazily on the first image turn and released again after
         # vision_tower_idle_timeout, so a text-only session never pays the
         # 0.89GB and an occasional image costs it only while in use.
@@ -379,8 +420,16 @@ class GenerationEngine:
                     kv_bits=self.kv_bits,
                     kv_group_size=self.kv_group_size,
                 )
+            # max_size was previously left at mlx-lm's default of 10. With the
+            # boundary snapshot a turn stores two entries instead of one, which
+            # would have quietly halved the number of conversations that stay
+            # warm. 20 restores it. Bytes remain the real ceiling and are
+            # enforced separately (insert_cache evicts on both), so this cannot
+            # grow memory beyond prompt_cache_max_bytes.
             self.prompt_cache = DiskBackedPromptCache(
-                max_bytes=self.prompt_cache_max_bytes, disk_store=disk_store
+                max_size=PROMPT_CACHE_MAX_ENTRIES,
+                max_bytes=self.prompt_cache_max_bytes,
+                disk_store=disk_store,
             )
             # The tower is NOT built here. Startup stays text-only and a session
             # that never sends an image never pays the 0.89GB. It is loaded on
@@ -420,10 +469,17 @@ class GenerationEngine:
             drained = self._drain_inbox()
             if self._pending:
                 _tn = time.time()
-                responses = self.batch_generator.next_generated()
+                # next() rather than next_generated(): the end_of_segment signal
+                # the boundary snapshot needs rides on the prompt responses that
+                # next_generated() discards. A step with no generated tokens
+                # simply loops again, which is what next_generated() did
+                # internally anyway.
+                prompt_responses, responses = self.batch_generator.next()
                 _dt = time.time() - _tn
                 if _dt > 1.0:
-                    logger.info("next_generated() took %.2fs, returned %d responses", _dt, len(responses))
+                    logger.info("next() took %.2fs, returned %d responses", _dt, len(responses))
+                for pr in prompt_responses:
+                    self._maybe_snapshot_boundary(pr)
                 for r in responses:
                     self._handle_response(r)
                 self._check_memory_pressure()
@@ -765,6 +821,11 @@ class GenerationEngine:
             decompress_last_bytes = self._decompress_last_reclaimed_bytes
             decompress_skipped = self._decompress_skipped_no_headroom
             decompress_failures = self._decompress_failures
+            snapshots_taken = self._snapshots_taken
+            snapshots_skipped_short = self._snapshots_skipped_short
+            snapshot_failures = self._snapshot_failures
+            snapshot_last_seconds = self._snapshot_last_seconds
+            snapshot_last_bytes = self._snapshot_last_bytes
 
         total_requests = hits + misses
 
@@ -841,6 +902,14 @@ class GenerationEngine:
                 "last_reclaimed_bytes": decompress_last_bytes,
                 "skipped_no_headroom": decompress_skipped,
                 "failures": decompress_failures,
+            },
+            "boundary_snapshot": {
+                "enabled": self.boundary_snapshot,
+                "taken": snapshots_taken,
+                "skipped_too_short": snapshots_skipped_short,
+                "failures": snapshot_failures,
+                "last_seconds": snapshot_last_seconds,
+                "last_bytes": snapshot_last_bytes,
             },
             # `enabled` follows the config, not whether the tower happens to be
             # resident: with lazy loading it is None most of the time, and
@@ -952,6 +1021,87 @@ class GenerationEngine:
             self._image_tokens += sum(counts)
         return expanded, merged
 
+    def _maybe_snapshot_boundary(self, pr) -> None:
+        """Cache the state at the history boundary, on the way past.
+
+        Fires on the first end_of_segment for a job whose prefill was split.
+        The cache the generator is actually filling is not the one handed to
+        insert_segments — PromptProcessingBatch merges the supplied caches, so
+        that object is never mutated and its offset stays 0. The live state
+        comes out of the batch with extract_cache(idx), resolved by uid every
+        time because sequences migrate to the generation batch as they finish.
+
+        Failures are swallowed: this is an optimisation, and a request that
+        loses its snapshot is merely as slow as it was before.
+        """
+        if not getattr(pr, "end_of_segment", False):
+            return
+        state = self._pending.get(pr.uid)
+        if not state:
+            return
+        tokens = state.get("snapshot_tokens")
+        if not tokens:
+            return
+        state["snapshot_tokens"] = None  # once per job, boundary segment only
+        try:
+            _t = time.time()
+            batch = self.batch_generator._prompt_batch
+            idx = batch.uids.index(pr.uid)
+            snapshot = batch.extract_cache(idx)
+            mx.eval([c.state for c in snapshot if hasattr(c, "state")])
+            nbytes = sum(c.nbytes for c in snapshot)
+            self.prompt_cache.insert_cache(self.model_path, tokens, snapshot)
+            elapsed = time.time() - _t
+            with self._stats_lock:
+                self._snapshots_taken += 1
+                self._snapshot_last_seconds = round(elapsed, 3)
+                self._snapshot_last_bytes = nbytes
+            logger.info(
+                "boundary snapshot: %d tokens, %.1f MB, %.3fs",
+                len(tokens), nbytes / (1024 ** 2), elapsed,
+            )
+        except Exception as exc:  # noqa: BLE001
+            with self._stats_lock:
+                self._snapshot_failures += 1
+            logger.warning("boundary snapshot failed (%s); continuing", exc)
+
+    def _history_boundary(self, messages, tools, ckwargs, prompt_tokens):
+        """Length of the prompt up to (not including) the generation prompt.
+
+        Qwen3's generation prompt ends `<|im_start|>assistant\\n<think>\\n`, and
+        the template never re-emits that scaffold when it later replays the
+        assistant turn from history. So the full prompt of turn N is NOT a prefix
+        of turn N+1, and since this model's cache cannot be trimmed (its linear
+        layers hold recurrent state), nothing is reusable. The history *without*
+        the scaffold is a prefix of every later turn — that is the sequence worth
+        caching, and it can only be captured while prefill passes through it.
+
+        Returns None when the boundary is unusable, and the caller then behaves
+        exactly as before. Verifying the prefix rather than assuming it matters:
+        a template that renders history differently with and without
+        `add_generation_prompt` would otherwise produce a cache entry keyed on
+        tokens that were never processed, which silently corrupts output.
+        """
+        try:
+            text = self.tokenizer.apply_chat_template(
+                messages, tools=tools, add_generation_prompt=False,
+                tokenize=False, **ckwargs
+            )
+            boundary = self.tokenizer.encode(text, add_special_tokens=False)
+        except Exception as exc:  # noqa: BLE001 - never break a request for this
+            logger.debug("boundary render failed (%s); skipping snapshot", exc)
+            return None
+        n = len(boundary)
+        if n == 0 or n >= len(prompt_tokens):
+            return None
+        if list(prompt_tokens[:n]) != list(boundary):
+            logger.warning(
+                "boundary is not a prefix of the prompt; skipping snapshot "
+                "(template renders history differently with add_generation_prompt)"
+            )
+            return None
+        return n
+
     def _start_job(self, job: ChatJob) -> None:
         try:
             ckwargs = job.chat_template_kwargs or {}
@@ -1014,9 +1164,27 @@ class GenerationEngine:
         sampler = make_sampler(temp=job.temperature, top_p=job.top_p)
         logits_processors = make_logits_processors()
 
+        # Split prefill at the history boundary so the state there can be
+        # snapshotted on the way past. Only worth a segment (and an LRU slot)
+        # when the boundary is both ahead of what the cache already covered and
+        # long enough that reusing it next turn beats re-prefilling it.
+        segments = [rest]
+        snapshot_tokens = None
+        if self.boundary_snapshot and image_embeds is None:
+            boundary_n = self._history_boundary(messages, job.tools, ckwargs, prompt_tokens)
+            if boundary_n is not None and boundary_n < SNAPSHOT_MIN_BOUNDARY_TOKENS:
+                with self._stats_lock:
+                    self._snapshots_skipped_short += 1
+            else:
+                segments, to_cache = plan_prefill_segments(
+                    rest, prompt_cache_count, boundary_n
+                )
+                if to_cache is not None:
+                    snapshot_tokens = list(prompt_tokens[:to_cache])
+
         _t2 = time.time()
         (uid,) = self.batch_generator.insert_segments(
-            segments=[[rest]],
+            segments=[segments],
             max_tokens=[min(job.max_tokens, self.max_tokens)],
             caches=[cache],
             all_tokens=[prompt_tokens[:prompt_cache_count]],
@@ -1027,6 +1195,10 @@ class GenerationEngine:
         )
         logger.info("insert_segments took %.2fs (rest=%d tokens)", time.time() - _t2, len(rest))
         self._pending[uid] = {
+            # Set only when prefill was actually split, so the first
+            # end_of_segment for this uid is the boundary and not the trailing
+            # single token insert_segments always peels off for generation.
+            "snapshot_tokens": snapshot_tokens,
             "job": job,
             "detokenizer": self.tokenizer.detokenizer,
             "tool_formatter": ToolCallFormatter(self.tokenizer.tool_parser, job.tools, streaming=job.stream),
@@ -1273,6 +1445,7 @@ def main() -> None:
     # it compressed out, so the decompression is not paid by whoever asks next
     # (measured 17.60s against a warm 0.45s on a fully evicted model).
     parser.add_argument("--proactive-decompress", action="store_true")
+    parser.add_argument("--boundary-snapshot", action="store_true")
     args = parser.parse_args()
 
     engine = GenerationEngine(
@@ -1296,6 +1469,7 @@ def main() -> None:
         vision_max_pixels=args.vision_max_pixels,
         vision_tower_idle_timeout=args.vision_tower_idle_timeout,
         proactive_decompress=args.proactive_decompress,
+        boundary_snapshot=args.boundary_snapshot,
     )
     engine.start()
 

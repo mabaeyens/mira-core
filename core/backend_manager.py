@@ -25,6 +25,7 @@ from core.config import (
     MIRA_MLX_EXPERT_PROFILE_PATH,
     MIRA_MLX_TRUST_REMOTE_CODE,
     MIRA_MLX_ENABLE_TF32,
+    BOUNDARY_SNAPSHOT,
     PROACTIVE_DECOMPRESS,
 )
 from core.config import resolve_offload_fraction
@@ -211,6 +212,8 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
         args += ["--trust-remote-code"]
     if PROACTIVE_DECOMPRESS:
         args += ["--proactive-decompress"]
+    if BOUNDARY_SNAPSHOT:
+        args += ["--boundary-snapshot"]
     if MIRA_MLX_VISION:
         args += ["--vision"]
         args += ["--vision-max-pixels", str(MIRA_MLX_VISION_MAX_PIXELS)]

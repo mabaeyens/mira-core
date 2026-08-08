@@ -212,6 +212,9 @@ MEMORY_ADVISORY_NOTIFICATIONS: bool = _get("memory_advisory_notifications", True
 # per-process eviction signal only, availability floor, not on battery, not at
 # critical pressure, once per eviction event.
 PROACTIVE_DECOMPRESS: bool = _get("proactive_decompress", False)
+# Off by default while it proves itself in real use, like proactive_decompress
+# before it: it changes the prefill path of every request.
+BOUNDARY_SNAPSHOT: bool = _get("boundary_snapshot", False)
 # TF32 accumulation on the M5+ NAX kernels. MLX defaults this on and until now
 # Mira inherited that default without ever choosing it, which matters because
 # the flag changes numerics: mlx#3897 traced the M5 batch-vs-single attention

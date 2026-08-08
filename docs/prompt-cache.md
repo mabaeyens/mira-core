@@ -61,6 +61,41 @@ silently, with a slow reply as the only symptom.
 re-prefills the entire conversation on every turn.** In the 2026-08-08 bench a
 27,614-token second turn reused 0 tokens and took 48.7s.
 
+## 2a. The boundary snapshot (the fix, shipped 2026-08-08, default off)
+
+Neither closed door can be opened where it lives. But turn N's prompt and turn
+N+1's agree right up to the scaffold, so **the state at that boundary is
+reusable** — it just has to be captured while prefill passes through it, since
+it cannot be recovered afterwards.
+
+Prefill is therefore split into two segments at the history boundary
+(`plan_prefill_segments`). When the generator reports `end_of_segment` for the
+first one, the engine pulls that state out of the batch and registers it as its
+own cache entry keyed on exactly the tokens processed so far. Measured on Q10:
+
+| | before | after |
+|---|---|---|
+| turn 2 wall | 48,749 ms | **4,988 ms** |
+| turn 2 reuse | 0 / 27,614 | **27,500 / 27,614 (99.6%)** |
+| snapshot cost | — | **14 ms for 346.7 MB** |
+
+Turn 1 is unchanged within run-to-run noise, and the six agentic questions were
+same-or-faster with no regression. Enabled by `boundary_snapshot` (off in
+`core/config.py`, on locally in `mira.yaml` while it proves itself). Counters
+live under `/v1/stats` → `boundary_snapshot`.
+
+Two details worth keeping:
+
+- **The boundary is verified, not assumed.** `_history_boundary` checks the
+  history render really is a prefix of the prompt and returns None otherwise.
+  A template that rendered history differently with and without
+  `add_generation_prompt` would otherwise produce an entry keyed on tokens that
+  were never processed, which changes output rather than merely slowing it.
+- **`max_size` is now set explicitly to 20** (`PROMPT_CACHE_MAX_ENTRIES`). A
+  turn stores two entries now, and left at mlx-lm's default of 10 this would
+  have halved how many conversations stay warm — a slowdown nothing would have
+  reported. Bytes remain the real ceiling and are enforced separately.
+
 ## 3. Reading the log
 
 Every request logs a hit/miss line, and every miss now also logs why:
