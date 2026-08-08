@@ -334,7 +334,12 @@ def test_partial_scores_stay_out_of_baselines_and_comparisons(be, tmp_path, caps
 
     rows, _, _ = be.read_baseline(path)
     assert 1 in rows and 6 not in rows, "a partial score was written into the baseline"
-    assert "Excluded as partial" in path.read_text()
+    text = path.read_text()
+    assert "Excluded as partial" in text
+    # The stated coverage must match the table, not the input. "covers 16 of 16"
+    # over a 15-row table reads as complete coverage of a question that was
+    # dropped for having no evidence.
+    assert "- covers: 1 of" in text
 
     rc = be.compare([be.QuestionScore(qid=1, tier1=2, partial=True,
                                       tier1_notes=["no evidence"])], path, "m", None)

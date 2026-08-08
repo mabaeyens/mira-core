@@ -587,6 +587,11 @@ def _git_head() -> str:
 def write_baseline(path: Path, scores: list[QuestionScore], model: str,
                    build: str, ident: dict | None,
                    noise_floor: float | None = None) -> None:
+    # Counted before the header is built, because "covers 16 of 16" printed above
+    # a table of 15 rows is the exact kind of number that gets quoted. Coverage
+    # is what the baseline actually holds, not what was handed to it.
+    skipped = [s.qid for s in scores if s.partial]
+    covered = len(scores) - len(skipped)
     lines = [
         "# Quality baseline",
         "",
@@ -609,19 +614,17 @@ def write_baseline(path: Path, scores: list[QuestionScore], model: str,
          " two or more runs of one build before reading anything into a judged"
          " delta"),
         "",
-        f"- covers: {len(scores)} of {len(load_questions())} questions"
+        f"- covers: {covered} of {len(load_questions())} questions"
         f" — a baseline is only a bar for the questions it contains, and a run of"
         f" a different subset compares only where they overlap",
         "",
         "| Q | tier1 | judged | safety |",
         "|---|-------|--------|--------|",
     ]
-    skipped = []
     for s in sorted(scores, key=lambda x: x.qid):
         if s.partial:
             # A partial score in a baseline becomes a permanently lowered bar
             # that later full runs are measured against, so it is left out.
-            skipped.append(s.qid)
             continue
         lines.append(
             f"| {s.qid} | {'-' if s.tier1 is None else s.tier1} | "
