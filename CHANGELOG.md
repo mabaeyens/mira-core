@@ -1,5 +1,68 @@
 # Changelog
 
+## v1.2.0 — August 2026
+
+- **Multi-turn chat can stop re-prefilling itself, if you turn it on.** Plain
+  conversation on Qwen3.6 was re-reading the whole history on every single turn:
+  measured 2026-08-08, a 27,614-token second turn reused nothing at all and took
+  48.7 seconds. Two things close the normal reuse paths on this model, and
+  neither is fixable where it lives. Its hybrid linear-attention cache keeps
+  running summaries with no per-token slots, so it cannot be trimmed back at all,
+  and the chat template's `<think>` scaffold means one turn's prompt is not a
+  prefix of the next. So prefill now splits at the history boundary and the state
+  there is captured on the way past, because it cannot be recovered afterwards.
+  The same turn with `boundary_snapshot: true` takes 5.0 seconds and reuses
+  27,500 of 27,614 tokens, for a 14ms snapshot cost. Agentic tool loops already
+  reused well and are unchanged. **Off by default** — it changes the prefill path
+  of every request and wants a week of ordinary use across more than one machine
+  before that flips.
+- **Mira notices when something else takes its memory, and says so.** When
+  another app pushes the model out of RAM, macOS compresses it out and the next
+  reply costs about 15 to 17 seconds against a warm half-second. That reply is
+  itself what fixes it, so the symptom is one unexplained slow answer and then
+  normality, which is the least debuggable shape a performance problem can have.
+  There is now a macOS notification on the transition into that state (at most
+  one every 15 minutes, `memory_advisory_notifications`, on by default), and
+  `GET /hardware` carries a `system_memory` block whose `advisory` field the apps
+  can show. It never blocks or delays anything: if a memory advisory could stop
+  you talking to Mira, another app opening tabs could take Mira offline, which is
+  worse than one slow reply.
+- **The memory ceiling is derived from the machine, not from its spec sheet.**
+  Sizing used to come off `hw.memsize`, which describes a Mac with nothing else
+  running on it. It now re-derives from live system state every 30 seconds, so
+  the context window and cache budgets reflect what is actually available.
+  `proactive_decompress` (off by default) additionally faults the model back in
+  on the engine's idle branch rather than leaving the bill for whoever asks next.
+  It is roughly memory-neutral because emptying the compressor pays for most of
+  the expansion, and it is skipped on battery, at critical pressure and without
+  headroom. The catch is that a request arriving mid-reclaim waits behind it, up
+  to about 19.5 seconds on a full eviction, which is never worse than doing
+  nothing but is not free either.
+- **The disk prompt cache is off, and deleting what it left is worth doing.** It
+  had been accumulating since July and had served zero reads, not through a bug
+  but by construction: a lookup is an exact match on a hash of the whole prompt
+  while an entry is keyed on the prompt plus everything generated, so a hit would
+  need a byte-identical repeat of an entire conversation. Left alone it reached
+  39.75GB and was evicting old entries to make room for new ones that could not
+  be read either. Turning it off stops the growth but deletes nothing, so an
+  upgraded install keeps whatever it had. Mira now says so once at startup and in
+  `mira doctor`, with the size and the exact command; it does not delete
+  gigabytes out of your data directory on its own. The setting stays as
+  `disk_prompt_cache` for a future prefix-capable version, but enabling this one
+  only refills the disk.
+- **A reply can no longer come back empty.** The model could call `task_done`
+  as the entire content of a turn, having run no tools and written nothing, which
+  ended the turn with nothing for you to read. That call is now refused once per
+  turn when there is no visible output and no tool has run, and the refusal comes
+  back as a tool result telling the model to write the answer itself. Across
+  seven agentic bench questions the guard fired zero times while every question
+  still exited through `task_done` normally, so it is inert on legitimate turns.
+- **The engine keeps its logs.** mira-mlx's stdout went to `/dev/null`, so its
+  prompt-cache decisions, disk-cache activity and decompression timings were
+  unobservable — which is why "the prompt cache reports no hits" had no evidence
+  attached for weeks. It now writes to `~/.local/share/mira/mira-mlx.log`, capped
+  at 32MB, and every cache miss also logs why it missed.
+
 ## v1.1.0 — August 2026
 
 - **Vision stopped being expensive.** The Qwen3.6 checkpoint ships a
