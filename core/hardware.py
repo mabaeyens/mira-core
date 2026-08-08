@@ -57,6 +57,193 @@ def get_total_ram_bytes() -> int:
         return 16 * BYTES_PER_GB
 
 
+# Lowest the dynamic ceiling is ever allowed to fall to. Below this the model
+# cannot serve a useful turn anyway, so reporting a smaller budget would only
+# make Mira thrash its own caches while the real problem is elsewhere.
+MIN_DYNAMIC_CEILING_BYTES = 6 * BYTES_PER_GB
+
+# macOS memory pressure levels from kern.memorystatus_vm_pressure_level.
+PRESSURE_NORMAL, PRESSURE_WARN, PRESSURE_CRITICAL = 1, 2, 4
+
+
+def read_memory_pressure_level() -> Optional[int]:
+    """macOS's own verdict: 1 normal, 2 warn, 4 critical. None if unreadable.
+
+    None means unknown, never healthy — a probe that fails must not read as an
+    all-clear (this is the whole reason it is Optional rather than defaulting).
+    """
+    try:
+        out = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+        return int(out.stdout.strip())
+    except (subprocess.SubprocessError, ValueError, OSError) as exc:
+        logger.debug("Could not read memory pressure level (%s)", exc)
+        return None
+
+
+def read_swap_used_bytes() -> Optional[int]:
+    """Swap currently in use, via `sysctl vm.swapusage`. None if unreadable.
+
+    Only useful as a delta. This machine sits at ~800MB of swap in use while
+    completely idle, so an absolute value says nothing about pressure.
+    """
+    try:
+        out = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "vm.swapusage"],
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+        # "total = 2048.00M  used = 796.12M  free = 1251.88M  (encrypted)"
+        parts = out.stdout.replace("=", " ").split()
+        i = parts.index("used")
+        raw = parts[i + 1]
+        mult = {"K": 1024, "M": 1024**2, "G": 1024**3}.get(raw[-1].upper(), 1)
+        return int(float(raw.rstrip("KMGkmg")) * mult)
+    except (subprocess.SubprocessError, ValueError, OSError, IndexError) as exc:
+        logger.debug("Could not read swap usage (%s)", exc)
+        return None
+
+
+def read_vm_state() -> Optional[dict]:
+    """One `vm_stat` call, returning both availability and compressor occupancy.
+
+    `available` is free + inactive + speculative. `inactive` is the load-bearing
+    term and omitting it is the classic mistake: on this machine free alone reads
+    0.06GB where several GB is genuinely available, which would make any budget
+    derived from it conclude the machine is permanently starving. `purgeable` is
+    deliberately NOT added, because it is already counted inside active/inactive.
+
+    `compressor_bytes` is the one that actually matters and is why this returns a
+    dict rather than a single number. Measured 2026-08-08: under external memory
+    pressure macOS compressed 21.4GB of pages into 17.05GB of compressor, and
+    most of it was Mira's own model weights. The next request then took **15.37s
+    against a warm 0.47s, a 33x penalty**, and decompressing the model emptied
+    the compressor back to 0.20GB in that one turn. Availability is the leading
+    indicator; compressor occupancy is the damage already done.
+    """
+    try:
+        out = subprocess.run(
+            ["/usr/bin/vm_stat"], capture_output=True, text=True, timeout=5, check=True
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        logger.debug("Could not run vm_stat (%s)", exc)
+        return None
+
+    page_size = 16384
+    counts = {}
+    for line in out.stdout.splitlines():
+        if "page size of" in line:
+            try:
+                page_size = int(line.split("page size of")[1].split()[0])
+            except (IndexError, ValueError):
+                pass
+            continue
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        value = value.strip().rstrip(".")
+        if value.isdigit():
+            counts[key.strip().lower()] = int(value)
+
+    try:
+        available = (counts["pages free"] + counts["pages inactive"]
+                     + counts.get("pages speculative", 0)) * page_size
+    except KeyError as exc:
+        logger.debug("vm_stat missing expected field (%s)", exc)
+        return None
+    return {
+        "available_bytes": available,
+        "compressor_bytes": counts.get("pages occupied by compressor", 0) * page_size,
+        "wired_bytes": counts.get("pages wired down", 0) * page_size,
+    }
+
+
+def read_available_ram_bytes() -> Optional[int]:
+    """Availability alone, for callers that do not need the full state."""
+    state = read_vm_state()
+    return None if state is None else state["available_bytes"]
+
+
+# Compressor occupancy above this fraction of Mira's own MLX footprint means a
+# large share of the model is very likely paged out. Chosen with a wide margin
+# around the two measured states: 0.91 when evicted (17.05GB against 18.81GB)
+# and 0.01 when resident (0.20GB). Nothing observed has landed between them.
+EVICTED_COMPRESSOR_FRACTION = 0.25
+
+
+def derive_dynamic_ceiling_bytes(
+    mira_used_bytes: int,
+    total_ram_bytes: Optional[int] = None,
+    available_bytes: Optional[int] = None,
+) -> tuple[int, dict]:
+    """How much MLX memory Mira may hold, given what the rest of the Mac is doing.
+
+    The static ceiling (`total - SAFETY_MARGIN`) assumes the machine is Mira's
+    alone. It is not; this is a computer someone also uses. This returns the same
+    value when nothing else is running and a smaller one when something is.
+
+    `mira_used_bytes` is Mira's own MLX footprint (active + cache) and is ADDED
+    back, because it already shows up as unavailable in the system's numbers.
+    Leaving it out makes the budget shrink in response to Mira's own size, which
+    shrinks nothing and then shrinks again — a feedback loop, not a measurement.
+
+    Never exceeds the static ceiling: a transient "lots free" reading must not
+    let the model claim memory it cannot keep. Never falls below
+    MIN_DYNAMIC_CEILING_BYTES.
+
+    Returns (ceiling_bytes, diagnostics) so callers can report WHY it moved
+    rather than just that it did.
+    """
+    total = total_ram_bytes if total_ram_bytes is not None else get_total_ram_bytes()
+    static_ceiling = total - SAFETY_MARGIN_BYTES
+    state = read_vm_state()
+    if state is None and available_bytes is not None:
+        state = {"available_bytes": available_bytes, "compressor_bytes": 0}
+    elif state is not None and available_bytes is not None:
+        state = dict(state, available_bytes=available_bytes)
+
+    pressure = read_memory_pressure_level()
+    diag = {
+        "static_ceiling_bytes": static_ceiling,
+        "available_bytes": None if state is None else state["available_bytes"],
+        "compressor_bytes": None if state is None else state["compressor_bytes"],
+        "mira_used_bytes": mira_used_bytes,
+        "pressure_level": pressure,
+    }
+
+    if state is None:
+        # Unknown, not healthy. Fall back to the static ceiling and say so, so a
+        # broken probe is visible instead of silently reading as an all-clear.
+        diag["source"] = "static (probe unavailable)"
+        diag["advisory"] = "unknown"
+        return static_ceiling, diag
+
+    available = state["available_bytes"]
+    headroom = mira_used_bytes + available - SAFETY_MARGIN_BYTES
+    ceiling = max(min(headroom, static_ceiling), MIN_DYNAMIC_CEILING_BYTES)
+    diag["source"] = "dynamic"
+    diag["other_processes_bytes"] = max(total - available - mira_used_bytes, 0)
+    diag["ceiling_bytes"] = ceiling
+
+    # Advisory, in increasing order of how much the user will actually feel it.
+    # `evicted` is the one worth surfacing: it means the next reply pays to
+    # decompress the model, measured at 15.37s against a warm 0.47s.
+    evicted = (mira_used_bytes > 0
+               and state["compressor_bytes"] > EVICTED_COMPRESSOR_FRACTION * mira_used_bytes)
+    if evicted:
+        diag["advisory"] = "evicted"
+    elif pressure is not None and pressure >= PRESSURE_CRITICAL:
+        diag["advisory"] = "critical"
+    elif pressure is not None and pressure >= PRESSURE_WARN:
+        diag["advisory"] = "busy"
+    elif pressure is None:
+        diag["advisory"] = "unknown"
+    else:
+        diag["advisory"] = "ok"
+    return ceiling, diag
+
+
 def _find_cached_config(model_id: str) -> Optional[Path]:
     """Locate a HF-cached model's config.json without invoking transformers/mlx_lm."""
     cache_root = Path.home() / ".cache" / "huggingface" / "hub"

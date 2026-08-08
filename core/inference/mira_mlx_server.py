@@ -44,6 +44,12 @@ from core.inference.disk_prompt_cache import DiskBackedPromptCache, DiskPromptCa
 
 logger = logging.getLogger("mira_mlx_server")
 
+# How often the idle loop re-derives the memory ceiling from real system state.
+# The loop itself spins at 50Hz; the probe is ~2.5ms of subprocess, so it needs
+# its own timer rather than running per-iteration. 30s is well under the time it
+# takes someone to open an IDE and start a build, and costs ~0.008% of a core.
+SYSTEM_MEMORY_PROBE_INTERVAL_S = 30.0
+
 DONE = object()  # sentinel pushed onto a job's out_queue when generation finishes
 
 
@@ -252,6 +258,15 @@ class GenerationEngine:
         self._cache_memory_bytes = 0
         self._peak_memory_bytes = 0
         self._wired_limit_bytes = 0
+        # System-memory advisory. The ceiling used to be a hardware constant
+        # (hw.memsize - margin) computed once at start, which cannot notice that
+        # this is a Mac someone also uses. These are refreshed on the idle branch.
+        self._system_state: dict = {"advisory": "unknown", "source": "not yet probed"}
+        self._system_state_checked_at = 0.0
+        # Set for real on the model thread once the engine starts, and re-derived
+        # from live system state on the idle branch after that. Declared here so
+        # stats_snapshot() works on an engine that has not been started.
+        self._memory_ceiling_bytes = 0
 
     def start(self) -> None:
         threading.Thread(target=self._run, name="mira-mlx-engine", daemon=True).start()
@@ -383,6 +398,7 @@ class GenerationEngine:
                 self._check_memory_pressure()
             elif not drained:
                 self._release_idle_tower()
+                self._refresh_system_memory_state()
                 time.sleep(0.02)
 
     def _ensure_tower(self):
@@ -474,6 +490,54 @@ class GenerationEngine:
             claimed / 1e9,
         )
 
+    def _refresh_system_memory_state(self) -> None:
+        """Re-derive the memory ceiling from what the whole Mac is doing.
+
+        Called only from the idle branch of the model loop, which spins at 50Hz,
+        so this is time-gated: the probe costs about 2.5ms of subprocess and at
+        50Hz that would be roughly 12% of a core spent asking the same question.
+
+        The ceiling only ever shrinks Mira's own appetite. It is clamped to the
+        original static ceiling inside derive_dynamic_ceiling_bytes, so a
+        transient "lots free" reading cannot let the model claim memory it will
+        not be able to keep.
+        """
+        now = time.time()
+        if now - self._system_state_checked_at < SYSTEM_MEMORY_PROBE_INTERVAL_S:
+            return
+        self._system_state_checked_at = now
+        try:
+            from core import hardware
+            used = mx.get_active_memory() + mx.get_cache_memory()
+            ceiling, diag = hardware.derive_dynamic_ceiling_bytes(mira_used_bytes=used)
+        except Exception as exc:  # noqa: BLE001 - advisory only, never fatal
+            logger.debug("system memory probe failed (%s)", exc)
+            with self._stats_lock:
+                self._system_state = {"advisory": "unknown", "source": f"probe failed: {exc}"}
+            return
+
+        previous = self._system_state.get("advisory")
+        with self._stats_lock:
+            self._system_state = diag
+            self._memory_ceiling_bytes = ceiling
+            # Refresh the memory counters here too. _check_memory_pressure is
+            # the only other writer and it runs solely while jobs are in flight,
+            # so an idle server reported active_memory_bytes: 0 while actually
+            # holding the whole model — which reads as "nothing loaded" rather
+            # than "nobody has asked yet". We already have the live values.
+            self._active_memory_bytes = mx.get_active_memory()
+            self._cache_memory_bytes = mx.get_cache_memory()
+            self._peak_memory_bytes = mx.get_peak_memory()
+        if diag["advisory"] != previous and diag["advisory"] != "ok":
+            logger.warning(
+                "system memory advisory %s -> %s: ceiling %.2fGB (static %.2fGB), "
+                "available %.2fGB, compressor %.2fGB",
+                previous, diag["advisory"], ceiling / (1024**3),
+                diag["static_ceiling_bytes"] / (1024**3),
+                (diag.get("available_bytes") or 0) / (1024**3),
+                (diag.get("compressor_bytes") or 0) / (1024**3),
+            )
+
     def _check_memory_pressure(self) -> None:
         """Proactively shrink the prompt-cache pool if real MLX memory use is
         approaching the machine's ceiling — catches pressure from the active
@@ -516,6 +580,8 @@ class GenerationEngine:
             tower_loads = self._tower_loads
             tower_unloads = self._tower_unloads
             tower_reclaimed = self._tower_last_reclaimed_bytes
+            system_state = dict(self._system_state)
+            memory_ceiling_bytes = self._memory_ceiling_bytes
 
         total_requests = hits + misses
 
@@ -559,6 +625,21 @@ class GenerationEngine:
             "cache_memory_bytes": cache_memory_bytes,
             "peak_memory_bytes": peak_memory_bytes,
             "wired_limit_bytes": wired_limit_bytes,
+            # What the rest of the Mac is doing to us. `advisory` is the field a
+            # client should show: "evicted" means the model has been compressed
+            # out and the next reply pays to bring it back (measured 15.37s
+            # against a warm 0.47s). The ceiling is re-derived on the idle branch
+            # rather than being the boot-time hardware constant it used to be.
+            "system_memory": {
+                "advisory": system_state.get("advisory", "unknown"),
+                "ceiling_bytes": memory_ceiling_bytes,
+                "static_ceiling_bytes": system_state.get("static_ceiling_bytes"),
+                "available_bytes": system_state.get("available_bytes"),
+                "compressor_bytes": system_state.get("compressor_bytes"),
+                "other_processes_bytes": system_state.get("other_processes_bytes"),
+                "pressure_level": system_state.get("pressure_level"),
+                "source": system_state.get("source"),
+            },
             # `enabled` follows the config, not whether the tower happens to be
             # resident: with lazy loading it is None most of the time, and
             # reporting that as disabled would make an idle release look like a

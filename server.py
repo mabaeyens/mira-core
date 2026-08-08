@@ -310,10 +310,53 @@ async def info():
     return result
 
 
+_SYSTEM_MEMORY_TTL_S = 5.0
+_system_memory_cache: dict = {"at": 0.0, "value": None}
+
+
+async def _backend_system_memory() -> dict | None:
+    """Relay the inference backend's system-memory advisory.
+
+    The backend re-derives its memory ceiling from real system state every 30s on
+    its idle loop, but it writes to DEVNULL and nothing here ever read its
+    `/v1/stats`, so the advisory could not reach a client. This is that missing
+    hop.
+
+    Best-effort in every direction: only mira-mlx serves this, a backend that is
+    down or older simply has no advisory, and a failure here must never affect
+    the rest of `/hardware`. Cached briefly so polling this endpoint cannot turn
+    into a flood against the backend.
+    """
+    now = time.time()
+    if now - _system_memory_cache["at"] < _SYSTEM_MEMORY_TTL_S:
+        return _system_memory_cache["value"]
+
+    value = None
+    try:
+        import httpx
+
+        base = BACKEND_HOST.rstrip("/")
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(f"{base}/v1/stats")
+        if resp.status_code == 200:
+            value = resp.json().get("system_memory")
+    except Exception as exc:  # noqa: BLE001 - advisory only, never fatal
+        logger.debug("could not read backend system memory (%s)", exc)
+
+    _system_memory_cache["at"] = now
+    _system_memory_cache["value"] = value
+    return value
+
+
 @app.get("/hardware")
 async def hardware_info(_=Depends(_ready)):
     """RAM-aware sizing for the active model — why a given machine got the
-    context window / cache budget it did (see core/hardware.py)."""
+    context window / cache budget it did (see core/hardware.py).
+
+    `system_memory` is the live half: the other fields describe what this machine
+    could do in principle, that one describes what it can do right now given
+    whatever else is running.
+    """
     from core import hardware as hw
 
     total_ram = hw.get_total_ram_bytes()
@@ -333,6 +376,10 @@ async def hardware_info(_=Depends(_ready)):
         "derived_disk_cache_max_gb": round(
             hw.derive_disk_cache_max_bytes(_bm.MIRA_MLX_CACHE_DIR) / hw.BYTES_PER_GB, 1
         ),
+        # None when the backend does not report one (not mira-mlx, still
+        # starting, or an older build). A client must treat absence as "no
+        # information", never as "everything is fine".
+        "system_memory": await _backend_system_memory(),
     }
 
 
