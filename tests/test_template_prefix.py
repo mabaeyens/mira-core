@@ -84,6 +84,45 @@ def test_no_thinking_flag_rescues_the_chat_case(tok):
         assert not nxt.startswith(first), f"prefix unexpectedly held for {kw}"
 
 
+def test_the_assistant_header_boundary_is_a_compounding_prefix(tok):
+    """The precondition for specs/assistant-boundary-snapshot.md.
+
+    Rendering the history WITHOUT the generation prompt gives a sequence that is
+    a prefix of this turn's prompt (so it can be produced by splitting prefill)
+    and of every later turn's prompt (so the snapshot is reusable). Without both,
+    the whole design is void.
+    """
+    def ids(msgs, gen):
+        text = tok.apply_chat_template(msgs, add_generation_prompt=gen, tokenize=False)
+        return tok.encode(text, add_special_tokens=False)
+
+    # A realistic conversation: history dominates the new user turn. That ratio
+    # is the whole point - coverage is 95% when the history is long and only
+    # ~44% on a toy two-liner, so the fix pays off exactly on the expensive
+    # turns and barely on the cheap ones.
+    u1 = {"role": "user", "content": "Summarise this file.\n" + "filler " * 500}
+    a1 = {"role": "assistant", "content": "It defines x."}
+    a2 = {"role": "assistant", "content": "In orchestrator.py."}
+    u3 = {"role": "user", "content": "Quote it."}
+
+    boundary = ids([SYS, u1], False)
+    turn1 = ids([SYS, u1], True)
+    turn2 = ids([SYS, u1, a1, U2], True)
+    turn3 = ids([SYS, u1, a1, U2, a2, u3], True)
+
+    def is_prefix(a, b):
+        return len(a) <= len(b) and list(a) == list(b[:len(a)])
+
+    assert is_prefix(boundary, turn1), "cannot be produced by splitting this turn's prefill"
+    assert is_prefix(boundary, turn2), "snapshot would not be reusable next turn"
+    assert is_prefix(boundary, turn3), "reuse does not survive to turn 3"
+    assert len(turn1) - len(boundary) < 20, "scaffold unexpectedly large; re-measure the design"
+
+    # The win has to be worth the LRU slot it costs. Holds because history
+    # dominates here; see the comment above for why that is the realistic case.
+    assert len(boundary) / len(turn2) > 0.9
+
+
 def test_supplying_the_think_block_in_content_does_not_help(tok):
     """The other obvious fix. Storing the assistant turn with its reasoning
     wrapped back in does not reproduce the scaffold either."""

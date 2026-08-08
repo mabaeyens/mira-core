@@ -136,6 +136,16 @@
   prefix of every later turn; cost is one cache deepcopy per turn against 38–262MB entries, and that
   is the number to measure before building. Three other fixes are rejected with reasons in the spec,
   including one that would silently corrupt output — read §5 before proposing anything.
+  **The snapshot is now fully specced and costed in `specs/assistant-boundary-snapshot.md`, and the
+  cost turned out to be a non-issue**: copying the largest entry on disk (2,103.5MB) takes **0.8ms
+  with a +0.0MB active-memory delta**, because `mx.array` implements `__deepcopy__` and mutating a
+  copy provably does not disturb the original. The real cost is retention: two entries per turn
+  against an LRU whose `max_size` is mlx-lm's default of **10** (never set explicitly), so effective
+  capacity halves to 5 conversations while bytes stay far under the 5.00GB budget. Measured value:
+  a chat turn 2 would reuse **95.4%** of its prompt where it reuses 0 today, ~44s of Q10's 48.7s.
+  **One unknown gates implementation** — whether the cache is observable between segments of a
+  single `insert_segments` call (§6); everything else is settled. Architecture write-up in
+  `docs/prompt-cache.md`.
 - **Decide what the 39.82GB disk prompt cache is for.** It is at its cap, evicting to make room,
   and has never served a single read — not through a bug but by construction, since its lookup is
   exact-match on a hash of the full token list while the layer above it matches prefixes. Either
