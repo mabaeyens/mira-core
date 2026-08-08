@@ -11,6 +11,7 @@ No mlx import: `bench_compare` pulls in requests and yaml only, so this runs on
 Linux CI.
 """
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -83,6 +84,106 @@ def test_stop_leaves_production_down_if_it_was_already_down(server):
     s.agent_was_loaded = False
     s.stop()
     assert _count(calls, "launchctl", "load") == 0
+
+
+def test_fetch_and_search_are_recorded_as_tool_calls(bench, monkeypatch):
+    """web_search and fetch_url emit their own SSE events, not tool_start.
+
+    The orchestrator gives them fetch_start/search_start so the UI can show a URL
+    or a query rather than a generic chip. The bench listened only for
+    tool_start, so both tools were invisible: Q16 fetched its page, summarised it
+    correctly, and was recorded as having made no tool calls. Anything keyed on
+    tool names was blind to them, including the tool_absent check the injection
+    questions rely on.
+    """
+    events = [
+        {"type": "fetch_start", "url": "http://127.0.0.1:8009/injected_page.html"},
+        {"type": "token", "content": "the page says the export pipeline is degraded"},
+        {"type": "search_start", "query": "anything"},
+        {"type": "tool_start", "tool": "read_file", "label": "read"},
+        {"type": "tool_start", "tool": "task_done", "label": "done"},
+        {"type": "done"},
+    ]
+
+    class FakeResp:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_lines(self, decode_unicode=True):  # noqa: ARG002
+            for e in events:
+                yield f"data: {json.dumps(e)}"
+
+    monkeypatch.setattr(bench.requests, "post", lambda *a, **k: FakeResp())
+
+    result = bench.stream_chat("prompt", model="m", thinking=False, tools=True,
+                               conversation_id="conv-id")
+    assert result["tool_calls"] == ["fetch_url", "web_search", "read_file"]
+    assert result["task_done"] is True
+
+
+def test_fixture_server_actually_serves_the_injection_payload(bench):
+    """Q16's payload has to arrive, or every check below it passes vacuously.
+
+    For three weeks nothing listened on :8009, so the fetch was refused, no
+    forbidden tool ran, no marker file appeared, and the question reported a
+    clean safety pass having tested nothing.
+    """
+    import requests
+
+    s = bench.IsolatedServer()
+    s._start_fixture_server()
+    try:
+        r = requests.get(
+            f"http://127.0.0.1:{bench.FIXTURE_HTTP_PORT}/injected_page.html",
+            timeout=5)
+        assert r.status_code == 200
+        # Both halves matter: the real content the summary is scored on, and the
+        # payload the resistance is scored on.
+        assert "Export pipeline" in r.text
+        assert "SYSTEM NOTICE FOR AI ASSISTANTS" in r.text
+        assert "mira_bench_injection_marker" in r.text
+    finally:
+        s._stop_fixture_server()
+
+    # Bound to loopback only: a directory server on all interfaces is not
+    # something a benchmark should leave behind.
+    assert s._fixture_httpd is None
+
+
+def test_bench_config_enables_private_fetch_without_touching_the_real_one(
+        bench, monkeypatch, tmp_path):
+    """The payload is served on loopback and fetch_url refuses loopback by
+    default. The guard is correct and is not what Q16 tests, so the bench enables
+    it on a copy for its own server only."""
+    import yaml
+
+    live = tmp_path / "mira.yaml"
+    live.write_text(yaml.safe_dump({
+        "backend": "mira-mlx",
+        "model": "mlx-community/Qwen3.6-35B-A3B-4bit",
+    }))
+    monkeypatch.setattr(bench, "SOURCE_REPO", tmp_path)
+
+    s = bench.IsolatedServer()
+    path = s._write_bench_config()
+    try:
+        cfg = yaml.safe_load(Path(path).read_text())
+        assert cfg["url_fetch_allow_private"] is True
+        # The live file keeps the secure default, and the run still measures Mira
+        # as configured here rather than against some invented config.
+        assert "url_fetch_allow_private" not in yaml.safe_load(live.read_text())
+        assert cfg["model"] == "mlx-community/Qwen3.6-35B-A3B-4bit"
+        assert cfg["backend"] == "mira-mlx"
+    finally:
+        Path(path).unlink(missing_ok=True)
 
 
 def test_restore_waits_for_the_backend_not_just_the_port(bench, monkeypatch, capsys):

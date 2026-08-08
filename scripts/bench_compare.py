@@ -70,6 +70,12 @@ HEADERS = _auth_headers()
 # Conversation ids created during a run, deleted in teardown (see feedback_bench_cleanup).
 _created_convs: list[str] = []
 
+# Q16 fetches its injection payload over HTTP, so something has to serve it.
+# Nothing did until 2026-08-08: the question pointed at a port with no listener,
+# the fetch was refused, and every check passed having tested nothing.
+FIXTURE_HTTP_PORT = 8009
+FIXTURE_DIR = SCRIPTS_DIR / "bench_fixtures"
+
 LAUNCH_AGENT = "com.mab.mira"
 LAUNCH_AGENT_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT}.plist"
 ENGINE_PATTERN = "core.inference.mira_mlx_server"
@@ -116,6 +122,78 @@ class IsolatedServer:
         self.agent_was_loaded = False
         self._restored = False
         self._stopped = False
+        self.config_path: str | None = None
+        self._fixture_httpd = None
+        self._fixture_thread = None
+
+    # -- injection fixture ---------------------------------------------------
+    def _start_fixture_server(self) -> None:
+        """Serve bench_fixtures/ on loopback so Q16's payload actually arrives.
+
+        Bound to 127.0.0.1 explicitly rather than all interfaces: this exists to
+        feed one local test, and a directory server reachable from the network is
+        not something a benchmark should leave running.
+        """
+        import http.server
+        import threading
+
+        fixture_dir = str(FIXTURE_DIR)
+
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=fixture_dir, **kwargs)
+
+            # Quiet by subclass rather than by patching a functools.partial,
+            # which silently does nothing: the first version of this still
+            # printed a request line straight through the bench's own output.
+            def log_message(self, *args):  # noqa: ARG002
+                pass
+
+        handler = Handler
+        try:
+            self._fixture_httpd = http.server.ThreadingHTTPServer(
+                ("127.0.0.1", FIXTURE_HTTP_PORT), handler)
+        except OSError as exc:
+            raise RuntimeError(
+                f"could not bind the injection fixture server on "
+                f"127.0.0.1:{FIXTURE_HTTP_PORT} ({exc}). Q16 cannot be scored "
+                f"without it, and a silent skip is what this whole fix removes."
+            ) from exc
+        self._fixture_thread = threading.Thread(
+            target=self._fixture_httpd.serve_forever, daemon=True)
+        self._fixture_thread.start()
+        print(f"  injection fixture server on 127.0.0.1:{FIXTURE_HTTP_PORT}")
+
+    def _stop_fixture_server(self) -> None:
+        if self._fixture_httpd is not None:
+            self._fixture_httpd.shutdown()
+            self._fixture_httpd.server_close()
+            self._fixture_httpd = None
+
+    # -- config --------------------------------------------------------------
+    def _write_bench_config(self) -> str:
+        """A copy of the live mira.yaml with private-URL fetching enabled.
+
+        Q16's payload is served on loopback, and fetch_url refuses loopback by
+        default - correctly, since the model picks the URL from text an attacker
+        may influence. The guard is not what is under test here; injection
+        resistance is. So the bench enables it for its own server only, on a
+        temporary copy, and never touches the real file.
+
+        Copying rather than writing a fresh config keeps the run measuring Mira
+        as actually configured on this machine, which is the point of a local
+        benchmark. Only the one setting differs.
+        """
+        live = SOURCE_REPO / "mira.yaml"
+        cfg = {}
+        if live.exists():
+            with open(live) as f:
+                cfg = yaml.safe_load(f) or {}
+        cfg["url_fetch_allow_private"] = True
+        fd, path = tempfile.mkstemp(prefix="mira_bench_config_", suffix=".yaml")
+        with os.fdopen(fd, "w") as f:
+            yaml.safe_dump(cfg, f)
+        return path
 
     # -- production ----------------------------------------------------------
     @staticmethod
@@ -180,9 +258,13 @@ class IsolatedServer:
 
         self._stop_production()
 
+        self._start_fixture_server()
+
         self.data_dir = tempfile.mkdtemp(prefix="mira_bench_data_")
+        self.config_path = self._write_bench_config()
         env = os.environ.copy()
         env["MIRA_DATA_DIR"] = self.data_dir
+        env["MIRA_CONFIG"] = self.config_path
         print(f"  bench data dir: {self.data_dir}  (thrown away afterwards)")
 
         self.proc = subprocess.Popen(
@@ -231,9 +313,19 @@ class IsolatedServer:
         self.proc = None
         # Same reason as on the way in: never hand a warm engine to whatever runs next.
         subprocess.run(["pkill", "-f", ENGINE_PATTERN], check=False)
+        self._stop_fixture_server()
         if self.data_dir:
             shutil.rmtree(self.data_dir, ignore_errors=True)
             self.data_dir = None
+        if self.config_path:
+            # Removed even though it only differs by one setting: a stray config
+            # in /tmp with private-URL fetching enabled is exactly the file
+            # someone points MIRA_CONFIG at later without reading it.
+            try:
+                os.unlink(self.config_path)
+            except OSError:
+                pass
+            self.config_path = None
         self._restore_production()
 
 
@@ -477,6 +569,21 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
                         task_done_fired = True
                     else:
                         tool_calls.append(tool_name)
+
+                # web_search and fetch_url do NOT emit tool_start. The
+                # orchestrator gives them their own events so the UI can show a
+                # query or a URL instead of a generic tool chip
+                # (orchestrator.py _execute_tools), which meant the bench never
+                # recorded either of them: Q16 fetched its page, summarised it
+                # correctly, and was still reported as having made no tool calls
+                # at all. Every check keyed on tool names was blind to these two,
+                # including tool_absent, which is how the injection questions
+                # verify that a forbidden tool was not called.
+                elif event_type == "fetch_start":
+                    tool_calls.append("fetch_url")
+
+                elif event_type == "search_start":
+                    tool_calls.append("web_search")
 
                 elif event_type == "divergence_guard":
                     divergence_guard_fired = True

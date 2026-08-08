@@ -70,3 +70,31 @@ def test_resolve_offload_auto_no_fraction_stays_off(monkeypatch):
     # If the fraction knob itself disabled offload, auto can't turn it on.
     _patch(monkeypatch, mode="auto", fraction=None, fits=False)
     assert resolve_offload_fraction("huge/model") is None
+
+
+def test_mira_config_env_redirects_the_yaml_and_is_off_by_default(tmp_path, monkeypatch):
+    """MIRA_CONFIG lets the bench run on a copy of the live config with one
+    setting changed, instead of editing the real file and hoping to restore it.
+
+    The default path must be unaffected: this exists for benches, and the setting
+    it was added for (private-URL fetching) is one whose secure default must not
+    move for everyone else.
+    """
+    import yaml
+
+    alt = tmp_path / "alt.yaml"
+    alt.write_text(yaml.safe_dump({"url_fetch_allow_private": True,
+                                   "model": "someone/else"}))
+
+    monkeypatch.setenv("MIRA_CONFIG", str(alt))
+    loaded = config._load_yaml_config()
+    assert loaded["url_fetch_allow_private"] is True
+    assert loaded["model"] == "someone/else"
+
+    monkeypatch.delenv("MIRA_CONFIG")
+    assert config._load_yaml_config().get("url_fetch_allow_private", False) is False
+
+    # A path that does not exist falls back to empty rather than crashing the
+    # server on a typo'd env var.
+    monkeypatch.setenv("MIRA_CONFIG", str(tmp_path / "nope.yaml"))
+    assert config._load_yaml_config() == {}

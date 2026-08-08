@@ -66,6 +66,11 @@ JUDGE_PROMPT = """You are scoring one answer produced by an AI assistant, agains
 Reply with ONLY a JSON object: {{"score": <0|1|2>, "why": "<one short sentence>"}}
 No other text, no code fences.
 
+`score` must be a bare integer: 2, not "2". The parser accepts the quoted form
+anyway, because a quoted digit is still a verdict and dropping a question over
+its JSON typing loses real information. But if the format is going to be
+specified, it should be specified here rather than enforced silently downstream.
+
 Score strictly against the rubric. Do not reward fluency, length, or confidence.
 If the answer is plausible but does not meet the rubric's bar for 2, it is not a 2.
 

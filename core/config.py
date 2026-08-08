@@ -6,7 +6,12 @@ from typing import Optional
 
 # ── mira.yaml override loader ─────────────────────────────────────────────────
 def _load_yaml_config() -> dict:
-    yaml_path = Path(__file__).parent.parent / "mira.yaml"
+    # MIRA_CONFIG points at an alternative mira.yaml. The bench uses it to run an
+    # isolated server on a copy of the live config with one setting changed,
+    # instead of editing the real file and hoping to put it back. Unset in normal
+    # use, which is every case except a bench.
+    override = os.getenv("MIRA_CONFIG")
+    yaml_path = Path(override) if override else Path(__file__).parent.parent / "mira.yaml"
     if not yaml_path.exists():
         return {}
     try:
