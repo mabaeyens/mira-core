@@ -17,6 +17,7 @@ Outputs:
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -28,7 +29,20 @@ from pathlib import Path
 import requests
 import yaml
 
-BASE_URL = "http://localhost:8000"
+# Which server the bench drives. It defaults to the live one, which is the whole
+# problem this knob exists to solve: a bench run's conversations are written by
+# whichever server serves them, so pointing the bench at the production server
+# puts bench traffic in the user's own history for the duration of the run. The
+# teardown deletes them afterwards, but "deleted afterwards" is not "never shown"
+# — they are visible in the app for the whole run, and they survive permanently
+# if the run is interrupted before teardown.
+#
+# MIRA_DATA_DIR (core/config.py) cannot fix that from here: it configures the
+# process that owns the database, and the bench does not own it — it drives an
+# already-running server over HTTP. The fix is to point this at a server started
+# with its own MIRA_DATA_DIR, which is what --server is for.
+DEFAULT_BASE_URL = "http://localhost:8000"
+BASE_URL = os.getenv("MIRA_BENCH_SERVER", DEFAULT_BASE_URL)
 SCRIPTS_DIR = Path(__file__).parent
 SOURCE_REPO = SCRIPTS_DIR.parent  # the mira-core repo root (a git repo)
 DOCS_DIR = SCRIPTS_DIR.parent / "docs"
@@ -489,6 +503,10 @@ def format_markdown_table(all_results: dict[str, list[dict]], questions: list[di
 
 
 def main():
+    # Declared up front: every request helper reads the module-level BASE_URL, so
+    # --server assigns it rather than threading a URL through a dozen call sites.
+    global BASE_URL
+
     parser = argparse.ArgumentParser(description="Mira model benchmark runner")
     parser.add_argument("--model", action="append", required=True, help="Model tag(s) to benchmark")
     parser.add_argument("--questions", type=str, default=None, help="Comma-separated question IDs (default: all)")
@@ -501,7 +519,16 @@ def main():
     parser.add_argument("--no-worktree", action="store_true",
                         help="Disable worktree isolation and run agentic questions against the "
                              "live --project-name repo (WILL mutate it). Explicit opt-in only.")
+    parser.add_argument("--server", type=str, default=BASE_URL,
+                        help=f"Mira server to drive (default: {BASE_URL}; env MIRA_BENCH_SERVER). "
+                             "Point this at a server started with its own MIRA_DATA_DIR to keep "
+                             "bench conversations out of the real history entirely, instead of "
+                             "relying on the teardown to delete them afterwards.")
     args = parser.parse_args()
+
+    BASE_URL = args.server.rstrip("/")
+    if BASE_URL != DEFAULT_BASE_URL:
+        print(f"  server: {BASE_URL}")
 
     questions = load_questions()
     if args.questions:
