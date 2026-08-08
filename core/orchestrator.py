@@ -583,6 +583,7 @@ class ChatOrchestrator:
         _thinking_chars = 0  # accumulated across all tool steps for this turn
         self._task_done = False
         self._task_done_summary = ""
+        self._task_done_refused = False   # one refusal per turn; see the guard below
         self._tool_call_hashes: dict = {}  # call_hash -> repeat count
         self._total_tool_calls = 0           # hard cap: MAX_TOOL_CALLS_PER_TURN
         self._tool_name_counts: dict = {}    # tool name -> call count for SAME_TOOL_REPEAT_LIMIT
@@ -745,6 +746,39 @@ class ChatOrchestrator:
 
             # task_done short-circuits the whole batch immediately
             if any(name == "task_done" for _, name, _, _ in prepared):
+                # Refuse a task_done that would be the entire user-visible output.
+                # With no tool run and no text streamed, the summary is a claim
+                # about work the user cannot see: the model declares an answer
+                # instead of giving one. Bench Q4 on 2026-08-01 is the
+                # reproduction — "Provided a complete Python context manager for
+                # sqlite3 ..." and no context manager.
+                #
+                # The condition keys on tools having run, not on empty content
+                # alone, so a genuinely agentic turn whose answer *is* a summary
+                # ("deleted 3 files") still exits here. And because any
+                # non-task_done call in this batch already incremented
+                # _total_tool_calls above, reaching this branch means every entry
+                # in `prepared` is a task_done — nothing else goes unanswered.
+                if (
+                    not full_content.strip()
+                    and self._total_tool_calls == 0
+                    and not self._task_done_refused
+                ):
+                    self._task_done_refused = True
+                    for tc_id, name, _, _ in prepared:
+                        self.conversation_history.append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "name": name,
+                            "content": (
+                                "Refused: task_done is not an answer. You have run no tools "
+                                "and produced no output for this request, so there is nothing "
+                                "for the user to read. Write the full answer itself in your "
+                                "next reply. Do not call task_done again."
+                            ),
+                        })
+                    logger.info("Refused task_done: no visible content and no tools ran")
+                    continue
                 task_done_args = next(args for _, name, args, _ in prepared if name == "task_done")
                 self._mark_task_done(task_done_args.get("summary", "Task complete."))
                 if _thinking_chars:
