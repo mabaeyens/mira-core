@@ -137,4 +137,13 @@ reference, not bytes or time**; what costs is *retaining* it, since a held entry
 keeps its buffers alive and occupies one of the LRU's 10 slots and part of its
 5.00GB budget.
 
-That is what makes the fix in `specs/assistant-boundary-snapshot.md` plausible.
+**One caveat, because this number is easy to quote for the wrong operation.**
+Pulling a single sequence's cache out of the *batched* structure the generator
+actually holds is `PromptProcessingBatch.extract_cache(idx)`, and that is a real
+per-layer copy: **6.8 ms for 24.2 MB, about 3,562 MB/s**, measured on
+`Qwen3-0.6B-8bit`. `deepcopy` of an already-standalone entry is the free one.
+Any design that snapshots mid-prefill pays the `extract_cache` rate, not the
+`deepcopy` one.
+
+That is what makes the fix in `specs/assistant-boundary-snapshot.md` plausible;
+its §6 records the mechanism and the measurements.

@@ -143,9 +143,17 @@
   against an LRU whose `max_size` is mlx-lm's default of **10** (never set explicitly), so effective
   capacity halves to 5 conversations while bytes stay far under the 5.00GB budget. Measured value:
   a chat turn 2 would reuse **95.4%** of its prompt where it reuses 0 today, ~44s of Q10's 48.7s.
-  **One unknown gates implementation** — whether the cache is observable between segments of a
-  single `insert_segments` call (§6); everything else is settled. Architecture write-up in
-  `docs/prompt-cache.md`.
+  **The gate is PASSED as of 2026-08-08 and the design is implementable.** Verified on a small
+  model: `end_of_segment` fires at exactly `len(boundary)`, and `batch.extract_cache(idx)` returns
+  that state, unchanged by later generation. Two implementation facts came out of the check that the
+  spec did not have before: **Mira throws the signal away today** (`next_generated()` discards the
+  prompt responses that carry it, so it must switch to `next()`), and **the cache passed to
+  `insert_segments` is never the live one** (`_merge_caches` merges it into a batched structure; the
+  passed object's offset stays 0 — the first attempt at the check snapshotted it and read 0). Cost
+  corrected too: the operation is `extract_cache`, **6.8ms for 24.2MB ≈ 3,562 MB/s**, not the free
+  0.8ms `deepcopy`; extrapolates to ~17ms for a median Qwen3.6 entry and ~100–600ms for a
+  27.5k-token one, still under 2% of the ~44s saved, and it lands on the model thread.
+  Architecture write-up in `docs/prompt-cache.md`.
 - **Decide what the 39.82GB disk prompt cache is for.** It is at its cap, evicting to make room,
   and has never served a single read — not through a bug but by construction, since its lookup is
   exact-match on a hash of the full token list while the layer above it matches prefixes. Either
