@@ -739,6 +739,52 @@ def derive_disk_cache_max_bytes(cache_dir: Path, cap_bytes: int = 50 * BYTES_PER
     return int(min(cap_bytes, free // 10))
 
 
+def format_bytes(n: int) -> str:
+    """Human size that stays informative at both ends of the range.
+
+    A fixed GB unit renders a few megabytes as "0.00 GB", which reads as nothing
+    at all and quietly undermines the message it appears in — seen 2026-08-08 in
+    the orphaned-cache warning, where the real case is tens of GB but the test
+    case was 4.5MB."""
+    if n >= BYTES_PER_GB:
+        return f"{n / BYTES_PER_GB:.2f} GB"
+    if n >= 1024 * 1024:
+        return f"{n / (1024 * 1024):.1f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.0f} KB"
+    return f"{n} bytes"
+
+
+def orphaned_prompt_cache(cache_dir: Path) -> tuple[int, int]:
+    """Files and total bytes left in the disk prompt-cache directory.
+
+    Meaningful only when `DISK_PROMPT_CACHE` is off, and then it is a leak rather
+    than a cache: the only code that ever deleted one of these files was the
+    store's own LRU eviction, and that no longer runs. An install upgrading past
+    the flag keeps everything it had accumulated (39.75GB on the machine this was
+    found on) with nothing referencing it and nothing to make it visible. Hence
+    the warning at server startup and in `mira doctor` — deleting it is the user's
+    call, but not knowing about it should not be.
+
+    Never raises: a missing directory, a permission error or a file vanishing
+    mid-scan all read as "nothing to report", because this exists to add a line
+    to a health check and must never be able to take one down.
+    """
+    total = 0
+    count = 0
+    try:
+        entries = list(cache_dir.glob("*.safetensors"))
+    except OSError:
+        return 0, 0
+    for p in entries:
+        try:
+            total += p.stat().st_size
+            count += 1
+        except OSError:
+            continue
+    return count, total
+
+
 def derive_cache_limit_bytes(total_ram_bytes: Optional[int] = None) -> int:
     """Metal allocator reuse-cache cap: a small slice of the same ceiling
     `_check_memory_pressure` already trims against, so the *reactive* clear

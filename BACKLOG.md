@@ -1,6 +1,46 @@
 # Backlog
 
 ## Done
+- [2026-08-08] **Release decisions for v1.2.0, taken by Miguel:** the three opt-in flags
+  (`boundary_snapshot`, `proactive_decompress`, `disk_prompt_cache`) **ship OFF and are
+  documented**; version is **1.2.0**; and the orphaned disk cache gets **a warning, not an
+  automatic deletion**. All three now hold in the tree. The flags were invisible to users
+  before this — none of them appeared in `mira.yaml.example`, so shipping them off would have
+  meant shipping them unknowable; each now has a block saying what it measured and what it
+  costs. The warning fires once at server startup and as an advisory line in `mira doctor`,
+  reporting the file count, the size and the exact `rm -rf`. It does **not** delete: these are
+  pure cache files, but they are also gigabytes inside the user's data directory, and a server
+  removing gigabytes unasked at startup is not a thing to build without being asked to. It is
+  deliberately backend-independent, since the leftovers are just as dead when the configured
+  backend is omlx and that is exactly the case where nothing else would mention them.
+  `mira_cli.py` stays stdlib-only — the import is lazy and behind a bare except, because
+  `doctor` must run on a half-built install. Sizes render adaptively after the first live run
+  printed "0.00 GB of dead prompt-cache files" for a 4.5MB probe, which reads as nothing at all
+  inside a warning asking someone to act.
+- [2026-08-08] **Benches stopped writing into the real conversation history, and the first fix
+  for it took Mira's backend down.** Miguel saw bench Q2/Q4 ("write a Python …") conversations
+  in his own list. The existing teardown did delete them, but **cleanup is not isolation**:
+  they are visible in the app for the whole run and permanent if the run is interrupted.
+  `MIRA_DATA_DIR` could never have covered this — it configures the process that *owns* the
+  database, which is why it fixed `pytest` (in-process) and not the bench, which drives an
+  already-running server over HTTP. So the bench now stops production, starts its own server
+  against a throwaway data dir, and restores production afterwards; measured across a real Q1
+  run, the database was byte-identical (29 conversations, 98 messages, same `max_created_at`).
+  **Then the teardown killed the engine production was loading**: `stop()` runs twice, once
+  explicitly and once from atexit, and its `pkill` matches any mira-mlx engine, but only the
+  *restore* was guarded. `ensure_backend_running` does not retry, so Mira sat serving with no
+  backend for ten minutes. The run reported success throughout — exit 0, database untouched,
+  "production is back up" already printed — and only `/health` showed it. Both halves fixed:
+  `stop()` is idempotent as a whole, and the restore now waits for `backend_ready` rather than
+  for port 8000, which answers in seconds while the model is still loading. Mutation-checked,
+  then re-verified live, which is the only place it ever appeared.
+- [2026-08-08] **JSONL is ignored by filetype now, not by one filename pattern.** The rule was
+  `scripts/bench_raw_*.jsonl` and it held only because every JSONL on disk happened to match
+  it — `scripts/results.jsonl`, `docs/trace.jsonl`, `core/data.jsonl` and a `bench_raw` file at
+  the repo root were all untracked-but-visible, one `git add -A` from a commit. Nothing was
+  tracked as JSONL, so this untracked no file. The comment points at a negation rather than
+  `git add -f`, so any future exception stays visible in `.gitignore` instead of in a shell
+  history.
 - [2026-08-08] **Turned the disk prompt cache off and deleted its 39.75GB, which had served
   zero reads in three weeks** (`DISK_PROMPT_CACHE`, default off). Not a bug in the store: a
   lookup is an exact-match sha256 over the full token list while an entry is keyed on prompt
@@ -69,7 +109,9 @@
 - **`proactive_decompress` and `boundary_snapshot` are both ON in `mira.yaml` and OFF in
   `core/config.py`, and that split is the plan, not an oversight.** Decided 2026-08-08: this Mac
   runs both so the week produces real data, while anything shipped or remote keeps the
-  conservative default until that data exists. What the week is for:
+  conservative default until that data exists. **Confirmed for v1.2.0: they ship off**, and both
+  are now documented in `mira.yaml.example` so "off" does not also mean "undiscoverable". The
+  week is what decides whether the default flips in a later release. What the week is for:
   - `boundary_snapshot` — whether `_history_boundary` ever refuses a real prompt (it logs a
     warning), whether `failures` stays 0, and whether two entries per turn push the LRU against
     its 5.00GB ceiling. Watch `/v1/stats` → `boundary_snapshot`.

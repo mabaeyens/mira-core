@@ -109,6 +109,39 @@ def _line(ok: bool, label: str, fix: str = "") -> bool:
     return ok
 
 
+def _warn(label: str, fix: str = "") -> None:
+    """A finding that is worth reporting but is not a broken install."""
+    tail = "" if not fix else f"\n     {DIM}→ {fix}{RESET}"
+    print(f"  {YELLOW}⚠️{RESET}  {label}{tail}")
+
+
+def _orphaned_prompt_cache_line() -> None:
+    """Report dead disk-prompt-cache files, if the store is off and left some.
+
+    Imported lazily and behind a bare except because this module is deliberately
+    stdlib-only: `doctor` has to run on a half-built install, which is exactly
+    when `core` may not import at all. A missing import here costs one advisory
+    line, not the health check.
+    """
+    try:
+        sys.path.insert(0, str(_repo_root()))
+        from core.backend_manager import MIRA_MLX_CACHE_DIR
+        from core.config import DISK_PROMPT_CACHE
+        from core.hardware import format_bytes, orphaned_prompt_cache
+    except Exception:
+        return
+    if DISK_PROMPT_CACHE:
+        return
+    count, nbytes = orphaned_prompt_cache(MIRA_MLX_CACHE_DIR)
+    if not count:
+        return
+    _warn(
+        f"{format_bytes(nbytes)} of dead prompt-cache files "
+        f"({count} of them) in {MIRA_MLX_CACHE_DIR}",
+        f"the disk cache is off and nothing reads them — rm -rf {MIRA_MLX_CACHE_DIR}",
+    )
+
+
 def doctor() -> int:
     root = _repo_root()
     print(f"\n{YELLOW}Mira doctor{RESET}  {DIM}({root}){RESET}\n")
@@ -136,6 +169,11 @@ def doctor() -> int:
           f"open oMLX, load {OMLX_MODEL} in its model library")
     _line(_http_ok(SERVER_URL + "/"),
           "Mira server reachable on :8000", "mira serve")
+
+    # Advisory, and deliberately not counted toward exit status: leftover cache
+    # files waste disk but nothing about the install is broken, and `doctor`
+    # returning 1 for them would fail scripts that gate on it.
+    _orphaned_prompt_cache_line()
 
     print()
     if not ok:

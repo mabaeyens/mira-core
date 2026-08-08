@@ -95,6 +95,34 @@ _rt: Dict = {
 }
 
 
+def _warn_orphaned_prompt_cache() -> None:
+    """Say so, once per process, when the disabled disk cache has left files behind.
+
+    Deliberately not a deletion. These are pure cache files with no user data in
+    them, but they are also gigabytes inside the user's data directory, and Mira
+    removing gigabytes on its own at startup is not a thing a server should do
+    unasked. So it reports the size and the exact command, and stops there.
+
+    Backend-independent on purpose: the leftovers are mira-mlx's, but they are
+    just as dead when the configured backend is omlx, and that is precisely the
+    case where nothing else would ever mention them.
+    """
+    if DISK_PROMPT_CACHE:
+        return
+    try:
+        from core import hardware as hw
+
+        count, nbytes = hw.orphaned_prompt_cache(_bm.MIRA_MLX_CACHE_DIR)
+        if count:
+            logger.warning(
+                "Disk prompt cache is off, but %d files (%s) are still in %s. "
+                "Nothing reads or deletes them. Remove with:  rm -rf %s",
+                count, hw.format_bytes(nbytes), _bm.MIRA_MLX_CACHE_DIR, _bm.MIRA_MLX_CACHE_DIR,
+            )
+    except Exception as exc:  # noqa: BLE001 — advisory only, never blocks startup
+        logger.debug("could not check for orphaned prompt cache (%s)", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global sessions, _initialized, _backend_ready
@@ -102,6 +130,7 @@ async def lifespan(app: FastAPI):
         if not _initialized:
             _initialized = True
             db.init_db()
+            _warn_orphaned_prompt_cache()
             
             # Per-conversation orchestrators are created lazily on first use (no
             # conversation is preloaded). Heavy RAG models are process-wide shared,

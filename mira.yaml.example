@@ -165,6 +165,44 @@ mira_mlx_kv_group_size: 64
 # Set false if you would rather not be told.
 # memory_advisory_notifications: false
 
+# ── Opt-in performance flags ─────────────────────────────────────────────────
+# All three ship OFF. Each is measured and working on the maintainer's machine;
+# what they have not had is a week of ordinary use across different hardware,
+# and each one changes a path every request goes through. Turn them on knowing
+# that, or leave them and lose nothing you have today.
+
+# boundary_snapshot: reuse the prompt cache across turns of the same
+# conversation. Without it, plain multi-turn chat on Qwen3.6 re-prefills the
+# entire conversation on every single turn — measured 2026-08-08, a 27,614-token
+# second turn reused nothing and took 48.7s. Two things prevent the normal reuse
+# paths from working on this model: its hybrid linear-attention cache cannot be
+# trimmed at all, and the chat template's `<think>` scaffold means one turn's
+# prompt is not a prefix of the next. So prefill is split at the history
+# boundary and the state there is captured on the way past. Same turn with it
+# on: 5.0s, reusing 27,500 of 27,614 tokens, for a 14ms snapshot cost.
+# Agentic tool loops already reused well and are unaffected.
+# boundary_snapshot: true
+
+# proactive_decompress: fault the model back into RAM on the engine's idle
+# branch when another app has had it compressed out, instead of leaving the bill
+# for whoever asks next. Measured on a real eviction: the next reply cost 17.6s
+# against a warm 0.45s, and nothing recovered on its own in the 12 minutes
+# before it. Roughly memory-neutral, because emptying the compressor pays for
+# most of the expansion. Skipped on battery, at critical pressure, and without
+# headroom. The catch: a request arriving mid-touch waits behind it, and a full
+# reclaim takes about 19.5s — never worse than doing nothing, since that request
+# would have paid the fault-in itself, but it is not free either.
+# proactive_decompress: true
+
+# disk_prompt_cache: overflow evicted prompt-cache entries to disk. Off, and it
+# is not merely unproven — it cannot work as built. A lookup is an exact match
+# on a hash of the whole prompt, while an entry is keyed on the prompt plus
+# everything generated, so a hit needs a byte-identical repeat of an entire
+# conversation. Left on for three weeks it accumulated 39.75GB and served zero
+# reads. Turning it on refills that. It stays here because a prefix-capable
+# version is a real idea, not because this one is worth enabling.
+# disk_prompt_cache: true
+
 # mira_mlx_enable_tf32: let MLX use TF32 accumulation on the M5+ NAX kernels.
 # Default true, which is also MLX's own default — it is stated here because the
 # flag changes results, not just speed. Measured on an M5 (mlx 0.32.0), turning
