@@ -22,7 +22,9 @@ import re
 
 import pytest
 
-from core.inference.disk_prompt_cache import DiskBackedPromptCache
+pytest.importorskip("mlx.core")  # mlx is macOS-only (Apple Silicon), absent on Linux CI
+
+from core.inference.disk_prompt_cache import DiskBackedPromptCache  # noqa: E402
 
 MODEL = "test-model"
 
