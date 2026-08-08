@@ -39,6 +39,21 @@ def test_notifies_on_transition_into_evicted():
     assert len(_run_once(["ok", "evicted"])) == 1
 
 
+def test_first_reading_is_a_baseline_not_a_transition():
+    # Regression, found live 2026-08-08: restarting the backend reports
+    # "evicted" on the first poll because the outgoing process's memory is being
+    # reclaimed while the new one loads. With `previous` starting at None that
+    # read as a transition and notified the user, blaming another app for
+    # Mira's own restart.
+    assert _run_once(["evicted"]) == []
+    assert _run_once(["evicted", "evicted"]) == []
+
+
+def test_a_real_eviction_after_a_restart_still_notifies():
+    # The baseline rule must not swallow the genuine case that follows it.
+    assert len(_run_once(["evicted", "ok", "evicted"])) == 1
+
+
 def test_does_not_repeat_while_still_evicted():
     sent = _run_once(["ok", "evicted", "evicted", "evicted"])
     assert len(sent) == 1, "level-triggered notification would spam a quiet machine"

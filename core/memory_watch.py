@@ -73,7 +73,16 @@ def _poll_loop(stop_event: threading.Event) -> None:
         # advisory clears itself as soon as any request decompresses the model,
         # so a level-triggered notification would repeat for as long as the user
         # is not using Mira, which is exactly when they do not want to hear it.
-        if current == "evicted" and previous != "evicted":
+        #
+        # `previous is not None` is the load-bearing half: a transition needs a
+        # prior state to be a transition at all. Without it the FIRST reading
+        # always looks like one, and a backend restart reliably reports "evicted"
+        # on that first poll — the outgoing process's memory is being reclaimed
+        # while the new one loads, which spikes the compressor for a few seconds.
+        # Observed live 2026-08-08: notified 30s after start, compressor back to
+        # 0.77GB shortly after, with no other app involved. Restarting Mira must
+        # never accuse another app of evicting it.
+        if current == "evicted" and previous not in (None, "evicted"):
             now = time.time()
             if now - last_notified_at >= _MIN_NOTIFY_INTERVAL_S:
                 if scheduler.notify(_TEXT):
