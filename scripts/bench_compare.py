@@ -50,7 +50,9 @@ SCRIPTS_DIR = Path(__file__).parent
 SOURCE_REPO = SCRIPTS_DIR.parent  # the mira-core repo root (a git repo)
 DOCS_DIR = SCRIPTS_DIR.parent / "docs"
 QUESTIONS_FILE = SCRIPTS_DIR / "bench_questions.yaml"
-SERVER_PY = SCRIPTS_DIR.parent / "server.py"
+# (SERVER_PY removed 2026-08-08: the multi-turn question now names its own
+# inject_file, because hardcoding server.py here is what made Q10 ask about code
+# that was not in the file it shared.)
 
 
 def _auth_headers() -> dict:
@@ -519,20 +521,30 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
 
 
 def run_multi_turn(q: dict, model: str) -> dict:
-    """Run a 2-turn question (Q10). Uses a fresh conversation."""
+    """Run a 2-turn question (Q10). Uses a fresh conversation.
+
+    The injected file comes from the question's `inject_file`, not from a
+    constant. It was hardcoded to server.py while Q10 asked about the divergence
+    guard, which lives in core/orchestrator.py — so a correct model had to
+    contradict the question and the item could not distinguish good retrieval
+    from a confident hallucination.
+    """
     conv_id = create_bench_conversation()
 
-    # Turn 1: inject server.py contents
-    if not SERVER_PY.exists():
-        return {"error": f"server.py not found at {SERVER_PY}"}
-    server_content = SERVER_PY.read_text()
+    rel = q.get("inject_file")
+    if not rel:
+        return {"error": f"Q{q['id']} is multi-turn but declares no inject_file"}
+    target = (SOURCE_REPO / rel).resolve()
+    if not target.exists():
+        return {"error": f"inject_file not found: {target}"}
+    server_content = target.read_text()
     turn1_prompt = (
         f"I'm going to share a Python file with you. Here are its contents:\n\n"
         f"```python\n{server_content}\n```\n\n"
         f"Acknowledge that you've read it."
     )
 
-    print(f"    Turn 1 (inject server.py, {len(server_content):,} chars)...", end="", flush=True)
+    print(f"    Turn 1 (inject {rel}, {len(server_content):,} chars)...", end="", flush=True)
     r1 = stream_chat(turn1_prompt, model, thinking=False, tools=False, conversation_id=conv_id)
     if "error" in r1:
         return r1
@@ -559,6 +571,95 @@ def run_multi_turn(q: dict, model: str) -> dict:
     }
 
 
+ARTIFACT_MAX_BYTES = 8192
+
+
+def _truth_core_py_line_count(workspace: Path) -> int:
+    """Total lines across core/**/*.py, excluding __pycache__ — Q6's ground truth."""
+    total = 0
+    for p in sorted((workspace / "core").rglob("*.py")):
+        if "__pycache__" in p.parts:
+            continue
+        try:
+            with open(p, "rb") as fh:
+                total += sum(1 for _ in fh)
+        except OSError:
+            continue
+    return total
+
+
+def _truth_todo_fixme_count(workspace: Path) -> int:
+    """TODO/FIXME occurrences under the workspace — Q7's reference count."""
+    skip = {".venv", ".git", "__pycache__", "node_modules"}
+    count = 0
+    for p in workspace.rglob("*"):
+        if not p.is_file() or skip & set(p.parts):
+            continue
+        try:
+            text = p.read_text(errors="ignore")
+        except OSError:
+            continue
+        count += text.count("TODO") + text.count("FIXME")
+    return count
+
+
+# Computed in Python rather than by shelling out: the constraint against
+# shell=True is repo-wide, and piping find into wc is also the exact command the
+# model under test is being asked to produce, so deriving truth the same way
+# would score the model against its own approach instead of against the tree.
+_TRUTH_PROBES = {
+    "core_py_line_count": _truth_core_py_line_count,
+    "todo_fixme_count": _truth_todo_fixme_count,
+}
+
+
+def _capture_truth(q: dict, workspace_root: str):
+    """Ground truth for a question, computed against the tree the model saw.
+
+    At bench time, not at eval time: "how many lines are in core/" belongs to the
+    commit the run happened on. Scoring a week-old run against today's checkout
+    would report the repo's growth as a model regression.
+    """
+    name = (q.get("check") or {}).get("truth")
+    if not name or not workspace_root:
+        return None
+    probe = _TRUTH_PROBES.get(name)
+    if probe is None:
+        print(f"    warning: Q{q['id']} names unknown truth probe {name!r}")
+        return None
+    try:
+        return probe(Path(workspace_root))
+    except Exception as exc:  # noqa: BLE001 — evidence gathering must not fail a run
+        print(f"    warning: truth probe {name} failed: {exc}")
+        return None
+
+
+def _capture_artifacts(q: dict, workspace_root: str) -> dict:
+    """Read the files a question was supposed to produce, immediately after it ran.
+
+    Scoring happens offline against the raw jsonl, but agentic questions write
+    into a throwaway git worktree that teardown deletes — so by the time anything
+    scores the run, the evidence is gone. Capturing here, per question, is
+    cheaper and less fragile than reordering teardown around a scorer.
+
+    A missing file records `None` rather than being omitted: "the model did not
+    create it" and "nobody looked" must not read the same downstream. Contents are
+    truncated because these are small declared outputs and an unbounded read would
+    let a runaway question put megabytes in the results file.
+    """
+    checks = (q.get("check") or {}).get("files") or []
+    out: dict = {}
+    for entry in checks:
+        rel = entry["path"]
+        base = Path(workspace_root) if entry.get("in_workspace") and workspace_root else Path("/")
+        target = (base / rel).expanduser() if not rel.startswith("/") else Path(rel)
+        try:
+            out[rel] = target.read_text()[:ARTIFACT_MAX_BYTES]
+        except OSError:
+            out[rel] = None
+    return out
+
+
 def run_benchmark(model: str, questions: list[dict], project_id: str | None = None, workspace_root: str = "") -> list[dict]:
     results = []
     for q in questions:
@@ -583,6 +684,8 @@ def run_benchmark(model: str, questions: list[dict], project_id: str | None = No
 
         result["id"] = qid
         result["model"] = model
+        result["artifacts"] = _capture_artifacts(q, workspace_root)
+        result["truth"] = _capture_truth(q, workspace_root)
 
         if "error" in result:
             print(f" ERROR: {result['error']}")
