@@ -43,6 +43,11 @@ MLX_LM_CONTEXT = 65536
 # In-repo module, not an external binary — launched via `python -m`, no `paths:` entry needed.
 MIRA_MLX_PORT = 8080
 MIRA_MLX_HOST = f"http://localhost:{MIRA_MLX_PORT}"
+# Where the engine subprocess's stdout/stderr lands. Capped rather than rotated:
+# this is a diagnostic tail, and a log that can grow without bound on a laptop
+# is worse than one that starts fresh when it gets big.
+ENGINE_LOG_PATH = Path(DB_PATH).parent / "mira-mlx.log"
+ENGINE_LOG_MAX_BYTES = 32 * 1024 * 1024
 MIRA_MLX_MODEL = "mlx-community/Ministral-3-14B-Instruct-2512-4bit"
 # Follows mira.yaml's `context_window:` (config.CONTEXT_WINDOW) so the requested
 # value actually reaches --max-kv-size below, instead of silently staying at a
@@ -95,6 +100,20 @@ _mlx_lm_proc = None
 _omlx_proc = None
 _vllm_mlx_proc = None
 _mira_mlx_proc = None
+
+
+def _engine_log_handle():
+    """Append-mode handle for the engine's stdout, or DEVNULL if it can't be
+    opened. A backend that refuses to start because its log file is unwritable
+    would be a worse failure than losing the log."""
+    try:
+        ENGINE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if ENGINE_LOG_PATH.exists() and ENGINE_LOG_PATH.stat().st_size > ENGINE_LOG_MAX_BYTES:
+            ENGINE_LOG_PATH.unlink()
+        return open(ENGINE_LOG_PATH, "a", buffering=1)
+    except OSError as exc:
+        logger.warning("engine log unavailable (%s); falling back to DEVNULL", exc)
+        return subprocess.DEVNULL
 
 
 def start_mlx_lm(model: str = MLX_LM_MODEL) -> None:
@@ -206,10 +225,14 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
     env = os.environ.copy()
     env["MLX_ENABLE_TF32"] = "1" if MIRA_MLX_ENABLE_TF32 else "0"
 
+    # The engine logs the things only it can see — prompt-cache insert/skip
+    # decisions, disk-cache hits, decompression timings — and every one of them
+    # went to DEVNULL, which is why "the prompt cache reports zero hits" had no
+    # evidence attached for weeks. Keep them on disk instead, next to the DB.
     _mira_mlx_proc = subprocess.Popen(
         args,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=_engine_log_handle(),
+        stderr=subprocess.STDOUT,
         env=env,
     )
     # GenerationEngine.start() (mira_mlx_server.py) itself waits up to 180s for
