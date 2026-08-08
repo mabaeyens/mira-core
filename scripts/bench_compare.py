@@ -113,6 +113,7 @@ class IsolatedServer:
         self.proc: subprocess.Popen | None = None
         self.agent_was_loaded = False
         self._restored = False
+        self._stopped = False
 
     # -- production ----------------------------------------------------------
     @staticmethod
@@ -147,8 +148,23 @@ class IsolatedServer:
             return
         print(f"  restoring production ({LAUNCH_AGENT})...")
         subprocess.run(["launchctl", "load", str(LAUNCH_AGENT_PLIST)], check=False)
-        if _wait_for(lambda: _port_is_open(8000), timeout=120):
-            print("  production is back up")
+
+        # Wait for the BACKEND, not just the port. :8000 answers within seconds
+        # while the model is still loading, so returning there reports success
+        # over a Mira that cannot answer anything — and leaves the process free
+        # to run more teardown while production is at its most fragile.
+        def backend_up() -> bool:
+            try:
+                r = requests.get(f"{DEFAULT_BASE_URL}/health", timeout=3)
+                return r.status_code == 200 and r.json().get("backend_ready") is True
+            except Exception:
+                return False
+
+        if backend_up() or _wait_for(backend_up, timeout=300, interval=3):
+            print("  production is back up, backend loaded")
+        elif _port_is_open(8000):
+            print("  WARNING: production is serving but its backend never became ready — "
+                  "check `tail /tmp/com.mab.mira.log`")
         else:
             print("  WARNING: production did not come back up — check `launchctl list com.mab.mira`")
 
@@ -192,6 +208,17 @@ class IsolatedServer:
         sys.exit(130)
 
     def stop(self) -> None:
+        # Idempotent, and the guard is load-bearing rather than tidy. stop() is
+        # called explicitly at the end of the run AND again by atexit, and the
+        # pkill below is not specific to this script's engine — it matches any
+        # mira-mlx process. On 2026-08-08 the second call fired moments after
+        # production had been restored and killed the engine production was in
+        # the middle of loading, leaving Mira up with no backend and no retry.
+        # _restored alone did not cover it: only the restore was guarded.
+        if self._stopped:
+            return
+        self._stopped = True
+
         if self.proc is not None and self.proc.poll() is None:
             print("  stopping bench server...")
             self.proc.terminate()
