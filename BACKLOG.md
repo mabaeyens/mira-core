@@ -124,12 +124,18 @@
   this model: the whole-prefix path because Qwen3's generation prompt ends `<|im_start|>assistant\n
   <think>\n` and the template never re-emits `<think>\n` when it replays that turn from history, and
   the trim-back path because the cache contains an `ArraysCache` whose `is_trimmable()` is False,
-  which disables trimming for the whole entry. **The narrowest candidate fix is Mira-side**: store
-  the entry against the form the next turn will render rather than the raw generated form
-  (`mira_mlx_server.py:959` and `:1112`). Two things to settle first: why agentic turns still hit
-  (their reuse equals the previous entry exactly, so tool histories replay identically and chat
-  turns do not), and whether `ArraysCache` is trimmable even in principle — if it holds a recurrent
-  state rather than per-token slots, `False` is correct and upstream has nothing to fix.
+  which disables trimming for the whole entry. **Both open questions are now closed.** Agentic turns
+  hit because the template replays an assistant message *carrying tool_calls* in a form that still
+  contains the scaffold, while a plain assistant message does not — measured on `render(step N)` vs
+  `render(step N+1)` and pinned in `tests/test_template_prefix.py`. And `ArraysCache` is **not**
+  trimmable even in principle: Qwen3.6 is `qwen3_5_moe`, a hybrid whose linear-attention layers keep
+  a sliding conv window and a Gated DeltaNet recurrent state (`mlx_lm/models/qwen3_5.py:305`), both
+  running summaries with no per-token slots. `False` is correct, upstream has nothing to fix, and no
+  trim-based reuse is possible for *any* hybrid linear-attention model. **The one surviving fix is
+  to snapshot the cache mid-prefill** at the `<|im_start|>assistant\n` boundary, which is a whole
+  prefix of every later turn; cost is one cache deepcopy per turn against 38–262MB entries, and that
+  is the number to measure before building. Three other fixes are rejected with reasons in the spec,
+  including one that would silently corrupt output — read §5 before proposing anything.
 - **Decide what the 39.82GB disk prompt cache is for.** It is at its cap, evicting to make room,
   and has never served a single read — not through a bug but by construction, since its lookup is
   exact-match on a hash of the full token list while the layer above it matches prefixes. Either
