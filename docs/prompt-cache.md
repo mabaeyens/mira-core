@@ -172,13 +172,19 @@ reference, not bytes or time**; what costs is *retaining* it, since a held entry
 keeps its buffers alive and occupies one of the LRU's 10 slots and part of its
 5.00GB budget.
 
-**One caveat, because this number is easy to quote for the wrong operation.**
-Pulling a single sequence's cache out of the *batched* structure the generator
-actually holds is `PromptProcessingBatch.extract_cache(idx)`, and that is a real
-per-layer copy: **6.8 ms for 24.2 MB, about 3,562 MB/s**, measured on
-`Qwen3-0.6B-8bit`. `deepcopy` of an already-standalone entry is the free one.
-Any design that snapshots mid-prefill pays the `extract_cache` rate, not the
-`deepcopy` one.
+**The operation a mid-prefill snapshot actually pays for** is not `deepcopy` but
+`PromptProcessingBatch.extract_cache(idx)`, which pulls one sequence's cache out
+of the batched structure the generator holds. **On Qwen3.6, measured live: 14 ms
+for 346.7 MB** (`boundary snapshot: 27500 tokens, 346.7 MB, 0.014s`), and 23 ms
+for 110 MB on a smaller entry.
 
-That is what makes the fix in `specs/assistant-boundary-snapshot.md` plausible;
-its §6 records the mechanism and the measurements.
+A `3,562 MB/s` figure appeared here briefly, taken from `Qwen3-0.6B-8bit` because
+a second copy of Qwen3.6 would not fit alongside the running server. It was
+**wrong by an order of magnitude** as a predictor — it implied 100–600 ms for a
+27,500-token entry against the 14 ms actually measured. Cost per byte does not
+transfer between a 0.6B dense model and a 35B hybrid, and it should have been
+reported as unknown rather than extrapolated. The numbers above are from the
+real model and are the ones to quote.
+
+That is what makes the fix in `specs/assistant-boundary-snapshot.md` viable; its
+§6 records the mechanism.
