@@ -203,3 +203,113 @@ Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
 | Q | Difficulty | Category | q10-diag2 score |
 |---|-----------|---------|---|
 | 10 | expert | multi-turn-long-context | — |
+
+---
+
+## Benchmark Results — 2026-08-08
+
+### Timing
+
+| Q | Difficulty | Category | q10-snapshot:q10-snapshot TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 10 | expert | multi-turn-long-context | 916ms | 54.9s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | q10-snapshot calls | task_done |
+|---|---------|----------------|---|---|
+| 10 | multi-turn-long-context | 0 | none | no |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | q10-snapshot score |
+|---|-----------|---------|---|
+| 10 | expert | multi-turn-long-context | — |
+
+---
+
+## Benchmark Results — 2026-08-08
+
+### Timing
+
+| Q | Difficulty | Category | q6-12-snapshot:q6-12-snapshot TTFT | wall | t/s |
+|---|-----------|---------|---|---|---|
+| 6 | hard | agentic-single-tool | 8470ms | 8.6s | — |
+| 7 | hard | agentic-multi-step | 7667ms | 18.6s | — |
+| 8 | hard | agentic-read-reason | 26553ms | 48.4s | — |
+| 9 | expert | agentic-task-done | 4681ms | 8.1s | — |
+| 11 | hard | agentic-write-file | 7395ms | 8.0s | — |
+| 12 | hard | agentic-edit-file | 8662ms | 9.3s | — |
+
+### Agentic results
+
+| Q | Category | Expected calls | q6-12-snapshot calls | task_done |
+|---|---------|----------------|---|---|
+| 6 | agentic-single-tool | 1 | run_shell | YES |
+| 7 | agentic-multi-step | 2 | run_shell | YES |
+| 8 | agentic-read-reason | 1 | read_file, search_files | YES |
+| 9 | agentic-task-done | 3 | run_shell | YES |
+| 11 | agentic-write-file | 2 | write_file, read_file | YES |
+| 12 | agentic-edit-file | 3 | write_file, edit_file, read_file | YES |
+
+### Manual quality scores (fill in after review)
+
+Scale: 0 = wrong/broken, 1 = partially correct, 2 = fully correct
+
+| Q | Difficulty | Category | q6-12-snapshot score |
+|---|-----------|---------|---|
+| 6 | hard | agentic-single-tool | — |
+| 7 | hard | agentic-multi-step | — |
+| 8 | hard | agentic-read-reason | — |
+| 9 | expert | agentic-task-done | — |
+| 11 | hard | agentic-write-file | — |
+| 12 | hard | agentic-edit-file | — |
+---
+
+## Boundary snapshot: before and after
+
+The last two runs above (`q10-snapshot`, `q6-12-snapshot`) were taken with
+`boundary_snapshot: true`. Everything else is identical.
+
+### The result it was built for
+
+| | before | after |
+|---|---|---|
+| Q10 turn 2 wall | 48,749 ms | **4,988 ms** |
+| Q10 turn 2 reuse | 0 / 27,614 tokens | **27,500 / 27,614 (99.6%)** |
+| snapshot cost | — | **14 ms for 346.7 MB** |
+
+Q10 turn 1 is unchanged within run-to-run noise (45.9s / 48.6s / 49.9s across
+three runs; the snapshot adds 14 ms). The engine log shows the mechanism
+directly:
+
+```
+boundary snapshot: 27500 tokens, 346.7 MB, 0.014s
+cache HIT: 27500/27614 prompt tokens reused
+```
+
+The answers are substantively identical across all three runs — same correct
+conclusion that the divergence guard lives in `core/orchestrator.py`, differing
+only in phrasing from sampling.
+
+### Agentic questions: no regression
+
+| Q | before | after |
+|---|---|---|
+| 6 | 12.6s | 8.6s |
+| 7 | 35.0s | 18.6s |
+| 8 | 66.2s | 48.4s |
+| 9 | 12.2s | 8.1s |
+| 11 | 7.8s | 8.0s |
+| 12 | 14.2s | 9.3s |
+
+All produced tool calls and reached `task_done` as before. **Q7's improvement is
+not attributable to the cache**: it made 1 tool call that run against 5 in the
+earlier one, which is model variance, not a prefill saving. Read Q10 as the
+clean result and these as evidence of no regression rather than as gains.
+
+Counters after both runs: `taken: 19, failures: 0, skipped_too_short: 0`. The
+short-boundary threshold never fired because this system prompt alone is ~1,593
+tokens, comfortably above the 1,024 floor.
