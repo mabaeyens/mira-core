@@ -122,6 +122,12 @@ async def lifespan(app: FastAPI):
                 ).start()
             from core import scheduler as _scheduler
             _scheduler.start()
+            # Same guard as the backend thread above: without a backend running
+            # there is nothing to watch, and under pytest it would poll a dead
+            # port for the life of the suite.
+            if not os.getenv("MIRA_TESTING"):
+                from core import memory_watch as _memory_watch
+                _memory_watch.start()
 
     yield
 

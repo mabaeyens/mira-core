@@ -35,17 +35,26 @@ def _notify_argv(text: str) -> list[str]:
     return argv + ["--", text]
 
 
+def notify(text: str) -> bool:
+    """Deliver a macOS Notification Center alert. Returns whether it went out.
+
+    Extracted from _fire_reminder so callers other than reminders can use the
+    same hardened path — the argv construction above is the load-bearing part
+    and re-implementing it elsewhere is how the quoting bug comes back.
+    """
+    try:
+        subprocess.run(_notify_argv(text), check=True, capture_output=True)
+        return True
+    except Exception as e:
+        logger.error("Failed to deliver notification: %s", e)
+        return False
+
+
 def _fire_reminder(reminder: dict) -> None:
     text = reminder["text"]
     try:
-        subprocess.run(
-            _notify_argv(text),
-            check=True,
-            capture_output=True,
-        )
-        logger.info("Reminder fired (id=%s): %s", reminder["id"], text)
-    except Exception as e:
-        logger.error("Failed to deliver reminder id=%s: %s", reminder["id"], e)
+        if notify(text):
+            logger.info("Reminder fired (id=%s): %s", reminder["id"], text)
     finally:
         db.mark_reminder_fired(reminder["id"])
 

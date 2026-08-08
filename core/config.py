@@ -191,6 +191,12 @@ MIRA_MLX_EXPERT_PROFILE_PATH: Optional[str] = _get("mira_mlx_expert_profile_path
 # equivalent to code execution. Enable only for a specific model you trust that
 # genuinely ships a custom tokenizer class.
 MIRA_MLX_TRUST_REMOTE_CODE: bool = _get("mira_mlx_trust_remote_code", False)
+# Post a macOS notification when another app evicts the model from memory. On by
+# default because the state it reports is otherwise invisible: the user gets one
+# unexplained slow reply (measured 15.37s against a warm 0.47s) and then normal
+# speed again, because the slow reply is itself what fixes it. Rate-limited and
+# fired only on the transition into eviction (see core/memory_watch.py).
+MEMORY_ADVISORY_NOTIFICATIONS: bool = _get("memory_advisory_notifications", True)
 # TF32 accumulation on the M5+ NAX kernels. MLX defaults this on and until now
 # Mira inherited that default without ever choosing it, which matters because
 # the flag changes numerics: mlx#3897 traced the M5 batch-vs-single attention

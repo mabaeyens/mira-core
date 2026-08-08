@@ -156,6 +156,15 @@ mira_mlx_kv_group_size: 64
 # is barely slower. Set to 0 to keep the tower resident once loaded.
 # mira_mlx_vision_tower_idle_timeout: 300
 
+# memory_advisory_notifications: post a macOS notification when another app on
+# this Mac pushes Mira's model out of memory. Default true. Worth having on
+# because the state is otherwise invisible: macOS compresses the model out, your
+# next reply takes about 15s instead of under a second, and that reply is itself
+# what fixes it — so by the time you wonder what happened, it is already gone.
+# Fires only on the transition into that state, at most once every 15 minutes.
+# Set false if you would rather not be told.
+# memory_advisory_notifications: false
+
 # mira_mlx_enable_tf32: let MLX use TF32 accumulation on the M5+ NAX kernels.
 # Default true, which is also MLX's own default — it is stated here because the
 # flag changes results, not just speed. Measured on an M5 (mlx 0.32.0), turning
