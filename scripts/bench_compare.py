@@ -575,14 +575,22 @@ ARTIFACT_MAX_BYTES = 8192
 
 
 def _truth_core_py_line_count(workspace: Path) -> int:
-    """Total lines across core/**/*.py, excluding __pycache__ — Q6's ground truth."""
+    """Total lines across core/**/*.py, excluding __pycache__ — Q6's ground truth.
+
+    Counts NEWLINE BYTES, which is what `wc -l` counts, because the question
+    tells the model to answer with a single shell command and `wc -l` is that
+    command. Counting line objects instead adds one per file that lacks a
+    trailing newline, and on 2026-08-08 that scored a correct answer as wrong on
+    this harness's first real run: the probe said 10520, the model said 10518,
+    and exactly two files in core/ end without a newline. The ground truth for a
+    question has to be computed the way the question defines the answer.
+    """
     total = 0
     for p in sorted((workspace / "core").rglob("*.py")):
         if "__pycache__" in p.parts:
             continue
         try:
-            with open(p, "rb") as fh:
-                total += sum(1 for _ in fh)
+            total += p.read_bytes().count(b"\n")
         except OSError:
             continue
     return total

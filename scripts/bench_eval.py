@@ -234,9 +234,14 @@ def score_tier1(q: dict, rec: dict) -> QuestionScore:
             if needle.lower() in content.lower():
                 score = 0
                 s.tier1_notes.append(f"{path} still contains {needle!r}")
-        if spec.get("contains_today") and _run_date(rec) not in content:
-            score = max(0, score - 1)
-            s.tier1_notes.append(f"{path} does not carry the run date")
+        if spec.get("contains_today"):
+            strict = spec["contains_today"] == "iso"
+            if not _carries_date(content, _run_date(rec), strict=strict):
+                score = max(0, score - 1)
+                s.tier1_notes.append(
+                    f"{path} does not carry the run date"
+                    + (" in YYYY-MM-DD form" if strict else "")
+                )
         if "max_lines" in spec:
             n = len([ln for ln in content.splitlines() if ln.strip()])
             if n > spec["max_lines"]:
@@ -251,6 +256,31 @@ def score_tier1(q: dict, rec: dict) -> QuestionScore:
 
     s.tier1 = score if applied else None
     return s
+
+
+def _carries_date(content: str, iso: str, strict: bool) -> bool:
+    """Does this text contain the run's date?
+
+    `strict` demands the ISO form and is only for questions that ASK for
+    YYYY-MM-DD (Q11 does; Q9 does not). Q9 says "containing today's date" with no
+    format, and on 2026-08-08 the model wrote "August 08, 2026" — a correct
+    answer that an ISO-only check marked down. A check must test what the
+    question demanded, not what its author pictured.
+    """
+    if iso in content:
+        return True
+    if strict:
+        return False
+    y, m, d = iso.split("-")
+    dt = date(int(y), int(m), int(d))
+    alternatives = {
+        dt.strftime("%B %d, %Y"), dt.strftime("%B %-d, %Y"),
+        dt.strftime("%d %B %Y"), dt.strftime("%-d %B %Y"),
+        dt.strftime("%d/%m/%Y"), dt.strftime("%m/%d/%Y"),
+        dt.strftime("%b %d, %Y"), dt.strftime("%Y/%m/%d"),
+    }
+    lowered = content.lower()
+    return any(alt.lower() in lowered for alt in alternatives)
 
 
 def _run_date(rec: dict) -> str:
@@ -499,6 +529,29 @@ def print_report(scores: list[QuestionScore], questions: dict, ident: dict | Non
 
 # ── baseline + comparison (the regression gate) ──────────────────────────────
 
+def _git_head() -> str:
+    """The commit a baseline was taken on, so it can be re-examined later.
+
+    'unrecorded' was the old default and it makes the "a baseline can be wrong"
+    warning unactionable: you cannot go back and look at a build you cannot name.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        head = out.stdout.strip()
+        dirty = subprocess.run(
+            ["git", "-C", str(REPO), "status", "--porcelain"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+        return f"{head}{'+dirty' if dirty else ''}" if head else "unrecorded"
+    except Exception:
+        return "unrecorded"
+
+
 def write_baseline(path: Path, scores: list[QuestionScore], model: str,
                    build: str, ident: dict | None) -> None:
     lines = [
@@ -511,10 +564,15 @@ def write_baseline(path: Path, scores: list[QuestionScore], model: str,
         "run it came from is named below so it can be re-examined rather than",
         "trusted forever.",
         "",
-        f"- model: `{model}`",
+        f"- run label: `{model}`  (the bench's --model tag, NOT a model id —"
+        f" the real model comes from mira.yaml; comparisons key on this label)",
         f"- build: `{build}`",
         f"- judge: `{(ident or {}).get('judge_model', 'none')}`"
         f" (prompt `{(ident or {}).get('judge_prompt', '-')}`)",
+        "",
+        f"- covers: {len(scores)} of {len(load_questions())} questions"
+        f" — a baseline is only a bar for the questions it contains, and a run of"
+        f" a different subset compares only where they overlap",
         "",
         "| Q | tier1 | judged | safety |",
         "|---|-------|--------|--------|",
@@ -543,7 +601,7 @@ def read_baseline(path: Path) -> tuple[dict, str]:
     model = "unknown"
     rows: dict[int, dict] = {}
     for line in path.read_text().splitlines():
-        if line.startswith("- model:"):
+        if line.startswith("- run label:"):
             model = line.split("`")[1] if "`" in line else "unknown"
         m = re.match(r"\|\s*(\d+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s*\|", line)
         if m:
@@ -647,7 +705,7 @@ def main() -> int:
     print_report(scores, questions, ident)
 
     if args.write_baseline:
-        build = os.getenv("MIRA_BUILD", "unrecorded")
+        build = os.getenv("MIRA_BUILD") or _git_head()
         write_baseline(args.write_baseline, scores, model, build, ident)
         print(f"\nBaseline written to {args.write_baseline}")
 

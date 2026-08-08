@@ -291,3 +291,48 @@ def test_partial_scores_stay_out_of_baselines_and_comparisons(be, tmp_path, caps
                                       tier1_notes=["no evidence"])], path, "m", None)
     assert rc == 0
     assert "partial this run, not compared" in capsys.readouterr().out
+
+
+def test_line_count_truth_matches_wc_semantics(be, tmp_path):
+    """The probe must count what `wc -l` counts.
+
+    A file with no trailing newline is one line to Python's splitlines and zero
+    extra newline bytes to wc. Counting the Python way scored a CORRECT answer as
+    wrong on this harness's first real run (probe 10520, model 10518, two files
+    in core/ ending without a newline).
+    """
+    spec = importlib.util.spec_from_file_location(
+        "bench_compare_wc", Path(__file__).resolve().parents[1] / "scripts" / "bench_compare.py")
+    bc = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = bc
+    spec.loader.exec_module(bc)
+
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "a.py").write_bytes(b"one\ntwo\n")        # 2 newlines
+    (core / "b.py").write_bytes(b"three\nfour")       # 1 newline, no trailing
+    pyc = core / "__pycache__"
+    pyc.mkdir()
+    (pyc / "junk.py").write_bytes(b"ignored\n")
+
+    assert bc._truth_core_py_line_count(tmp_path) == 3
+
+
+def test_date_check_matches_what_the_question_asked_for(be):
+    """Q9 says "today's date" with no format; Q11 says YYYY-MM-DD.
+
+    On 2026-08-08 the model wrote "August 08, 2026" for Q9 and an ISO-only check
+    marked a correct answer down. A check must test what the question demanded,
+    not the format its author pictured.
+    """
+    iso = date.today().isoformat()
+    pretty = date.today().strftime("%B %d, %Y")
+
+    loose = {"files": [{"path": "f", "contains": ["bench OK"], "contains_today": True}]}
+    assert be.score_tier1(q(loose), {"artifacts": {"f": f"{pretty}\nbench OK"}}).tier1 == 2
+    assert be.score_tier1(q(loose), {"artifacts": {"f": f"{iso}\nbench OK"}}).tier1 == 2
+    assert be.score_tier1(q(loose), {"artifacts": {"f": "bench OK"}}).tier1 == 1
+
+    strict = {"files": [{"path": "f", "contains": ["ok"], "contains_today": "iso"}]}
+    assert be.score_tier1(q(strict), {"artifacts": {"f": f"{iso} ok"}}).tier1 == 2
+    assert be.score_tier1(q(strict), {"artifacts": {"f": f"{pretty} ok"}}).tier1 == 1

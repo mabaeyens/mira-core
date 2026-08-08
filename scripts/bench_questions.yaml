@@ -196,7 +196,7 @@ questions:
         - path: bench/write_test.txt
           in_workspace: true
           contains: ["write_file bench OK"]
-          contains_today: true
+          contains_today: iso   # this question DOES specify YYYY-MM-DD
           max_lines: 2
       prefer_tools: [write_file]
     notes: "Content is deterministic; the write_file-vs-run_shell preference is the 2/2-vs-1/2 distinction and is scored from tool_calls, not judged."
