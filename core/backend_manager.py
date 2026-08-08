@@ -24,6 +24,7 @@ from core.config import (
     MIRA_MLX_PROFILE_EXPERTS,
     MIRA_MLX_EXPERT_PROFILE_PATH,
     MIRA_MLX_TRUST_REMOTE_CODE,
+    MIRA_MLX_ENABLE_TF32,
 )
 from core.config import resolve_offload_fraction
 from core.config import OMLX_CLI as _OMLX_CLI_PATH, PREFILL_STEP_SIZE
@@ -196,10 +197,17 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
             str(MIRA_MLX_VISION_TOWER_IDLE_TIMEOUT),
         ]
 
+    # Popen inherits this process's environment, so an unset MLX_ENABLE_TF32
+    # silently takes MLX's own default. State it instead: the flag changes both
+    # numerics and throughput, and the reasoning for the value is in config.py.
+    env = os.environ.copy()
+    env["MLX_ENABLE_TF32"] = "1" if MIRA_MLX_ENABLE_TF32 else "0"
+
     _mira_mlx_proc = subprocess.Popen(
         args,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=env,
     )
     # GenerationEngine.start() (mira_mlx_server.py) itself waits up to 180s for
     # its own engine thread to finish loading before raising — this external

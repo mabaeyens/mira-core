@@ -191,6 +191,30 @@ MIRA_MLX_EXPERT_PROFILE_PATH: Optional[str] = _get("mira_mlx_expert_profile_path
 # equivalent to code execution. Enable only for a specific model you trust that
 # genuinely ships a custom tokenizer class.
 MIRA_MLX_TRUST_REMOTE_CODE: bool = _get("mira_mlx_trust_remote_code", False)
+# TF32 accumulation on the M5+ NAX kernels. MLX defaults this on and until now
+# Mira inherited that default without ever choosing it, which matters because
+# the flag changes numerics: mlx#3897 traced the M5 batch-vs-single attention
+# divergence to TF32 accumulation inside the NAX kernel (about 2^-11), and
+# MLX_ENABLE_TF32=0 is what makes mlx-lm's test_generate pass 28/28 here.
+#
+# Kept ON deliberately. Measured on this machine (M5, applegpu_g17g, mlx
+# 0.32.0, clean run 2026-08-08), turning it off costs:
+#   fp32 4096-square matmul   8804 -> 3412 GFLOP/s   (2.58x)
+#   4-bit quantized matmul    8590 -> 3185 GFLOP/s   (2.70x)
+#   gather_qmm, real MoE dims 8933 -> 3095 GFLOP/s   (2.89x)
+# and buys about 10 mantissa bits back on fp32 accumulation. On a 4-bit model
+# that accuracy is far below the quantization noise floor, so paying up to 2.9x
+# of prefill for it is the wrong trade. Nothing is lost at decode either way:
+# the NAX path needs more than 16 rows to engage (measured identical at 16,
+# 1135 vs 1136, and 1.74x apart at 32), and decode runs at one row, where the
+# setting measures identically on and off (359 vs 369 GFLOP/s).
+#
+# Set false only to reproduce an upstream bit-equivalence test.
+#
+# NOTE the value is emitted as "1"/"0" deliberately: MLX parses this variable as
+# an integer, so MLX_ENABLE_TF32=true measures as OFF (3185 GFLOP/s, same as
+# "0"), not on. Keep this a YAML bool here and let the conversion happen below.
+MIRA_MLX_ENABLE_TF32: bool = _get("mira_mlx_enable_tf32", True)
 # MoE expert disk offloading (docs/offload-resident-sizing.md).
 # Only `mira_mlx_resident_expert_fraction` of each MoE layer's experts stay
 # resident; the rest are fetched on demand from the model's own safetensors

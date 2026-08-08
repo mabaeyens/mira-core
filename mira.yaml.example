@@ -156,9 +156,22 @@ mira_mlx_kv_group_size: 64
 # is barely slower. Set to 0 to keep the tower resident once loaded.
 # mira_mlx_vision_tower_idle_timeout: 300
 
+# mira_mlx_enable_tf32: let MLX use TF32 accumulation on the M5+ NAX kernels.
+# Default true, which is also MLX's own default — it is stated here because the
+# flag changes results, not just speed. Measured on an M5 (mlx 0.32.0), turning
+# it off costs about 2.6x on fp32 matmul and 2.9x on the 4-bit MoE expert path,
+# and buys back roughly 10 mantissa bits of fp32 accumulation. On a 4-bit model
+# that accuracy sits well under the quantization noise, so the default keeps the
+# speed. Decode is unaffected either way: the NAX path needs more than 16 rows
+# in a batch to engage and decode runs one row at a time. Set false only to
+# reproduce an upstream bit-equivalence test (see ml-explore/mlx#3897).
+# Write it as a YAML bool, not a string — MLX parses the underlying env var as
+# an integer, so the string "true" would read as OFF.
+# mira_mlx_enable_tf32: false
+
 # mira_mlx_profile_experts: log MoE expert-routing decisions (which experts
 # fire per layer/token) to a JSONL file, for the expert-offloading go/no-go
-# analysis (specs/moe-expert-offload-01-profiling.md). No-op on dense models
+# analysis (docs/moe-offload-case-study.md). No-op on dense models
 # (e.g. Ministral 3 14B). Not meant to stay on permanently — enable for a
 # deliberate profiling window against real traffic, then disable. Default: off.
 # mira_mlx_profile_experts: true
