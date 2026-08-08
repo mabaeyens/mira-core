@@ -51,7 +51,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 REPO = SCRIPTS_DIR.parent
 QUESTIONS_FILE = SCRIPTS_DIR / "bench_questions.yaml"
 FIXTURES_FILE = SCRIPTS_DIR / "bench_fixtures" / "judge_fixtures.yaml"
-DEFAULT_JUDGE_URL = "http://localhost:8000"
+DEFAULT_JUDGE_URL = "http://localhost:8080"   # the INFERENCE BACKEND, not Mira: no database, no history
 
 MAX_SCORE = 2
 
@@ -296,33 +296,37 @@ def _run_date(rec: dict) -> str:
 # ── tier 2: judged ───────────────────────────────────────────────────────────
 
 class Judge:
-    """Scores open-ended answers by asking a Mira server.
+    """Scores open-ended answers by asking the INFERENCE BACKEND directly.
 
-    Self-judging, and that is a real limitation rather than an oversight: the
-    judge shares the blind spots of the model it grades, so it will not catch a
-    failure mode the model cannot see. It is chosen because 32GB holds one ~19GB
-    model, so a second local judge would mean serially unloading the model under
-    test and tripling the cost of a run. --validate-judge exists precisely
-    because this choice needs evidence, not assumption.
+    Deliberately the backend on :8080, not Mira's own /chat on :8000. Judging is
+    an inference task, not a conversation: it needs no history, no RAG, no tools
+    and no system prompt. Going through /chat also persists every judge call to
+    the user's real conversations.db — the first version of this did exactly
+    that and left a 22-message conversation in Miguel's own history, which is the
+    same failure the bench isolation work spent this evening fixing. The backend
+    has no database at all, so the problem cannot recur here by construction
+    rather than by cleanup.
+
+    Self-judging remains a real limitation rather than an oversight: the judge
+    shares the blind spots of the model it grades, so it will not catch a failure
+    mode that model cannot see. It is chosen because 32GB holds one ~19GB model,
+    so a second local judge would mean serially unloading the model under test.
+    --validate-judge exists precisely because this choice needs evidence.
     """
 
     def __init__(self, url: str = DEFAULT_JUDGE_URL, timeout: int = 180):
         self.url = url.rstrip("/")
         self.timeout = timeout
         self.model = "unknown"
-        try:
-            cfg = yaml.safe_load((REPO / "mira.yaml").read_text()) or {}
-            self.headers = (
-                {"Authorization": f"Bearer {cfg['auth_token']}"} if cfg.get("auth_token") else {}
-            )
-        except Exception:
-            self.headers = {}
+        self.headers: dict = {}
 
     def identity(self) -> dict:
         try:
-            r = requests.get(f"{self.url}/backend", headers=self.headers, timeout=10)
+            r = requests.get(f"{self.url}/v1/models", timeout=10)
             if r.status_code == 200:
-                self.model = r.json().get("model", "unknown")
+                data = r.json().get("data") or []
+                if data:
+                    self.model = data[0].get("id", "unknown")
         except Exception:
             pass
         return {"judge_model": self.model, "judge_prompt": judge_prompt_hash()}
@@ -344,42 +348,34 @@ class Judge:
         return _parse_verdict(text)
 
     def _ask(self, body: str) -> str:
-        """POST /chat and drain the SSE stream.
-
-        /chat is form-encoded and streams typed events; it has no JSON
-        request/response form. `tools_enabled=false` matters here: a judge that
-        can call tools may go and check the answer itself, which changes what is
-        being measured from "does this rubric fit this text" into an open-ended
-        agentic task.
-        """
-        form = {
-            "message": body,
-            "conversation_id": "__claude-test__bench-judge",
-            "thinking_enabled": "false",
-            "tools_enabled": "false",
-        }
-        parts: list[str] = []
-        with requests.post(f"{self.url}/chat", data=form, headers=self.headers,
-                           stream=True, timeout=self.timeout) as resp:
-            resp.raise_for_status()
-            for raw in resp.iter_lines():
-                if not raw:
-                    continue
-                line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-                if not line.startswith("data: "):
-                    continue
-                payload = line[6:]
-                if payload == "[DONE]":
-                    break
-                try:
-                    event = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-                if event.get("type") == "token":
-                    parts.append(event.get("content", ""))
-                elif event.get("type") == "done" and not parts:
-                    parts.append(event.get("content", "") or "")
-        return "".join(parts)
+        """One stateless completion against the backend. Nothing is persisted."""
+        resp = requests.post(
+            f"{self.url}/v1/chat/completions",
+            json={
+                "model": self.model if self.model != "unknown" else "default",
+                "messages": [{"role": "user", "content": body}],
+                # Thinking OFF. Talking to the backend directly means nothing
+                # strips Qwen's reasoning block, and the first version of this
+                # returned "Thinking Process: 1. Analyse the request..." on 8 of
+                # 10 fixtures, truncated by the token cap before it ever reached
+                # a verdict. The validation gate caught it, which is the point of
+                # having one.
+                "chat_template_kwargs": {"enable_thinking": False},
+                # A verdict is one short JSON object; the headroom is for a model
+                # that preambles anyway, since the parser can find the object
+                # inside surrounding prose but not inside a truncation.
+                "max_tokens": 400,
+                "temperature": 0.0,
+                "stream": False,
+            },
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        try:
+            return data["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError, TypeError):
+            return json.dumps(data)[:500]
 
 
 def _parse_verdict(text: str) -> tuple[int | None, str]:
