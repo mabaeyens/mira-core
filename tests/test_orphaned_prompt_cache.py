@@ -38,24 +38,20 @@ def test_ignores_files_that_are_not_cache_entries(tmp_path):
     assert hardware.orphaned_prompt_cache(tmp_path) == (1, 10)
 
 
-def test_survives_a_file_vanishing_mid_scan(tmp_path, monkeypatch):
-    """A running engine can unlink an entry between glob and stat. The health
-    check must degrade, not raise."""
+def test_survives_an_entry_that_cannot_be_stated(tmp_path):
+    """A running engine can unlink an entry between the listing and the stat, and
+    one unreadable file must cost its own size rather than the whole report.
+
+    Uses a real broken symlink rather than a patched `Path.stat`. The first
+    version of this test monkeypatched stat globally to raise once, which passed
+    on macOS and failed on Linux, where `glob` itself consumes a stat call and so
+    ate the injected error — the scan aborted and returned (0, 0). Reproducing
+    the condition on the filesystem needs no interception and cannot drift
+    between platforms."""
     (tmp_path / "a.safetensors").write_bytes(b"x" * 10)
-    (tmp_path / "b.safetensors").write_bytes(b"x" * 10)
+    (tmp_path / "b.safetensors").symlink_to(tmp_path / "nowhere")
 
-    real_stat = hardware.Path.stat
-    calls = {"n": 0}
-
-    def flaky_stat(self, *a, **k):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise OSError("vanished")
-        return real_stat(self, *a, **k)
-
-    monkeypatch.setattr(hardware.Path, "stat", flaky_stat)
-    count, nbytes = hardware.orphaned_prompt_cache(tmp_path)
-    assert (count, nbytes) == (1, 10)
+    assert hardware.orphaned_prompt_cache(tmp_path) == (1, 10)
 
 
 @pytest.mark.parametrize("n,expected", [
