@@ -44,14 +44,19 @@ jobs:
           # expects this dir to exist. Create it so shell-tool tests have a workspace.
           mkdir -p "$HOME/workspace"
 
+      # `.python-version` pins 3.13 for local dev, and it outranks both the
+      # UV_PYTHON that setup-uv exports and any bare `uv run`. CI deliberately
+      # runs the 3.12 floor declared in pyproject's requires-python instead, so
+      # every `uv run` below passes --python explicitly: the CLI flag is the one
+      # thing that does outrank the file.
       - name: Prefetch models (warms HF cache; retries transient errors)
-        run: uv run --group dev python scripts/prefetch_models.py
+        run: uv run --python 3.12 --group dev python scripts/prefetch_models.py
 
       # No deselects. The 9 that used to live here were repaired 2026-07-26;
       # they had been failing on macOS too, so "Linux runner" was a red herring.
       - name: Run tests
         run: >
-          uv run --group dev python -m pytest -p no:cacheprovider -q
+          uv run --python 3.12 --group dev python -m pytest -p no:cacheprovider -q
 
       # A full sweep cannot catch this one. db.init_db() runs in production only
       # from server.py's lifespan, and until 2026-08-02 the suite got its schema
@@ -62,5 +67,5 @@ jobs:
       # what actually proves the schema does not depend on test ordering.
       - name: Schema must not depend on test order
         run: >
-          uv run --group dev python -m pytest -p no:cacheprovider -q
+          uv run --python 3.12 --group dev python -m pytest -p no:cacheprovider -q
           tests/test_data_isolation.py tests/test_tools_enabled.py
