@@ -129,11 +129,13 @@
   maintainer with a next action attached, corrected 2026-08-08. Nothing is owed on #631.
 
 ### mira-apps (separate session)
-- **Three specs written 2026-08-08, all in `mira-apps/specs/` except the first:**
-  - `mira-core/specs/eviction-notification-predicts-slow-reply.md` — `core/memory_watch.py:36`
-    still says "the next reply will be slow", which is what the banner was corrected to stop
-    claiming in `29159fc`. Same claim, same reason it is wrong, and the notification is the more
-    visible surface. The deliverable is the test, since nothing pins either copy today.
+- **Three specs written 2026-08-08; the first is already done, the other two are in `mira-apps/specs/`:**
+  - ~~`mira-core/specs/eviction-notification-predicts-slow-reply.md`~~ **DONE in `cdb446b`**, in a
+    parallel session, within the hour. The notification no longer predicts what the next reply will
+    cost, and the test rejects a prediction in **either** direction plus a string vague enough to
+    satisfy the ban by saying nothing — verified against the old copy, the opposite copy and an
+    empty one. "your Mac" deliberately kept rather than mirroring the banner's "the Mac running
+    Mira": the two agree on the claim, not the wording.
   - `decode-check-covers-system-memory.md` — `scripts/checks/decode-check.sh` covers
     `ModelInfo.swift` and `Backend.swift` but not `SystemMemory.swift`, and this is the one whose
     failure is silent: a renamed key decodes to `.unknown`, which renders as nothing, which looks
