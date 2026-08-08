@@ -147,6 +147,10 @@ def test_verdict_parser_handles_the_shapes_a_model_actually_returns(be):
     assert be._parse_verdict('Here you go:\n```\n{"score": 0, "why": "wrong"}\n```')[0] == 0
     assert be._parse_verdict("I would score this 1/2 overall")[0] == 1
     assert be._parse_verdict("this answer is quite good actually")[0] is None
+    # A quoted score is still a verdict. Requiring a bare integer dropped Q3 and
+    # Q5 to unscored on 2026-08-08 over nothing but JSON typing.
+    assert be._parse_verdict('{\n"score": "2",\n"why": "meets the bar"\n}')[0] == 2
+    assert be._parse_verdict('{"score": "0", "why": "no"}')[0] == 0
 
 
 def test_judge_prompt_template_survives_formatting(be):
@@ -316,6 +320,33 @@ def test_line_count_truth_matches_wc_semantics(be, tmp_path):
     (pyc / "junk.py").write_bytes(b"ignored\n")
 
     assert bc._truth_core_py_line_count(tmp_path) == 3
+
+
+def test_todo_fixme_truth_counts_lines_not_occurrences(tmp_path):
+    """Q7 asks for filename, line number and text per match: grep -rn semantics.
+
+    Counting substring occurrences made the reference 28 while the correct
+    answer was 15, and the judge duly scored a correct answer 0 against it. A
+    line holding both words, or one word twice, is a single match.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "bench_compare_todo", Path(__file__).resolve().parents[1] / "scripts" / "bench_compare.py")
+    bc = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = bc
+    spec.loader.exec_module(bc)
+
+    (tmp_path / "a.py").write_text(
+        "# TODO fix this\n"
+        "ok\n"
+        "# TODO and FIXME on one line\n"   # one match, not two
+        "# TODO TODO twice\n"              # one match, not two
+        "# FIXME alone\n"
+    )
+    skipped = tmp_path / ".venv"
+    skipped.mkdir()
+    (skipped / "vendor.py").write_text("# TODO ignored\n")
+
+    assert bc._truth_todo_fixme_count(tmp_path) == 4
 
 
 def test_date_check_matches_what_the_question_asked_for(be):

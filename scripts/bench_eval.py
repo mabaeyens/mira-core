@@ -69,6 +69,18 @@ No other text, no code fences.
 Score strictly against the rubric. Do not reward fluency, length, or confidence.
 If the answer is plausible but does not meet the rubric's bar for 2, it is not a 2.
 
+You are scoring TEXT ONLY. You cannot see the codebase, open a file, or run
+anything. So you cannot tell an invented quotation from a correct one, and the
+answers you score routinely quote a real file verbatim.
+
+Never rule that quoted code, file paths, line numbers, function names or config
+values are invented, do not exist, or are hallucinated. You have no way to know
+that, and asserting it turns a correct answer into a zero. The only facts you may
+treat as established are the ones given under TRUTH below, when it is present.
+Where correctness turns on a fact you were not given, leave that aside and score
+what you can actually see: reasoning, structure, internal consistency, and
+whether the answer does what the rubric asks.
+
 RUBRIC:
 {rubric}
 {truth_block}
@@ -379,8 +391,15 @@ class Judge:
 
 
 def _parse_verdict(text: str) -> tuple[int | None, str]:
-    """Parse {"score": n, "why": ...} out of a reply that may carry extra prose."""
-    match = re.search(r"\{[^{}]*\"score\"\s*:\s*([0-2])[^{}]*\}", text or "", re.DOTALL)
+    """Parse {"score": n, "why": ...} out of a reply that may carry extra prose.
+
+    The score is accepted quoted or bare. Demanding a bare integer silently
+    dropped Q3 and Q5 to unscored on 2026-08-08 when the model started replying
+    {"score": "2"}: a well-formed verdict, refused on JSON typing. A parser that
+    rejects a correct answer over its quoting removes questions from the run
+    without removing them from the question set.
+    """
+    match = re.search(r"\{[^{}]*\"score\"\s*:\s*\"?([0-2])\"?[^{}]*\}", text or "", re.DOTALL)
     if not match:
         loose = re.search(r"\b([0-2])\s*/\s*2\b", text or "")
         if loose:

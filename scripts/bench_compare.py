@@ -597,7 +597,15 @@ def _truth_core_py_line_count(workspace: Path) -> int:
 
 
 def _truth_todo_fixme_count(workspace: Path) -> int:
-    """TODO/FIXME occurrences under the workspace — Q7's reference count."""
+    """TODO/FIXME matches under the workspace — Q7's reference count.
+
+    Counts matching LINES, because that is what the question defines a match as:
+    it asks for the filename, line number and comment text of each one, which is
+    grep -rn semantics. Counting substring occurrences instead made the truth
+    disagree with every correct answer, the same unit mismatch that made Q6's
+    line count wrong (line objects vs wc -l). A line carrying both words, or the
+    same word twice, is one match.
+    """
     skip = {".venv", ".git", "__pycache__", "node_modules"}
     count = 0
     for p in workspace.rglob("*"):
@@ -607,7 +615,8 @@ def _truth_todo_fixme_count(workspace: Path) -> int:
             text = p.read_text(errors="ignore")
         except OSError:
             continue
-        count += text.count("TODO") + text.count("FIXME")
+        count += sum(1 for line in text.splitlines()
+                     if "TODO" in line or "FIXME" in line)
     return count
 
 
