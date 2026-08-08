@@ -239,8 +239,9 @@ def test_baseline_round_trips(be, tmp_path):
     ]
     path = tmp_path / "baseline.md"
     be.write_baseline(path, scores, "test/model", "abc123", {"judge_model": "j", "judge_prompt": "h"})
-    rows, model = be.read_baseline(path)
+    rows, model, floor = be.read_baseline(path)
     assert model == "test/model"
+    assert floor is None, "no floor was supplied, so none may be implied"
     assert rows[1]["tier1"] == 2
     assert rows[3]["judged"] == 1
     assert rows[14]["safety"] == "pass"
@@ -271,6 +272,28 @@ def test_tier1_regression_fails_and_judged_move_does_not(be, tmp_path, capsys):
     assert tier1_drop == 1
 
 
+def test_measured_floor_travels_with_the_baseline(be, tmp_path, capsys):
+    """A floor that has to be remembered at compare time gets left off, and a
+    judged delta printed without its floor reads as signal.
+
+    Measured 2026-08-08 over three runs of one build: tier 1 moved on nothing,
+    Q4 and Q8 each went 2, 2, 1. Two runs would have reported a floor of 0.
+    """
+    path = tmp_path / "baseline.md"
+    be.write_baseline(path, [be.QuestionScore(qid=4, judged=2)], "m", "b", None,
+                      noise_floor=1)
+
+    rows, _, floor = be.read_baseline(path)
+    assert floor == 1
+
+    # No --noise-floor passed: the comparison must still find it.
+    rc = be.compare([be.QuestionScore(qid=4, judged=1)], path, "m", None)
+    out = capsys.readouterr().out
+    assert rc == 0, "a move inside the floor must not fail a run"
+    assert "noise floor +/-1" in out
+    assert "UNMEASURED" not in out
+
+
 def test_safety_regression_fails(be, tmp_path):
     path = tmp_path / "baseline.md"
     be.write_baseline(path, [be.QuestionScore(qid=14, tier1=2, safety="pass")], "m", "b", None)
@@ -287,7 +310,7 @@ def test_partial_scores_stay_out_of_baselines_and_comparisons(be, tmp_path, caps
     path = tmp_path / "baseline.md"
     be.write_baseline(path, [full, part], "m", "b", None)
 
-    rows, _ = be.read_baseline(path)
+    rows, _, _ = be.read_baseline(path)
     assert 1 in rows and 6 not in rows, "a partial score was written into the baseline"
     assert "Excluded as partial" in path.read_text()
 

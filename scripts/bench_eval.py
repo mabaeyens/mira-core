@@ -568,7 +568,8 @@ def _git_head() -> str:
 
 
 def write_baseline(path: Path, scores: list[QuestionScore], model: str,
-                   build: str, ident: dict | None) -> None:
+                   build: str, ident: dict | None,
+                   noise_floor: float | None = None) -> None:
     lines = [
         "# Quality baseline",
         "",
@@ -584,6 +585,12 @@ def write_baseline(path: Path, scores: list[QuestionScore], model: str,
         f"- build: `{build}`",
         f"- judge: `{(ident or {}).get('judge_model', 'none')}`"
         f" (prompt `{(ident or {}).get('judge_prompt', '-')}`)",
+        (f"- judged noise floor: `+/-{noise_floor:g}`, measured by"
+         f" `scripts/bench_noise.py` over repeated runs of one build"
+         if noise_floor is not None else
+         "- judged noise floor: UNMEASURED — run `scripts/bench_noise.py` over"
+         " two or more runs of one build before reading anything into a judged"
+         " delta"),
         "",
         f"- covers: {len(scores)} of {len(load_questions())} questions"
         f" — a baseline is only a bar for the questions it contains, and a run of"
@@ -612,12 +619,24 @@ def write_baseline(path: Path, scores: list[QuestionScore], model: str,
     path.write_text("\n".join(lines) + "\n")
 
 
-def read_baseline(path: Path) -> tuple[dict, str]:
+def read_baseline(path: Path) -> tuple[dict, str, float | None]:
+    """Rows, run label, and the floor the baseline was written with.
+
+    The floor travels with the baseline rather than living on the command line,
+    because a number that has to be remembered at compare time is a number that
+    gets left off, and a judged delta printed without its floor reads as signal.
+    """
     model = "unknown"
+    floor: float | None = None
     rows: dict[int, dict] = {}
     for line in path.read_text().splitlines():
         if line.startswith("- run label:"):
             model = line.split("`")[1] if "`" in line else "unknown"
+        if line.startswith("- judged noise floor:") and "`" in line:
+            try:
+                floor = float(line.split("`")[1].removeprefix("+/-"))
+            except ValueError:
+                floor = None
         m = re.match(r"\|\s*(\d+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s*\|", line)
         if m:
             rows[int(m.group(1))] = {
@@ -625,7 +644,7 @@ def read_baseline(path: Path) -> tuple[dict, str]:
                 "judged": None if m.group(3) == "-" else int(m.group(3)),
                 "safety": None if m.group(4) == "-" else m.group(4),
             }
-    return rows, model
+    return rows, model, floor
 
 
 def compare(scores: list[QuestionScore], baseline_path: Path, model: str,
@@ -637,7 +656,11 @@ def compare(scores: list[QuestionScore], baseline_path: Path, model: str,
     is not deterministic and a naive gate on a noisy signal fires on nothing,
     gets muted, and takes the harness down with it.
     """
-    base, base_model = read_baseline(baseline_path)
+    base, base_model, stored_floor = read_baseline(baseline_path)
+    # An explicit --noise-floor overrides, so a fresher measurement can be used
+    # without rewriting the baseline first.
+    if noise_floor is None:
+        noise_floor = stored_floor
     if base_model != model:
         print(
             f"REFUSING to compare: baseline is for {base_model!r}, this run is "
@@ -721,7 +744,8 @@ def main() -> int:
 
     if args.write_baseline:
         build = os.getenv("MIRA_BUILD") or _git_head()
-        write_baseline(args.write_baseline, scores, model, build, ident)
+        write_baseline(args.write_baseline, scores, model, build, ident,
+                       args.noise_floor)
         print(f"\nBaseline written to {args.write_baseline}")
 
     if args.compare:
