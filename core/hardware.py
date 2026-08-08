@@ -7,11 +7,14 @@ rejected outright by GenerationEngine._start_job (mira_mlx_server.py) with a
 clear ValueError, rather than left to RotatingKVCache's undefined behavior for
 a single over-budget submission.
 """
+import ctypes
+import ctypes.util
 import json
 import logging
 import shutil
 import struct
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -159,16 +162,240 @@ def read_vm_state() -> Optional[dict]:
     }
 
 
+def on_battery() -> bool:
+    """True only when macOS reports the Mac is running on battery.
+
+    Returns False on any doubt, including an unreadable pmset: this gates
+    optional background work, so "could not tell" must not silently disable a
+    feature the way a None-means-maybe would.
+    """
+    try:
+        out = subprocess.run(
+            ["/usr/bin/pmset", "-g", "batt"], capture_output=True, text=True, timeout=5, check=True
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        logger.debug("could not read pmset (%s); assuming wall power", exc)
+        return False
+    return "Battery Power" in out.stdout
+
+
 def read_available_ram_bytes() -> Optional[int]:
     """Availability alone, for callers that do not need the full state."""
     state = read_vm_state()
     return None if state is None else state["available_bytes"]
 
 
-# Compressor occupancy above this fraction of Mira's own MLX footprint means a
-# large share of the model is very likely paged out. Chosen with a wide margin
-# around the two measured states: 0.91 when evicted (17.05GB against 18.81GB)
-# and 0.01 when resident (0.20GB). Nothing observed has landed between them.
+# --- Per-process eviction, via task_info(TASK_VM_INFO) -----------------------
+#
+# The system-wide compressor figure cannot say WHOSE pages are compressed, so the
+# fraction heuristic below is a guess with a wide margin around it. task_info on
+# mach_task_self() answers for this process exactly, needs no entitlement for
+# your own task, and costs ~1.4us against ~1s for a `vmmap -summary` subprocess.
+#
+# Validated 2026-08-08 against both instruments at once: a 6GB victim process
+# self-reported 1.75GB compressed while an external `vmmap` read SWAPPED as
+# 1.6GiB (= 1.72GB) and `footprint -p` agreed on the 6.46GB footprint.
+_TASK_VM_INFO = 22
+_KERN_SUCCESS = 0
+
+_mach_vm_size_t = ctypes.c_uint64
+_integer_t = ctypes.c_int32
+
+
+class _TaskVMInfo(ctypes.Structure):
+    """task_vm_info through rev3.
+
+    The rev0 prefix is not enough. Its `compressed` and `resident_size` are pmap
+    statistics (task.c:5303 fills them from `map->pmap->stats`), and the pmap
+    does not account IOKit/Metal mappings, which is where essentially all of
+    Mira's memory lives. Both therefore misreport for the engine: `compressed`
+    read 16.19GB on a fully resident model, and `resident_size` reads near zero
+    against a 19GB footprint. It is the same blind spot that makes `ps` RSS
+    report 8.91GB for a process MLX says is holding 19.66GB.
+
+    The rev3 tail carries LEDGER entries instead, including the graphics tags,
+    and ledgers are what actually track this memory.
+    """
+
+    _fields_ = [
+        ("virtual_size", _mach_vm_size_t),
+        ("region_count", _integer_t),
+        ("page_size", _integer_t),
+        ("resident_size", _mach_vm_size_t),
+        ("resident_size_peak", _mach_vm_size_t),
+        ("device", _mach_vm_size_t),
+        ("device_peak", _mach_vm_size_t),
+        ("internal", _mach_vm_size_t),
+        ("internal_peak", _mach_vm_size_t),
+        ("external", _mach_vm_size_t),
+        ("external_peak", _mach_vm_size_t),
+        ("reusable", _mach_vm_size_t),
+        ("reusable_peak", _mach_vm_size_t),
+        ("purgeable_volatile_pmap", _mach_vm_size_t),
+        ("purgeable_volatile_resident", _mach_vm_size_t),
+        ("purgeable_volatile_virtual", _mach_vm_size_t),
+        ("compressed", _mach_vm_size_t),
+        ("compressed_peak", _mach_vm_size_t),
+        ("compressed_lifetime", _mach_vm_size_t),
+        # --- rev1 ---
+        ("phys_footprint", _mach_vm_size_t),
+        # --- rev2 ---
+        ("min_address", ctypes.c_uint64),
+        ("max_address", ctypes.c_uint64),
+        # --- rev3: ledger entries, which unlike the pmap stats above DO account
+        # IOKit/Metal memory. The graphics pair is the one that matters here.
+        ("ledger_phys_footprint_peak", ctypes.c_int64),
+        ("ledger_purgeable_nonvolatile", ctypes.c_int64),
+        ("ledger_purgeable_nonvolatile_compressed", ctypes.c_int64),
+        ("ledger_purgeable_volatile", ctypes.c_int64),
+        ("ledger_purgeable_volatile_compressed", ctypes.c_int64),
+        ("ledger_tag_network_nonvolatile", ctypes.c_int64),
+        ("ledger_tag_network_nonvolatile_compressed", ctypes.c_int64),
+        ("ledger_tag_network_volatile", ctypes.c_int64),
+        ("ledger_tag_network_volatile_compressed", ctypes.c_int64),
+        ("ledger_tag_media_footprint", ctypes.c_int64),
+        ("ledger_tag_media_footprint_compressed", ctypes.c_int64),
+        ("ledger_tag_media_nofootprint", ctypes.c_int64),
+        ("ledger_tag_media_nofootprint_compressed", ctypes.c_int64),
+        ("ledger_tag_graphics_footprint", ctypes.c_int64),
+        ("ledger_tag_graphics_footprint_compressed", ctypes.c_int64),
+        ("ledger_tag_graphics_nofootprint", ctypes.c_int64),
+        ("ledger_tag_graphics_nofootprint_compressed", ctypes.c_int64),
+        ("ledger_tag_neural_footprint", ctypes.c_int64),
+        ("ledger_tag_neural_footprint_compressed", ctypes.c_int64),
+        ("ledger_tag_neural_nofootprint", ctypes.c_int64),
+        ("ledger_tag_neural_nofootprint_compressed", ctypes.c_int64),
+    ]
+
+
+_TASK_VM_INFO_COUNT = ctypes.sizeof(_TaskVMInfo) // ctypes.sizeof(_integer_t)
+_libsystem_handle = None
+_libsystem_tried = False
+
+
+def _libsystem():
+    """libSystem with task_info bound, or None off-darwin / if it cannot load.
+
+    Loaded lazily and remembered, including the failure: this is called from the
+    engine's idle branch and must never pay for a retry it already lost.
+    """
+    global _libsystem_handle, _libsystem_tried
+    if _libsystem_tried:
+        return _libsystem_handle
+    _libsystem_tried = True
+    if sys.platform != "darwin":
+        return None
+    try:
+        lib = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        lib.mach_task_self.restype = ctypes.c_uint32
+        lib.task_info.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_int,
+            ctypes.POINTER(_integer_t),
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        lib.task_info.restype = ctypes.c_int
+        _libsystem_handle = lib
+    except (OSError, AttributeError) as exc:
+        logger.debug("task_info unavailable (%s); falling back to system-wide signals", exc)
+    return _libsystem_handle
+
+
+def read_self_memory_state() -> Optional[dict]:
+    """This process's own resident and paged-out bytes. None if unreadable.
+
+    `compressed_bytes` comes from the GRAPHICS LEDGER entries, not from the
+    struct's own `compressed` field and not from `phys_footprint - resident_size`.
+    Both of those were tried against the live engine and both are wrong; the raw
+    values are returned alongside so the difference stays visible.
+
+    XNU fills this struct from two different accounting systems. The rev0 fields
+    are PMAP STATISTICS, set by a macro over `map->pmap->stats` (task.c:5303):
+
+        #define _VM_INFO(_name) \\
+            vm_info->_name = ((mach_vm_size_t) map->pmap->stats._name) * PAGE_SIZE
+
+    The pmap does not account IOKit/Metal mappings, which is where essentially
+    all of Mira's memory lives, so for this process both of those fields lie.
+    Measured on the live engine while the model was fully resident and replying
+    in 0.40s, against `vmmap` reporting 292MB swapped and 18.9G resident:
+
+        compressed      (pmap)   15.46 GB   <- would be a permanent false alarm
+        resident_size   (pmap)    4.65 GB   <- undercounts by ~14GB
+        phys_footprint  (ledger) 20.28 GB   <- correct total, but counts a page
+                                               whether resident or compressed,
+                                               so footprint-minus-resident just
+                                               inherits the resident_size error
+
+    The rev3 tail carries LEDGER entries, which do account this memory:
+
+        graphics_footprint             19.76 GB  <- matches MLX's own 19.66 GB
+        graphics_footprint_compressed   0.00 GB  <- correct: nothing paged out
+
+    and under real eviction the compressed entry rises and falls with the model,
+    verified by a touch that reclaimed 8.34GB of it in 1.82s.
+
+    Returns None rather than zeros off-darwin or on any failure, so a caller
+    cannot mistake "could not measure" for "nothing is compressed" - the same
+    rule the system-wide probes follow.
+
+    NOTE this answers for the CALLING process. It belongs to whichever process
+    actually holds the weights, which is the mira-mlx engine, not the API server.
+    """
+    lib = _libsystem()
+    if lib is None:
+        return None
+    info = _TaskVMInfo()
+    count = ctypes.c_uint32(_TASK_VM_INFO_COUNT)
+    try:
+        rc = lib.task_info(
+            lib.mach_task_self(),
+            _TASK_VM_INFO,
+            ctypes.cast(ctypes.byref(info), ctypes.POINTER(_integer_t)),
+            ctypes.byref(count),
+        )
+    except OSError as exc:
+        logger.debug("task_info raised (%s)", exc)
+        return None
+    if rc != _KERN_SUCCESS:
+        logger.debug("task_info(TASK_VM_INFO) returned %d", rc)
+        return None
+    graphics_compressed = (
+        int(info.ledger_tag_graphics_footprint_compressed)
+        + int(info.ledger_tag_graphics_nofootprint_compressed)
+    )
+    return {
+        "compressed_bytes": max(graphics_compressed, 0),
+        "resident_bytes": int(info.resident_size),
+        "footprint_bytes": int(info.phys_footprint),
+        # Diagnostics. Every one of these was a candidate for the verdict above
+        # and each is kept so the next person can see why it is not used.
+        "pmap_compressed_bytes": int(info.compressed),
+        "graphics_footprint_bytes": int(info.ledger_tag_graphics_footprint),
+        "graphics_footprint_compressed_bytes": int(
+            info.ledger_tag_graphics_footprint_compressed),
+        "graphics_nofootprint_bytes": int(info.ledger_tag_graphics_nofootprint),
+        "graphics_nofootprint_compressed_bytes": int(
+            info.ledger_tag_graphics_nofootprint_compressed),
+    }
+
+
+# Mira's OWN compressed graphics bytes above this fraction of its MLX footprint
+# means the model has been paged out. Measured on this 32GB Mac 2026-08-08
+# against a ~19.7GB graphics footprint: the ledger reads exactly 0 whenever the
+# model is warm, and rose past 8.34GB under a hog before the idle touch cleared
+# it. There is no grey zone to tune around, so this only has to sit somewhere
+# between "nothing" and "gigabytes"; it is not a threshold the way the
+# system-wide fallback below is.
+EVICTED_SELF_FRACTION = 0.25
+
+# Fallback for when the per-process reading is unavailable. Compressor occupancy
+# above this fraction of Mira's own MLX footprint means a large share of the
+# model is very likely paged out. Chosen with a wide margin around the two
+# measured states: 0.91 when evicted (17.05GB against 18.81GB) and 0.01 when
+# resident (0.20GB). Nothing observed has landed between them. This is a guess
+# about attribution in a way EVICTED_SELF_FRACTION is not: the compressor is
+# system-wide, so another app's compressed pages read here as Mira's.
 EVICTED_COMPRESSOR_FRACTION = 0.25
 
 
@@ -176,6 +403,7 @@ def derive_dynamic_ceiling_bytes(
     mira_used_bytes: int,
     total_ram_bytes: Optional[int] = None,
     available_bytes: Optional[int] = None,
+    self_compressed_bytes: Optional[int] = None,
 ) -> tuple[int, dict]:
     """How much MLX memory Mira may hold, given what the rest of the Mac is doing.
 
@@ -191,6 +419,14 @@ def derive_dynamic_ceiling_bytes(
     Never exceeds the static ceiling: a transient "lots free" reading must not
     let the model claim memory it cannot keep. Never falls below
     MIN_DYNAMIC_CEILING_BYTES.
+
+    `self_compressed_bytes` is the CALLER's own compressed bytes from
+    read_self_memory_state(). Pass it and the eviction verdict becomes a fact
+    about this process; omit it and the verdict falls back to a system-wide
+    compressor heuristic that cannot tell Mira's compressed pages from Xcode's.
+    It is a parameter rather than a probe made in here because this function is
+    also reachable from the API server process, which holds no weights and whose
+    self-reading would be meaningless.
 
     Returns (ceiling_bytes, diagnostics) so callers can report WHY it moved
     rather than just that it did.
@@ -210,6 +446,11 @@ def derive_dynamic_ceiling_bytes(
         "compressor_bytes": None if state is None else state["compressor_bytes"],
         "mira_used_bytes": mira_used_bytes,
         "pressure_level": pressure,
+        # Overwritten below once an eviction verdict is actually reached. Present
+        # here so every return path has the same shape, including the early one
+        # where the probe failed and no verdict exists.
+        "self_compressed_bytes": self_compressed_bytes,
+        "eviction_signal": None,
     }
 
     if state is None:
@@ -227,10 +468,23 @@ def derive_dynamic_ceiling_bytes(
     diag["ceiling_bytes"] = ceiling
 
     # Advisory, in increasing order of how much the user will actually feel it.
-    # `evicted` is the one worth surfacing: it means the next reply pays to
-    # decompress the model, measured at 15.37s against a warm 0.47s.
-    evicted = (mira_used_bytes > 0
-               and state["compressor_bytes"] > EVICTED_COMPRESSOR_FRACTION * mira_used_bytes)
+    # `evicted` is the one worth surfacing: it means the next reply pays to fault
+    # the whole model back in. Measured 2026-08-08 on an unforced eviction, all
+    # 18.80GB compressed: 17.60s against a warm 0.45s. A half-evicted model cost
+    # 3.38s, so the penalty scales with how much went out and this is not a
+    # binary the user experiences as one fixed cost.
+    #
+    # Prefer the per-process reading. The system-wide compressor cannot attribute
+    # anything: a machine where something ELSE is compressed reads identically.
+    if self_compressed_bytes is not None and mira_used_bytes > 0:
+        diag["self_compressed_bytes"] = self_compressed_bytes
+        diag["eviction_signal"] = "self"
+        evicted = self_compressed_bytes > EVICTED_SELF_FRACTION * mira_used_bytes
+    else:
+        diag["self_compressed_bytes"] = None
+        diag["eviction_signal"] = "system-wide (per-process unavailable)"
+        evicted = (mira_used_bytes > 0
+                   and state["compressor_bytes"] > EVICTED_COMPRESSOR_FRACTION * mira_used_bytes)
     if evicted:
         diag["advisory"] = "evicted"
     elif pressure is not None and pressure >= PRESSURE_CRITICAL:

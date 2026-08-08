@@ -50,6 +50,25 @@ logger = logging.getLogger("mira_mlx_server")
 # takes someone to open an IDE and start a build, and costs ~0.008% of a core.
 SYSTEM_MEMORY_PROBE_INTERVAL_S = 30.0
 
+# Availability required before Mira will decompress itself back into RAM.
+# Deliberately NOT "as much as is currently compressed": the measured net cost of
+# a decompression is about 1GB, not the full expansion, because emptying the
+# compressor frees most of what the expansion needs. The real 18.44GB event ran
+# fine with 6.49GB available and left 5.12GB, and a precondition sized against
+# the compressed total would have blocked precisely the case worth acting on.
+# 2GB covers both measured events (1.37GB and 1.15GB net) with room to spare.
+DECOMPRESS_MIN_AVAILABLE_BYTES = 2 * 1024**3
+
+# Prompt length for the decompression touch. Derived, not chosen: covering an
+# E-expert table routed top-k is a coupon-collector problem needing about
+# (E/k)*ln(E) tokens, which for 256 experts at top-8 is ~177. A single-token
+# pass was measured first and reclaimed nothing at all. 512 leaves margin for
+# models with wider tables and still prefills in well under a second warm.
+TOUCH_TOKENS = 512
+# Prime, so ids do not land in a repeating pattern that routes to the same
+# experts and quietly defeats the point of the length above.
+TOUCH_ID_STRIDE = 7919
+
 DONE = object()  # sentinel pushed onto a job's out_queue when generation finishes
 
 
@@ -198,6 +217,7 @@ class GenerationEngine:
         vision: bool = False,
         vision_max_pixels: Optional[int] = None,
         vision_tower_idle_timeout: float = 300.0,
+        proactive_decompress: bool = False,
     ):
         self.model_path = model_path
         self.max_tokens = max_tokens
@@ -218,6 +238,7 @@ class GenerationEngine:
         self.vision = vision
         self.vision_max_pixels = vision_max_pixels
         self.vision_tower_idle_timeout = vision_tower_idle_timeout
+        self.proactive_decompress = proactive_decompress
         # Loaded lazily on the first image turn and released again after
         # vision_tower_idle_timeout, so a text-only session never pays the
         # 0.89GB and an occasional image costs it only while in use.
@@ -267,6 +288,16 @@ class GenerationEngine:
         # from live system state on the idle branch after that. Declared here so
         # stats_snapshot() works on an engine that has not been started.
         self._memory_ceiling_bytes = 0
+        # Proactive decompression. `_decompress_done_for_event` is what makes this
+        # once-per-eviction rather than a loop: it latches on acting and only
+        # clears when the advisory leaves `evicted`, so a model the OS keeps
+        # re-compressing is left alone instead of being fought over.
+        self._decompress_events = 0
+        self._decompress_last_seconds = 0.0
+        self._decompress_last_reclaimed_bytes = 0
+        self._decompress_skipped_no_headroom = 0
+        self._decompress_failures = 0
+        self._decompress_done_for_event = False
 
     def start(self) -> None:
         threading.Thread(target=self._run, name="mira-mlx-engine", daemon=True).start()
@@ -399,6 +430,7 @@ class GenerationEngine:
             elif not drained:
                 self._release_idle_tower()
                 self._refresh_system_memory_state()
+                self._maybe_decompress_model()
                 time.sleep(0.02)
 
     def _ensure_tower(self):
@@ -490,6 +522,140 @@ class GenerationEngine:
             claimed / 1e9,
         )
 
+    def _touch_model_weights(self) -> tuple[float, int]:
+        """Fault the model's weights back into RAM with one real forward pass.
+
+        **The prompt has to be long, and this is the whole subtlety.** A
+        single-token pass was tried first and measured: it ran in 1.19s and
+        reclaimed exactly zero, leaving the model 13.39GB compressed, because
+        top-8-of-256 routing reaches about 3% of the expert table per token. The
+        earlier observation that a real request faults in ~19.8GB was not
+        evidence against that; a chat-templated request is several dozen tokens,
+        which is a different thing entirely.
+
+        TOUCH_TOKENS follows from the routing arithmetic rather than taste. With
+        top-k of E experts, covering the table is a coupon-collector problem
+        needing about (E/k)*ln(E) tokens: for Qwen3.6's 256 experts at top-8 that
+        is ~177, so 512 leaves a wide margin and still prefills in well under a
+        second warm. Ids are spread with a prime stride because consecutive low
+        ids are mostly special tokens and would route through the same handful
+        of experts.
+
+        Returns (seconds, reclaimed_bytes), where reclaimed is the MEASURED drop
+        in this process's own compressed bytes. It is not inferred from what the
+        pass should have touched, which is exactly how the single-token version
+        was caught: it reported 0 instead of looking like a success.
+        """
+        from core import hardware
+
+        vocab = (
+            getattr(self.tokenizer, "vocab_size", None)
+            or len(getattr(self.tokenizer, "vocab", ()) or ())
+            or 32_000
+        )
+        # Keep clear of the special-token block at the bottom of the vocab.
+        ids = [(i * TOUCH_ID_STRIDE) % max(vocab - 1024, 1024) + 1024
+               for i in range(TOUCH_TOKENS)]
+
+        before = hardware.read_self_memory_state()
+        started = time.time()
+        out = self.model(mx.array([ids]))
+        mx.eval(out)
+        del out
+        mx.clear_cache()
+        elapsed = time.time() - started
+
+        after = hardware.read_self_memory_state()
+        reclaimed = 0
+        if before is not None and after is not None:
+            reclaimed = max(before["compressed_bytes"] - after["compressed_bytes"], 0)
+        return elapsed, reclaimed
+
+    def _maybe_decompress_model(self) -> None:
+        """Pay the decompression on the idle branch instead of on the next reply.
+
+        Only ever called from the idle branch, so the inbox drained empty and no
+        job is in flight - the same safety argument as _release_idle_tower().
+
+        On the one request that could arrive DURING a touch: it waits behind it,
+        because the model thread is the only thread that can serve it. That is
+        acceptable rather than merely tolerated. Without the touch that request
+        pays the full fault-in itself (17.60s measured), so waiting behind a
+        touch already in progress is never worse than doing nothing, and every
+        request that arrives after it is served warm.
+        """
+        if not self.proactive_decompress:
+            return
+        from core import hardware
+
+        with self._stats_lock:
+            advisory = self._system_state.get("advisory")
+            compressed = self._system_state.get("self_compressed_bytes")
+            available = self._system_state.get("available_bytes")
+            pressure = self._system_state.get("pressure_level")
+
+        if advisory != "evicted":
+            # The event is over. Re-arm here rather than on a timer so that
+            # "once per eviction" means once per eviction, not once per interval.
+            self._decompress_done_for_event = False
+            return
+        if self._decompress_done_for_event:
+            return
+        if compressed is None:
+            # Only act on the per-process reading. The system-wide fallback
+            # cannot tell Mira's compressed pages from another app's, and acting
+            # on it would mean doing 17s of memory traffic because Xcode is busy.
+            return
+        if pressure is not None and pressure >= hardware.PRESSURE_CRITICAL:
+            return
+        if available is not None and available < DECOMPRESS_MIN_AVAILABLE_BYTES:
+            with self._stats_lock:
+                self._decompress_skipped_no_headroom += 1
+            logger.info(
+                "memory: model evicted (%.2f GB compressed) but only %.2f GB available; "
+                "leaving it alone rather than pushing the rest of the Mac out",
+                compressed / 1e9, available / 1e9,
+            )
+            self._decompress_done_for_event = True
+            return
+        if hardware.on_battery():
+            logger.info("memory: model evicted but running on battery; not spending the traffic")
+            self._decompress_done_for_event = True
+            return
+
+        self._decompress_done_for_event = True
+        try:
+            elapsed, reclaimed = self._touch_model_weights()
+        except Exception as exc:  # noqa: BLE001
+            # This runs on the model thread. An unhandled exception here would
+            # take the engine loop down and stop the server serving, which is a
+            # catastrophic price for an optimization nobody asked for. Turn the
+            # feature off for the process instead: the failure is a property of
+            # this model's forward signature, so retrying it every 30s would
+            # only log the same traceback forever.
+            self.proactive_decompress = False
+            with self._stats_lock:
+                self._decompress_failures += 1
+            logger.warning(
+                "memory: proactive decompression failed (%s); disabled for this "
+                "process. Replies are unaffected, they just pay the fault-in.", exc,
+            )
+            return
+        with self._stats_lock:
+            self._decompress_events += 1
+            self._decompress_last_seconds = round(elapsed, 3)
+            self._decompress_last_reclaimed_bytes = reclaimed
+            self._active_memory_bytes = mx.get_active_memory()
+            self._cache_memory_bytes = mx.get_cache_memory()
+        logger.info(
+            "memory: decompressed the model on idle in %.2fs, %.2f GB reclaimed "
+            "(was %.2f GB compressed) - the next reply does not pay for this",
+            elapsed, reclaimed / 1e9, compressed / 1e9,
+        )
+        # Re-probe on the next pass instead of waiting out the 30s gate, so the
+        # advisory and the notification stop reporting a state that is now fixed.
+        self._system_state_checked_at = 0.0
+
     def _refresh_system_memory_state(self) -> None:
         """Re-derive the memory ceiling from what the whole Mac is doing.
 
@@ -509,7 +675,19 @@ class GenerationEngine:
         try:
             from core import hardware
             used = mx.get_active_memory() + mx.get_cache_memory()
-            ceiling, diag = hardware.derive_dynamic_ceiling_bytes(mira_used_bytes=used)
+            # This runs in the process that holds the weights, so its own
+            # compressed bytes answer "is Mira evicted" as a fact, rather than
+            # inferring it from a system-wide compressor that belongs to
+            # everybody. ~1.4us; None off-darwin, which falls back cleanly.
+            self_state = hardware.read_self_memory_state()
+            ceiling, diag = hardware.derive_dynamic_ceiling_bytes(
+                mira_used_bytes=used,
+                self_compressed_bytes=(
+                    None if self_state is None else self_state["compressed_bytes"]
+                ),
+            )
+            if self_state is not None:
+                diag["self_memory"] = self_state
         except Exception as exc:  # noqa: BLE001 - advisory only, never fatal
             logger.debug("system memory probe failed (%s)", exc)
             with self._stats_lock:
@@ -582,6 +760,11 @@ class GenerationEngine:
             tower_reclaimed = self._tower_last_reclaimed_bytes
             system_state = dict(self._system_state)
             memory_ceiling_bytes = self._memory_ceiling_bytes
+            decompress_events = self._decompress_events
+            decompress_last_seconds = self._decompress_last_seconds
+            decompress_last_bytes = self._decompress_last_reclaimed_bytes
+            decompress_skipped = self._decompress_skipped_no_headroom
+            decompress_failures = self._decompress_failures
 
         total_requests = hits + misses
 
@@ -639,6 +822,25 @@ class GenerationEngine:
                 "other_processes_bytes": system_state.get("other_processes_bytes"),
                 "pressure_level": system_state.get("pressure_level"),
                 "source": system_state.get("source"),
+                # Mira's OWN compressed bytes, and which signal the verdict came
+                # from. `compressor_bytes` above is system-wide and says nothing
+                # about whose pages they are; this one does.
+                "self_compressed_bytes": system_state.get("self_compressed_bytes"),
+                "eviction_signal": system_state.get("eviction_signal"),
+                # Every per-process field considered for the verdict. Kept
+                # because the pmap-based ones (`pmap_compressed_bytes`,
+                # `resident_bytes`) are actively misleading for a Metal process
+                # and someone will otherwise reach for them again.
+                "self_memory": system_state.get("self_memory"),
+            },
+            # Reclaiming the model on the idle branch, so the decompression is
+            # not paid by whoever asks next. Measured, never assumed.
+            "decompress": {
+                "events": decompress_events,
+                "last_seconds": decompress_last_seconds,
+                "last_reclaimed_bytes": decompress_last_bytes,
+                "skipped_no_headroom": decompress_skipped,
+                "failures": decompress_failures,
             },
             # `enabled` follows the config, not whether the tower happens to be
             # resident: with lazy loading it is None most of the time, and
@@ -1067,6 +1269,10 @@ def main() -> None:
     # the next image after an idle stretch pays about two seconds. 0 disables the
     # release and keeps the tower resident once loaded.
     parser.add_argument("--vision-tower-idle-timeout", type=float, default=300.0)
+    # Fault the model back into RAM on the idle branch when another app has had
+    # it compressed out, so the decompression is not paid by whoever asks next
+    # (measured 17.60s against a warm 0.45s on a fully evicted model).
+    parser.add_argument("--proactive-decompress", action="store_true")
     args = parser.parse_args()
 
     engine = GenerationEngine(
@@ -1089,6 +1295,7 @@ def main() -> None:
         vision=args.vision,
         vision_max_pixels=args.vision_max_pixels,
         vision_tower_idle_timeout=args.vision_tower_idle_timeout,
+        proactive_decompress=args.proactive_decompress,
     )
     engine.start()
 

@@ -25,6 +25,7 @@ from core.config import (
     MIRA_MLX_EXPERT_PROFILE_PATH,
     MIRA_MLX_TRUST_REMOTE_CODE,
     MIRA_MLX_ENABLE_TF32,
+    PROACTIVE_DECOMPRESS,
 )
 from core.config import resolve_offload_fraction
 from core.config import OMLX_CLI as _OMLX_CLI_PATH, PREFILL_STEP_SIZE
@@ -189,6 +190,8 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
         args += ["--resident-expert-fraction", str(resident_expert_fraction)]
     if MIRA_MLX_TRUST_REMOTE_CODE:
         args += ["--trust-remote-code"]
+    if PROACTIVE_DECOMPRESS:
+        args += ["--proactive-decompress"]
     if MIRA_MLX_VISION:
         args += ["--vision"]
         args += ["--vision-max-pixels", str(MIRA_MLX_VISION_MAX_PIXELS)]

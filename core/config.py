@@ -197,6 +197,21 @@ MIRA_MLX_TRUST_REMOTE_CODE: bool = _get("mira_mlx_trust_remote_code", False)
 # speed again, because the slow reply is itself what fixes it. Rate-limited and
 # fired only on the transition into eviction (see core/memory_watch.py).
 MEMORY_ADVISORY_NOTIFICATIONS: bool = _get("memory_advisory_notifications", True)
+# Fault the model back into RAM on the engine's idle branch when another app has
+# had it compressed out, instead of letting the next reply pay for it. Measured
+# on a real unforced eviction (2026-08-08): all 18.80GB compressed, next turn
+# 17.60s against a warm 0.45s, and no self-recovery in the 12 minutes before that
+# turn. A half-evicted model cost 3.38s, so the saving scales with how much went
+# out. Roughly memory-neutral (~1GB net, measured against a warm-turn control),
+# because emptying the compressor pays for most of the expansion.
+#
+# OFF by default for now. The advisory notification already tells the user what
+# is happening, and this one spends unrequested memory traffic on a machine that
+# is by definition short of memory, so it wants a week of real use behind it
+# before it becomes the default. Preconditions live in mira_mlx_server.py:
+# per-process eviction signal only, availability floor, not on battery, not at
+# critical pressure, once per eviction event.
+PROACTIVE_DECOMPRESS: bool = _get("proactive_decompress", False)
 # TF32 accumulation on the M5+ NAX kernels. MLX defaults this on and until now
 # Mira inherited that default without ever choosing it, which matters because
 # the flag changes numerics: mlx#3897 traced the M5 batch-vs-single attention
