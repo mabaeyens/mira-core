@@ -221,6 +221,7 @@ class ChatJob:
     max_tokens: int
     temperature: float
     top_p: float
+    top_k: int = 0
     chat_template_kwargs: Optional[dict] = None
     out_queue: "queue.Queue" = field(default_factory=queue.Queue)
     request_id: str = field(default_factory=lambda: f"chatcmpl-{uuid.uuid4().hex[:24]}")
@@ -1161,7 +1162,7 @@ class GenerationEngine:
                 self._cache_misses += 1
             self._total_prompt_tokens += len(prompt_tokens)
 
-        sampler = make_sampler(temp=job.temperature, top_p=job.top_p)
+        sampler = make_sampler(temp=job.temperature, top_p=job.top_p, top_k=job.top_k)
         logits_processors = make_logits_processors()
 
         # Split prefill at the history boundary so the state there can be
@@ -1337,6 +1338,7 @@ def create_app(engine: GenerationEngine) -> FastAPI:
             max_tokens=body.get("max_tokens") or engine.max_tokens,
             temperature=body.get("temperature", 0.0) or 0.0,
             top_p=body.get("top_p", 0.0) or 0.0,
+            top_k=int(body.get("top_k", 0) or 0),
             chat_template_kwargs=body.get("chat_template_kwargs"),
         )
         loop = asyncio.get_event_loop()

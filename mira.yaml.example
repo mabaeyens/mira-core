@@ -81,6 +81,43 @@ context_window: 65536
 # adaptive: enables thinking for complex/reasoning requests, skips for simple ones
 thinking_mode: adaptive
 
+# ── Sampling ─────────────────────────────────────────────────────────────────
+# These defaults reproduce Mira's behaviour before 2026-08-09, when no sampling
+# parameters existed and none were sent: the inference server fell back to 0.0
+# for both, so every reply was greedy-decoded (always take the highest-probability
+# token). Nothing here changes unless you change it.
+#
+# THEY ARE NOT WHAT THE MODEL ASKS FOR. Qwen3.6-35B-A3B ships its own
+# generation_config.json specifying:
+#
+#     do_sample: true,  temperature: 1.0,  top_k: 20,  top_p: 0.95
+#
+# CHANGE ALL THREE TOGETHER OR NONE — because that is what the model author
+# specifies, and top_k/top_p are the truncation that keeps sampling out of the
+# distribution's tail. Temperature alone removes the safety without the guard.
+#
+# This is NOT backed by local measurement, and it would be easy to think it was.
+# Two probe rounds on 2026-08-09 flatly contradicted each other on the same
+# prompt and the same parameters: round 1 had temperature 1.0 alone repeating one
+# sentence 303 times, round 2 had it producing the cleanest of five runs, while
+# greedy went from best (round 1) to worst (round 2). Output is not reproducible
+# across server processes on this M5, so n=1 per configuration ranks nothing.
+# If you want a real answer, run repeats against a fixed prompt-cache state.
+#
+# To adopt the model's own recommendation, set all three:
+#
+#     temperature: 1.0
+#     top_p: 0.95
+#     top_k: 20
+#
+# Lower temperature is defensible for coding and tool-calling, where determinism
+# matters more than variety — 0.0 is not absurd, it was simply never chosen.
+# top_k is not an OpenAI-API parameter; Mira passes it via extra_body and
+# mira-mlx honours it. 0 disables it. Backends other than mira-mlx may ignore it.
+temperature: 0.0
+top_p: 0.0
+top_k: 0
+
 # ── Search ───────────────────────────────────────────────────────────────────
 # Brave Search API key. When set, Brave is the primary web-search provider;
 # DuckDuckGo (ddgs) is the no-key fallback used if this is empty or Brave errors.

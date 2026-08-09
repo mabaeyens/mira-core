@@ -20,6 +20,7 @@ from .config import (
     RAG_MAX_CHUNKS, CONTEXT_WINDOW,
     COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT,
     THINKING_MODE, MAX_THINKING_TOKENS, TEMP_WORKSPACE_MAX_MB,
+    TEMPERATURE, TOP_P, TOP_K,
 )
 from .tools import TOOLS, GITHUB_TOOLS, _LOCAL_TOOLS, _TEMP_WORKSPACE_TOOLS
 from .prompts import build_system_prompt, current_time_note, SEARCH_RESULT_TEMPLATE, wrap_untrusted
@@ -1077,6 +1078,14 @@ class ChatOrchestrator:
                 extra["extra_body"] = {"chat_template_kwargs": ckwargs}
             elif not thinking_enabled:
                 extra["extra_body"] = {"enable_thinking": False}
+            # Sampling. Before 2026-08-09 none of this was sent, so the server's
+            # own 0.0 defaults applied and every reply was greedy-decoded. The
+            # config defaults preserve that; mira.yaml can now change it.
+            # top_k is not an OpenAI parameter, so it rides in extra_body, which
+            # must be merged rather than assigned — thinking config is already
+            # in there and clobbering it would silently disable the toggle.
+            if TOP_K > 0:
+                extra.setdefault("extra_body", {})["top_k"] = TOP_K
             return bc.normalize_oai_stream(
                 self._oai.chat.completions.create(
                     model=self.model,
@@ -1084,6 +1093,8 @@ class ChatOrchestrator:
                     tools=tools or None,
                     stream=True,
                     stream_options={"include_usage": True},
+                    temperature=TEMPERATURE,
+                    top_p=TOP_P,
                     **extra,
                 )
             )

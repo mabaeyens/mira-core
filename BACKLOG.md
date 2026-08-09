@@ -1,6 +1,39 @@
 # Backlog
 
 ## Done
+- [2026-08-09] **Both of the day's "discoveries" turned out to be published, named and solved —
+  and the lesson is worth more than the measurements.** Miguel's challenge ("I can't be the first
+  finding this out") was correct on both counts. Batch size changing greedy output is **batch
+  invariance**, diagnosed in [Defeating Nondeterminism in LLM
+  Inference](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/) (Thinking
+  Machines, Sep 2025) — they measured **80 unique completions from 1,000 runs** of one prompt at
+  temperature 0, against our 23-of-24; it is fixed in vLLM (`VLLM_BATCH_INVARIANT=1`), SGLang, and
+  on Apple Silicon by
+  [mlx-deterministic](https://github.com/ProbioticFarmer/mlx-deterministic). Repetition under
+  greedy is [Holtzman et al., ICLR 2020](https://openreview.net/pdf?id=rygGQyrFvH) — **43% repeated
+  n-grams greedy vs 0.5% human**, and crucially **decoding cannot remove a loop, only make it less
+  likely**, which is why a penalty alone is not a guard. **DECISION: Mira will not implement batch
+  invariance** (~1.6x cost, custom Metal kernels for three ops, and reproducibility buys an RL/
+  regression-testing property a chat assistant does not need). Mitigation is to fix the eval batch
+  size and report it beside any score. **Standing rule adopted: measure Mira, look up everything
+  else** — a general fact about models, kernels or decoding is already in the literature, and
+  re-deriving it locally reproduces a known result at worse statistical power while hiding the
+  existing fix.
+- [2026-08-09] **Sampling is configurable for the first time; it was greedy by accident, not by
+  choice.** Nothing anywhere sent a sampling parameter, so `mira_mlx_server`'s own `0.0` defaults
+  applied to every reply from every client. `temperature`, `top_p` and `top_k` now flow
+  `mira.yaml` → `config.py` → orchestrator → `ChatJob` → `make_sampler`, with `top_k` riding in
+  `extra_body` (merged, never assigned — clobbering it would silently disable the thinking toggle).
+  **Defaults are unchanged, so no reply moved.** Verified rather than assumed: `top_k=1` is argmax
+  and reproduced greedy byte-for-byte. Qwen3.6 ships `generation_config.json` asking for
+  temperature 1.0 / top_k 20 / top_p 0.95 — adopting that is a separate decision, deliberately not
+  taken here.
+- [2026-08-09] **Runaway-guard spec written to `specs/generation-runaway-guard.md`** (gitignored,
+  local). Leads with the research above so the do-not-reinvent reasoning is checkable. Key finding
+  for whoever builds it: **`mira_mlx_server.py:1166` calls `make_logits_processors()` with no
+  arguments**, so mlx-lm's repetition/presence/frequency penalties are all off — most of the work
+  is wiring, not building. Thresholds must respect the measured gap: clean output reached x7
+  repeated sentences, the degenerate case x355. **Not started; Miguel to review.**
 - [2026-08-09] **The bench now scores answers, and its first three full runs found that the
   instrument was wrong more often than the model.** Three 16-question runs on one build plus two
   targeted injection runs. Tier 1 came out **24/24 over 12 questions with zero variance across all
@@ -53,7 +86,18 @@
   Runner at `notes/run_lm_evals.sh` (gitignored). Preflight found three things that would have cost
   an evening: **`python -m mlx_lm.evaluate` silently does nothing** (it has `main()` but no
   `__main__` guard — use the console script), **both HF credentials on this machine are invalid**,
-  and **GPQA is a gated dataset**. IFEval (541) and MMLU-Pro (12,032) load fine unauthenticated.
+  and **GPQA is a gated dataset**. ~~IFEval (541) and MMLU-Pro (12,032) load fine unauthenticated.~~
+- [2026-08-09] **Correction to the line above: IFEval did not load, and could not have run.** That
+  preflight established the *datasets* download, which is a different thing from the *tasks*
+  importing. IFEval needed `langdetect` and `immutabledict` (both now installed in the evals venv
+  only; MLX stack verified unchanged via `uv pip list`, 85 → 86 packages, single addition). Worse,
+  **IFEval cannot run under mlx-lm 0.31.3 at all**: it declares `until: []` and `_rstrip_until`
+  (`evaluate.py:33-38`) calls `min()` on that empty list, so every run dies *after* paying for full
+  generation. This killed the stock CLI identically — it was never a driver problem. HF auth and the
+  GPQA gate were both re-verified clear on 2026-08-09 (`whoami` resolves, `dataset_info` returns 8
+  files). **The 21:00 reminder was cancelled** (Miguel on holiday; run it whenever). The lesson worth
+  keeping: the old smoke test called the CLI on IFEval, so the *guard itself* would have aborted the
+  whole run before the model loaded — a preflight that cannot fail is not a preflight.
 - [2026-08-08] **Release decisions for v1.2.0, taken by Miguel:** the three opt-in flags
   (`boundary_snapshot`, `proactive_decompress`, `disk_prompt_cache`) **ship OFF and are
   documented**; version is **1.2.0**; and the orphaned disk cache gets **a warning, not an
@@ -190,16 +234,85 @@
   cannot change a generated answer and accuracy evals are unaffected by it.
 
 ### Needs Miguel
-- **Run the lm-evals — reminder set for 21:00 on 2026-08-09** (`bash notes/run_lm_evals.sh`). It
-  stops production Mira and restores it, smoke-tests two questions first and aborts if that fails,
-  then runs IFEval and MMLU-Pro (capped at 1000 of 12,032; SE ~1.6pp). GPQA is included but
-  **non-fatal**, so a bad token skips it rather than throwing away the other two. Reminders survive
-  a reboot — they are in SQLite and the scheduler fires catch-up on startup.
-- **HF credentials.** `~/.zprofile` line 10 exports a stale `HF_TOKEN` **which takes precedence over
-  `hf auth login`**, so updating only the stored credential does nothing. As of 2026-08-09 the
-  stored one was invalid too; `hf auth login --force` once would give a single source of truth,
-  which also matters for anything running outside the login shell. GPQA additionally needs the gate
-  accepted at `https://huggingface.co/datasets/Idavidrein/gpqa`.
+- **Decide IFEval's generation cap — the one open question blocking an IFEval number.** IFEval sets
+  `max_gen_toks: 1280` (`ifeval.yaml:13`) and the runner's `--max-tokens 16384` overrides it. Both
+  choices are defensible and both are wrong in a different way: honouring 1280 truncates every
+  reasoning chain, so a thinking model scores near-zero for reasons unrelated to instruction
+  following; overriding it means the number cannot be compared to any published IFEval result, which
+  is the entire reason for running a standardised suite. **Miguel's point, and it is the right one:
+  if the cap is part of the spec and everyone else honours it, it cannot simply be broken.** Needs
+  evidence on what other implementations do for reasoning models before an IFEval score is
+  published. MMLU-Pro and GPQA are unaffected — run those whenever.
+- ~~**Greedy decoding is not tweakable anywhere.**~~ **DONE 2026-08-09.** `temperature`, `top_p` and
+  `top_k` are now configurable in `mira.yaml`, wired through `config.py` → orchestrator → `ChatJob`
+  → `make_sampler`. Defaults are unchanged (0.0/0.0/0), so no reply changed. Verified rather than
+  assumed: `top_k=1` is argmax and reproduced greedy byte-for-byte. `tests/test_sampling_config.py`
+  covers it, including that `extra_body` is merged so `top_k` cannot clobber the thinking toggle.
+- **Two findings from the sampling work, both open.**
+  1. **Output is deterministic per (prompt, params) even at temperature 1.0** — two identical
+     requests return byte-identical text, so **regenerating a reply gives the user the same answer
+     no matter the temperature**. There is no response cache and the server sets no seed; mlx-lm's
+     samplers thread `mx.random.state` through `mx.compile`, so a per-request RNG reset is the
+     likely cause. The fix is an explicit per-request `seed` — not built.
+  2. **Thinking can eat the entire production budget.** In 3 of 5 runs at `--max-tokens 4096`, a
+     moderately complex creative prompt hit `finish_reason: length` without ever closing `</think>`,
+     meaning the user gets truncated reasoning and no answer. Seen on one prompt only; worth
+     reproducing deliberately before treating it as a general bug.
+- **Nothing is established about which sampling config is safer, and two probe rounds prove why.**
+  Same prompt, same parameters, two rounds on 2026-08-09, flatly contradictory:
+
+  | | round 1 | round 2 |
+  |---|---|---|
+  | greedy (production) | clean, max repeat x2 | **worst of five**, 60% dup, x7 |
+  | temp 1.0 alone | **303 repeats**, length cap | **cleanest of five**, 0% dup, x1 |
+
+  So the greedy-causes-loops theory is dead, but its replacement ("temperature alone is worse")
+  died with it in round 2. **n=1 per configuration ranks nothing here**: greedy alone differed
+  across two server processes on the same prompt (9,907 vs 14,711 chars, cold vs warm prompt
+  cache), consistent with the known M5 batched-attention divergence. Any real answer needs repeats
+  against a fixed cache state. `mira.yaml.example` now recommends changing all three together on
+  the model author's authority only, and says so.
+- **RESOLVED 2026-08-09: batch size changes greedy output, and that is what the eval loop was.**
+  Paired experiment, 24 IFEval prompts through `batch_generate` at batch 1 and batch 4, greedy
+  throughout, everything else identical (`notes/batch_divergence_probe.py`):
+
+  - **23 of 24 prompts produced DIFFERENT output.** Greedy is deterministic within a process, so a
+    single differing token proves the arithmetic changed. Median token-count difference 20%, max
+    4.35x.
+  - **The eval failure mode reproduced, in the batched condition only.** Prompt 1040: single-request
+    finished cleanly in 3,170 tokens (max sentence repeat x3); batched ran to the 8,192 cap, never
+    closed `</think>`, and repeated one line **355 times** (68% duplicate ratio). Its single-request
+    twin did neither.
+  - **But batching is NOT systematically worse, and the mean says otherwise only because of that
+    one outlier.** Median max-repeat is 3 (single) vs 4 (batched) — the means, 3.75 vs 18.92, are
+    driven entirely by prompt 1040. Failures went both ways: 1001 ran to the cap unclosed only when
+    single, 1040 only when batched, 1130 in both.
+
+  So the honest conclusion is **not** "batching causes loops". It is: **which prompts degenerate is
+  decided by numerical happenstance**, and batch composition is one of the inputs. Rates are
+  indistinguishable at n=24 (one failure each way).
+
+  This is the known M5 batched-attention divergence ([[project_m5_batched_attention_divergence]]),
+  where `MLX_ENABLE_TF32=0` is float32-only and the bf16 path has **no opt-out** — so there is
+  nothing to fix, only to mitigate. Caveat: the standing rule says numerics tests set that flag and
+  this run did not; it is documented as float32-only and this model computes in bf16, so no effect
+  is expected, but that was reasoned, not verified.
+
+  **Consequences worth acting on:**
+  1. **Eval scores carry a batch-composition component.** `run_lm_evals.sh` runs at batch 4; a
+     re-run at a different batch size is not strictly comparable. Fix the batch size, and report it
+     alongside any score.
+  2. **Production replies depend on concurrent traffic.** mira-mlx does continuous batching, so the
+     same question can get a different answer depending on what else is in flight. Inherent, not a
+     bug, but it means "deterministic per (prompt, params)" holds only for an idle server.
+  3. **~8% of these prompts ran to the cap without finishing their reasoning** (2-3 of 24 in at
+     least one condition) at an 8,192 budget. Production caps at 4,096, so likely worse. A
+     repetition/runaway guard would help where numerics cannot be fixed.
+- **HF credentials.** ~~As of 2026-08-09 both were invalid.~~ **Re-verified clear on 2026-08-09:**
+  `whoami()` resolves as `mabaeyens` and `dataset_info('Idavidrein/gpqa')` returns 8 files, so the
+  gate is accepted too. The underlying hazard stands: `~/.zprofile` line 10 exports an `HF_TOKEN`
+  **which takes precedence over `hf auth login`**, so updating only the stored credential does
+  nothing. `hf auth login --force` once would give a single source of truth.
 - **Score the 2026-08-08 agentic bench.** `docs/bench-results-2026-08-08.md` has timings and tool
   traces for Q6–Q12 filled in and the quality column empty. Less urgent than it was:
   `scripts/bench_eval.py` now scores these automatically, so this column is only for judgement the

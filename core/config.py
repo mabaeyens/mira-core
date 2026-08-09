@@ -89,6 +89,34 @@ CONTEXT_WINDOW: int = _get("context_window", 65536)
 THINKING_MODE: str = _get("thinking_mode", "adaptive")  # adaptive | always | never
 MAX_THINKING_TOKENS: int = _get("max_thinking_tokens", 8192)  # 0 = uncapped; minimum useful value ~512
 
+# ── Sampling ──────────────────────────────────────────────────────────────────
+# Until 2026-08-09 none of these existed and nothing sent them, so every Mira
+# reply was greedy-decoded: mira_mlx_server defaulted temperature and top_p to
+# 0.0 and the orchestrator never overrode them.
+#
+# The defaults below preserve that behaviour exactly, so this change adds a knob
+# without altering a single reply. They are NOT what the model asks for:
+# Qwen3.6-35B-A3B ships generation_config.json with do_sample: true,
+# temperature: 1.0, top_k: 20, top_p: 0.95.
+#
+# Set all three together rather than temperature alone -- that is the model
+# author's own specification, and top_k/top_p are the truncation that keeps
+# sampling out of the distribution's tail.
+#
+# That advice rests on the shipped generation_config, NOT on local measurement.
+# Two probe rounds on 2026-08-09 contradicted each other: round 1 saw temperature
+# 1.0 alone produce 303 repeats of one sentence, round 2 saw the same setting
+# produce the cleanest output of five runs. Output on this machine is not
+# reproducible across server processes, so single runs rank nothing. Treat any
+# sampling comparison here as unmeasured until someone runs repeats against a
+# fixed cache state. See mira.yaml.example.
+#
+# top_k is passed through extra_body: it is not an OpenAI-API parameter, but
+# mlx_lm's make_sampler supports it and mira-mlx honours it. 0 disables it.
+TEMPERATURE: float = _get("temperature", 0.0)
+TOP_P: float = _get("top_p", 0.0)
+TOP_K: int = _get("top_k", 0)
+
 # ── Search ────────────────────────────────────────────────────────────────────
 MAX_SEARCH_RESULTS = 5
 MAX_AGENT_STEPS = 15     # raised cap for agentic multi-step tasks
