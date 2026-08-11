@@ -1,6 +1,24 @@
 # Backlog
 
 ## Done
+- [2026-08-11] **@pierre427 reviewed mlx-lm #1584 and found a real gap; verified it, replied, and
+  decided to split the PR.** Their comment made two points. The first (supplied caches skip
+  quantization in `insert_segments`) was already shipped in `3ebafab` back in July, so they were
+  reading an older branch state. The second is new and holds: **`CacheList` has no `to_quantized()`,
+  so `maybe_quantize_kv_cache`'s `hasattr` guard skips the whole layer and `--kv-bits` is silently
+  ignored** for `deepseek_v32`, `longcat_flash`, `longcat_flash_ngram`, `falcon_h1` and
+  `baichuan_m1`. This is a bug **on main today**, independent of #1584. Two findings came out of
+  probing it at the PR head (`/tmp/claude_cachelist_adversarial.py`): a recursive leaf pass on
+  rotating leaves merges cleanly into `BatchRotatingQuantizedKVCache`, but applying the recursion
+  **only at insert manufactures a mixed cohort** (supplied quantized + fresh unquantized at the same
+  layer position → `AttributeError: 'RotatingKVCache' object has no attribute 'group_size'`), so it
+  has to live in `maybe_quantize_kv_cache` itself. With plain leaves it yields `QuantizedKVCache`,
+  which has no `merge()` — `baichuan_m1` mixes both leaf kinds across layers, which is why pierre's
+  "fail loudly" guard is load-bearing rather than defensive. Reply posted as
+  [comment 5250380971](https://github.com/ml-explore/mlx-lm/pull/1584#issuecomment-5250380971).
+  **Process lesson worth keeping:** the first analysis dismissed the finding by reasoning from
+  `_make_new_cache()`, which is the exact lane a caller-supplied cache bypasses; the adversarial
+  probe refuted it. Reason about the lane the bug is *in*, and run the control that would refute you.
 - [2026-08-09] **Both of the day's "discoveries" turned out to be published, named and solved —
   and the lesson is worth more than the measurements.** Miguel's challenge ("I can't be the first
   finding this out") was correct on both counts. Batch size changing greedy output is **batch
@@ -353,6 +371,20 @@
   - **Follow-up once #1584 merges:** check whether mlx-lm's own tool-call-flush fix supersedes the
     Mistral-specific patch given #1501, and migrate `mira_mlx_server.py` to the `TextStateMachine`
     API when moving off `mira-core-pin`.
+  - **#1584 is no longer "wait only" as of 2026-08-11: it is being split into three PRs.** At +1132
+    across 4 files it sits in the class that merged **0 of 14**, and the CacheList work owed to
+    @pierre427 would only grow it. Miguel asked @angeloskath about splitting on 2026-07-26 and got
+    no answer — consistent with the roster finding below, since angeloskath has not commented
+    anywhere since 2026-07-20. **Decision: do not volunteer the split as eagerness-signalling, but
+    do act on an unanswered question of one's own.** The three pieces, with ready-to-post bodies in
+    gitignored `notes/pr1584-split/`: **(A)** single-sequence `RotatingQuantizedKVCache` +
+    `RotatingKVCache.to_quantized()`, ~390 lines, unblocks #1573; **(B)** batching
+    (`BatchRotatingQuantizedKVCache`, `BatchGenerator` wiring, `merge()` raise→delegate), depends on
+    A, is what #1476 rebases onto; **(C)** the `CacheList` recursion, independent of both and a
+    live bug on main. Index comment for the #1584 thread is drafted alongside them. **Carry
+    `MLX_ENABLE_TF32=0` into all three descriptions** — without it the same 8 pre-existing
+    `test_generate.py` failures make three separate PRs look broken to any gen-17 reviewer.
+    **Next action: await @pierre427's two tests, then open A/B/C and post the index.**
 - **vllm-mlx: one commit still owed upstream.** `edc07d4` (sibling KV-cache-path gap) waits on
   upstream [#629](https://github.com/waybarrios/vllm-mlx/pull/629) merging, then goes up as its own
   PR. It is **not on any branch** — dropped in the 2026-07-10 rebase that narrowed
