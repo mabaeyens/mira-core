@@ -115,6 +115,16 @@ def _apply_usage(chunk, usage) -> None:
     chunk.reasoning_tokens = getattr(details, 'reasoning_tokens', None) if details else None
     prompt_details = getattr(usage, 'prompt_tokens_details', None)
     chunk.cached_tokens = getattr(prompt_details, 'cached_tokens', None) if prompt_details else None
+    # mira-mlx's prefill/decode split. Non-standard, so it can arrive as a real
+    # attribute or only in pydantic's extras bag depending on the client model's
+    # strictness; try both and treat absence as "backend doesn't report it".
+    timing = getattr(usage, 'timing', None)
+    if timing is None:
+        extra = getattr(usage, 'model_extra', None) or {}
+        timing = extra.get('timing')
+    if timing is not None and not isinstance(timing, dict):
+        timing = getattr(timing, 'model_dump', lambda: None)() or None
+    chunk.timing = timing
 
 
 def normalize_oai_stream(stream):
@@ -174,7 +184,7 @@ def normalize_oai_stream(stream):
         fake = types.SimpleNamespace(
             message=msg, done=is_done, finish_reason=finish_reason,
             prompt_eval_count=0, eval_count=0,
-            reasoning_tokens=None, cached_tokens=None,
+            reasoning_tokens=None, cached_tokens=None, timing=None,
         )
 
         if is_done and acc_calls:

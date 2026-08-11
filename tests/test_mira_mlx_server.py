@@ -325,6 +325,84 @@ def test_stats_snapshot_empty_state_has_no_hit_rate_or_latency():
     assert snap["cache_hit_rate"] is None
     assert snap["latency_p50_ms"] is None
     assert snap["latency_sample_size"] == 0
+    # The split must be absent-not-zero on an idle engine, for the same reason:
+    # "0 tok/s" and "never measured" are different claims.
+    assert snap["decode_tps_p50"] is None
+    assert snap["ttft_p50_ms"] is None
+    assert snap["decode_tps_sample_size"] == 0
+
+
+# -- prefill/decode split (specs/decode-roofline.md) -------------------------
+
+def _timed_state(engine, *, start, first, completion, prompt=1000, cached=0):
+    """A finished-job state with the two clocks already set."""
+    return {
+        "start_time": start, "first_token_time": first,
+        "completion_tokens": completion, "reasoning_tokens": 0,
+        "prompt_tokens": prompt, "cached_tokens": cached,
+    }
+
+
+def test_record_timing_splits_ttft_from_decode():
+    engine = GenerationEngine(model_path="fake/model")
+    now = time.time()
+    # 2.0s of prefill, then 100 tokens over the following ~1.0s.
+    timing = engine._record_timing(
+        _timed_state(engine, start=now - 3.0, first=now - 1.0, completion=100)
+    )
+    assert 1990 < timing["ttft_ms"] < 2010
+    assert 990 < timing["decode_ms"] < 1010
+    # 99 gaps between 100 tokens across ~1s, not 100.
+    assert 97 < timing["decode_tps"] < 101
+    # 1000 uncached prompt tokens in the 2s before the first token.
+    assert 490 < timing["prefill_tps"] < 510
+
+
+def test_record_timing_drops_a_single_token_generation():
+    """One token has no decode window; reporting 0 tok/s would poison the p50."""
+    engine = GenerationEngine(model_path="fake/model")
+    now = time.time()
+    timing = engine._record_timing(
+        _timed_state(engine, start=now - 1.0, first=now, completion=1)
+    )
+    assert timing["decode_tps"] is None
+    assert engine.stats_snapshot()["decode_tps_p50"] is None
+    # The ttft half is still real and still recorded.
+    assert engine.stats_snapshot()["ttft_p50_ms"] is not None
+
+
+def test_record_timing_returns_none_when_nothing_was_generated():
+    engine = GenerationEngine(model_path="fake/model")
+    state = _timed_state(engine, start=time.time(), first=None, completion=0)
+    assert engine._record_timing(state) is None
+    assert engine.stats_snapshot()["decode_tps_sample_size"] == 0
+
+
+def test_record_timing_ignores_cached_tokens_in_prefill_rate():
+    """A cache hit did not prefill those tokens, so they must not inflate the rate."""
+    engine = GenerationEngine(model_path="fake/model")
+    now = time.time()
+    timing = engine._record_timing(
+        _timed_state(engine, start=now - 1.0, first=now, completion=10,
+                     prompt=1000, cached=900)
+    )
+    assert timing["uncached_prompt_tokens"] == 100
+    assert 95 < timing["prefill_tps"] < 105
+
+
+def test_usage_carries_timing_only_when_measured():
+    plain = GenerationEngine._usage({
+        "prompt_tokens": 10, "completion_tokens": 5,
+        "cached_tokens": 0, "reasoning_tokens": 0,
+    })
+    assert "timing" not in plain
+
+    withtiming = GenerationEngine._usage({
+        "prompt_tokens": 10, "completion_tokens": 5,
+        "cached_tokens": 0, "reasoning_tokens": 0,
+        "timing": {"ttft_ms": 1.0, "decode_ms": 2.0},
+    })
+    assert withtiming["timing"] == {"ttft_ms": 1.0, "decode_ms": 2.0}
 
 
 # -- HTTP error surfacing (2026-07-09 live-verification finding) -------------

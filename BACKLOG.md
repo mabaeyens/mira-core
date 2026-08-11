@@ -1,6 +1,40 @@
 # Backlog
 
 ## Done
+- [2026-08-11] **Instrumented the prefill/decode split and settled a question three separate
+  arguments had failed to settle: Mira is decode-dominated, and the "effective 21.7 tok/s" figure
+  that motivated the work was my own measurement artifact.** Every previous attempt compared a
+  decode rate against a felt rate and argued about the gap, because the engine could see prefill
+  and decode but not tool waits, and the orchestrator could see tool waits but not prefill — so
+  nobody could attribute a turn. Now `_record_timing` splits every request at the first generated
+  token (the only boundary the engine can actually observe) into `ttft_ms`/`decode_ms`/`decode_tps`,
+  with percentiles in `/v1/stats`; `_log_turn_timing` wraps `stream_chat` so a turn is measured on
+  every exit path — refusals, forced summaries, errors — and sums the engine's split across all the
+  LLM calls in an agentic turn alongside tool time; `_apply_usage` carries the new `timing` block
+  through `normalize_oai_stream`, which silently dropped unknown usage fields and would have made
+  the orchestrator half blind. **Measured against prod over 10 real turns across two deliberately
+  different workloads**: decode is **77.2%** of wall clock on short tool-free turns and **88.5%** on
+  a corpus-shaped run, prefill 18.1%/8.3%, tools ~2%, and `other_ms` — RAG, history load, context
+  compression — **0.0% in both**, which retires a whole family of suspicions for the cost of one
+  afternoon. Decode runs at 55.1/50.4 tok/s, confirming the long-quoted ~59 without a bench.
+  **The correction matters more than the confirmation**: the 21.7 tok/s "delivered rate" came from
+  dividing *stored* text by *whole-turn* wall clock, and an agentic turn stores only its final
+  answer, so intermediate generations, tool-call text and stripped reasoning left the numerator
+  while their time stayed in the denominator. Real effective rate is 42-45 tok/s. **Two levers are
+  now visible and neither is a kernel**: reasoning is 24-44% of all output and output time *is* the
+  clock, so capping thinking cuts wall clock nearly one-for-one; and decode degrades with context,
+  ~55 tok/s at 2k prompt tokens falling to 46-49 at 8-20k (excluding two turns that generated under
+  10 tokens, whose rate comes from 5-7 inter-token gaps and is noise). Three deliberate choices:
+  requests generating 0 or 1 tokens are **dropped rather than recorded as 0 tok/s**, because a
+  single token has no decode window and averaging it in is how a wrong number comes to look
+  precise; `decode_tps` divides by `completion_tokens - 1`, since the first token ends prefill
+  rather than starting decode; and `timing` is omitted from `usage` when absent so the block stays
+  byte-identical to OpenAI's shape for clients that don't know it. `ttft_ms` deliberately includes
+  queue time — it is what the caller waited — which makes `prefill_tps` a floor rather than a clean
+  prefill measurement, and it is labelled as such. Read out by `notes/turn_timing.py` (gitignored,
+  per `specs/decode-roofline.md` §2). **This replaces Q1-Q13 bench runs as the way to answer a
+  throughput question**: it measures live traffic continuously instead of a synthetic question set.
+  684 tests pass.
 - [2026-08-11] **The eval suite was cut to GPQA alone and scheduled overnight, and a 165-hour trap
   in the old plan was found before it ran.** Two things happened here. First, `limit=1000` on
   `mmlu_pro` never meant 1000 questions: `mmlu_pro` is a **group of 14 category subtasks** (12,032

@@ -399,6 +399,15 @@ class GenerationEngine:
         self._total_prompt_tokens = 0
         self._total_generated_tokens = 0
         self._recent_latencies_ms: "deque[float]" = deque(maxlen=200)
+        # The whole-request latency above answers "was that slow" and nothing
+        # else. These four split it, because every throughput argument this
+        # project has had came down to not knowing which half moved: a request
+        # is time-to-first-token (queue + cache fetch + prefill) followed by
+        # decode, and only the second half is the tok/s figure people quote.
+        self._recent_ttft_ms: "deque[float]" = deque(maxlen=200)
+        self._recent_decode_ms: "deque[float]" = deque(maxlen=200)
+        self._recent_decode_tps: "deque[float]" = deque(maxlen=200)
+        self._recent_prefill_tps: "deque[float]" = deque(maxlen=200)
         self._active_memory_bytes = 0
         self._cache_memory_bytes = 0
         self._peak_memory_bytes = 0
@@ -942,6 +951,10 @@ class GenerationEngine:
             prompt_tokens = self._total_prompt_tokens
             generated_tokens = self._total_generated_tokens
             latencies = sorted(self._recent_latencies_ms)
+            ttfts = sorted(self._recent_ttft_ms)
+            decode_mss = sorted(self._recent_decode_ms)
+            decode_tpss = sorted(self._recent_decode_tps)
+            prefill_tpss = sorted(self._recent_prefill_tps)
             active_memory_bytes = self._active_memory_bytes
             cache_memory_bytes = self._cache_memory_bytes
             peak_memory_bytes = self._peak_memory_bytes
@@ -1020,6 +1033,19 @@ class GenerationEngine:
             "latency_p50_ms": _percentile(latencies, 0.50),
             "latency_p95_ms": _percentile(latencies, 0.95),
             "latency_sample_size": len(latencies),
+            # The split. latency_* above is ttft + decode for the same request,
+            # so these three read together: how long before it started talking,
+            # how long it talked, and how fast while talking. decode_tps is the
+            # only one of them that is a property of the hardware; the other two
+            # move with prompt length and cache hit rate.
+            "ttft_p50_ms": _percentile(ttfts, 0.50),
+            "ttft_p95_ms": _percentile(ttfts, 0.95),
+            "decode_p50_ms": _percentile(decode_mss, 0.50),
+            "decode_tps_p50": _percentile(decode_tpss, 0.50),
+            "decode_tps_p95": _percentile(decode_tpss, 0.95),
+            "decode_tps_sample_size": len(decode_tpss),
+            # Contaminated by queueing under batching — a floor, not a rate.
+            "prefill_tps_p50": _percentile(prefill_tpss, 0.50),
             "active_memory_bytes": active_memory_bytes,
             "cache_memory_bytes": cache_memory_bytes,
             "peak_memory_bytes": peak_memory_bytes,
@@ -1495,6 +1521,11 @@ class GenerationEngine:
             "prev_state": "normal",
             "created": int(time.time()),
             "start_time": time.time(),
+            # Set on the first generated token, which is the only boundary the
+            # engine can actually observe between prefill and decode. Stays None
+            # if the job dies before generating anything, and the split is then
+            # simply not recorded rather than recorded as a zero.
+            "first_token_time": None,
         }
 
     def _handle_response(self, r) -> None:
@@ -1502,6 +1533,11 @@ class GenerationEngine:
         if state is None:
             return
         job = state["job"]
+        # .get, not [], and deliberately: a diagnostics counter must never be
+        # able to raise inside the generation loop. A state dict from before
+        # this field existed simply starts its decode window here.
+        if state.get("first_token_time") is None:
+            state["first_token_time"] = time.time()
         state["detokenizer"].add_token(r.token)
         with self._stats_lock:
             self._total_generated_tokens += 1
@@ -1566,6 +1602,7 @@ class GenerationEngine:
                 finish_reason = "tool_calls"
             tool_calls = state["tool_formatter"](state["tool_calls_raw"])
 
+            state["timing"] = self._record_timing(state)
             usage = self._usage(state)
             if job.stream:
                 if text_delta:
@@ -1608,6 +1645,64 @@ class GenerationEngine:
         elif not job.stream and text_delta:
             state["full_text"] = state.get("full_text", "") + text_delta
 
+    def _record_timing(self, state: dict) -> Optional[dict]:
+        """Split one finished request into prefill and decode, and record it.
+
+        Returns None when the split cannot be honestly computed, which is the
+        point: a request that generated nothing has no decode window, and one
+        that generated a single token has a window of zero. Reporting either as
+        "0 tok/s" would poison the percentiles, so they are dropped instead.
+
+        ``decode_tps`` divides by ``completion_tokens - 1`` because the first
+        token *ends* prefill rather than starting decode — the decode window is
+        the gaps between tokens, and there are n-1 of them.
+
+        ``ttft_ms`` is wall clock from job start, so under continuous batching it
+        includes time queued behind other requests. That is deliberate: it is
+        what the caller waited. ``prefill_tps`` inherits that contamination and
+        is therefore a floor on prefill speed, never a clean measurement of it.
+        """
+        start = state.get("start_time")
+        first = state.get("first_token_time")
+        completion = state.get("completion_tokens", 0)
+        if not start or not first:
+            return None
+
+        now = time.time()
+        ttft_ms = (first - start) * 1000
+        decode_s = now - first
+        uncached = max(0, state.get("prompt_tokens", 0) - state.get("cached_tokens", 0))
+
+        decode_tps = None
+        if completion >= 2 and decode_s > 0:
+            decode_tps = (completion - 1) / decode_s
+        prefill_tps = None
+        if uncached > 0 and ttft_ms > 0:
+            prefill_tps = uncached / (ttft_ms / 1000)
+
+        with self._stats_lock:
+            self._recent_ttft_ms.append(ttft_ms)
+            self._recent_decode_ms.append(decode_s * 1000)
+            if decode_tps is not None:
+                self._recent_decode_tps.append(decode_tps)
+            if prefill_tps is not None:
+                self._recent_prefill_tps.append(prefill_tps)
+
+        timing = {
+            "ttft_ms": round(ttft_ms, 1),
+            "decode_ms": round(decode_s * 1000, 1),
+            "decode_tps": round(decode_tps, 2) if decode_tps is not None else None,
+            "prefill_tps": round(prefill_tps, 1) if prefill_tps is not None else None,
+            "uncached_prompt_tokens": uncached,
+        }
+        logger.info(
+            "timing: ttft=%.0fms decode=%.0fms decode_tps=%s prefill_tokens=%d reasoning=%d/%d",
+            ttft_ms, decode_s * 1000,
+            f"{decode_tps:.1f}" if decode_tps is not None else "n/a",
+            uncached, state.get("reasoning_tokens", 0), completion,
+        )
+        return timing
+
     @staticmethod
     def _usage(state: dict) -> dict:
         """OpenAI-shaped usage for one finished job.
@@ -1619,13 +1714,21 @@ class GenerationEngine:
         """
         prompt = state["prompt_tokens"]
         completion = state["completion_tokens"]
-        return {
+        usage = {
             "prompt_tokens": prompt,
             "completion_tokens": completion,
             "total_tokens": prompt + completion,
             "prompt_tokens_details": {"cached_tokens": state["cached_tokens"]},
             "completion_tokens_details": {"reasoning_tokens": state["reasoning_tokens"]},
         }
+        # Mira extension, added only when there is something to report so the
+        # block above stays byte-identical to OpenAI's shape for every client
+        # that doesn't know about it. The orchestrator needs the prefill/decode
+        # split per LLM call to attribute a whole turn.
+        timing = state.get("timing")
+        if timing is not None:
+            usage["timing"] = timing
+        return usage
 
     def _chunk(self, job: ChatJob, delta: Optional[dict], finish_reason: Optional[str],
                usage: Optional[dict] = None) -> dict:

@@ -7,6 +7,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -449,7 +450,52 @@ class ChatOrchestrator:
 
     # ── Main stream ───────────────────────────────────────────────────────────
 
-    def stream_chat(
+    def stream_chat(self, *args, **kwargs) -> Iterator[Dict]:
+        """Time one whole user turn, then delegate to the real implementation.
+
+        A thin wrapper rather than a try/finally inside the body because the
+        body has many exit paths (refusals, forced summaries, errors) and a turn
+        that ends down one of them is exactly the kind we most want measured.
+        ``finally`` on a generator runs on close as well as exhaustion, so an
+        abandoned stream is still accounted.
+        """
+        self._turn_timing = {
+            "llm_ms": 0.0, "tool_ms": 0.0, "llm_calls": 0, "tool_batches": 0,
+            "prompt_tokens": 0, "cached_tokens": 0,
+            "completion_tokens": 0, "reasoning_tokens": 0,
+            "engine_ttft_ms": 0.0, "engine_decode_ms": 0.0,
+        }
+        started = time.monotonic()
+        try:
+            yield from self._stream_chat_impl(*args, **kwargs)
+        finally:
+            self._log_turn_timing(started)
+
+    def _log_turn_timing(self, started: float) -> None:
+        """One machine-readable line per turn, for notes/turn_timing.py.
+
+        ``other_ms`` is the residual — RAG, history load, context compression,
+        SSE overhead, and anything else not attributed. It is reported rather
+        than distributed, because a residual that grows is itself the finding.
+        """
+        t = getattr(self, "_turn_timing", None)
+        if not t:
+            return
+        wall_ms = (time.monotonic() - started) * 1000
+        t["wall_ms"] = round(wall_ms, 1)
+        t["other_ms"] = round(wall_ms - t["llm_ms"] - t["tool_ms"], 1)
+        for k in ("llm_ms", "tool_ms", "engine_ttft_ms", "engine_decode_ms"):
+            t[k] = round(t[k], 1)
+        if t["engine_decode_ms"] > 0 and t["completion_tokens"] > 0:
+            t["decode_tps"] = round(t["completion_tokens"] / (t["engine_decode_ms"] / 1000), 2)
+        # Effective rate over the whole turn: the number a user actually feels,
+        # and the one that diverges from decode_tps by the factor this whole
+        # exercise exists to explain.
+        if wall_ms > 0 and t["completion_tokens"] > 0:
+            t["effective_tps"] = round(t["completion_tokens"] / (wall_ms / 1000), 2)
+        logger.info("TURN_TIMING %s", json.dumps(t, sort_keys=True))
+
+    def _stream_chat_impl(
         self,
         user_message: str,
         attachments=None,
@@ -678,6 +724,7 @@ class ChatOrchestrator:
 
             full_content = ""
             final_message = None
+            _llm_started = time.monotonic()
             for event in self._stream_llm_with_thinking(thinking_enabled):
                 if event["type"] == "llm_done":
                     full_content = event["full_content"]
@@ -688,6 +735,8 @@ class ChatOrchestrator:
                     return
                 else:
                     yield event
+            self._turn_timing["llm_ms"] += (time.monotonic() - _llm_started) * 1000
+            self._turn_timing["llm_calls"] += 1
 
             tool_calls = final_message.tool_calls
 
@@ -837,7 +886,10 @@ class ChatOrchestrator:
                 yield {"type": "done", "content": self._task_done_summary, "task_done": True}
                 return
 
+            _tools_started = time.monotonic()
             yield from self._execute_tools(prepared, step, fetch_results)
+            self._turn_timing["tool_ms"] += (time.monotonic() - _tools_started) * 1000
+            self._turn_timing["tool_batches"] += 1
 
         yield from self._soft_pause_checkin(f"{MAX_AGENT_STEPS} agent steps")
 
@@ -975,6 +1027,28 @@ class ChatOrchestrator:
                         # not `is not None`, for the same reason as p and e above.
                         if isinstance(getattr(chunk, 'reasoning_tokens', None), int):
                             self._backend_counts_reasoning = True
+
+                        # Per-turn attribution. Summed across every LLM call in
+                        # the turn, so an agentic turn's four prefills all land
+                        # in engine_ttft_ms and the tool rounds between them in
+                        # tool_ms — which is the whole point of the split.
+                        tt = getattr(self, "_turn_timing", None)
+                        if tt is not None:
+                            if isinstance(p, int):
+                                tt["prompt_tokens"] += p
+                            if isinstance(e, int):
+                                tt["completion_tokens"] += e
+                            c = getattr(chunk, 'cached_tokens', None)
+                            if isinstance(c, int):
+                                tt["cached_tokens"] += c
+                            rt = getattr(chunk, 'reasoning_tokens', None)
+                            if isinstance(rt, int):
+                                tt["reasoning_tokens"] += rt
+                            tm = getattr(chunk, 'timing', None) or {}
+                            if isinstance(tm.get("ttft_ms"), (int, float)):
+                                tt["engine_ttft_ms"] += tm["ttft_ms"]
+                            if isinstance(tm.get("decode_ms"), (int, float)):
+                                tt["engine_decode_ms"] += tm["decode_ms"]
 
                 # Tell the stripper *why* the stream ended before it decides what
                 # to do with an unclosed think block. It cannot tell "the model
