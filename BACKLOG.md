@@ -335,8 +335,27 @@
      likely cause. The fix is an explicit per-request `seed` — not built.
   2. **Thinking can eat the entire production budget.** In 3 of 5 runs at `--max-tokens 4096`, a
      moderately complex creative prompt hit `finish_reason: length` without ever closing `</think>`,
-     meaning the user gets truncated reasoning and no answer. Seen on one prompt only; worth
-     reproducing deliberately before treating it as a general bug.
+     meaning the user gets truncated reasoning and no answer. ~~Seen on one prompt only; worth
+     reproducing deliberately before treating it as a general bug.~~ **REPRODUCED 2026-08-11 — it
+     is a general bug.** The conversation corpus run (24 multi-turn exchanges, three topics, real
+     `/chat` traffic) hit it on **8 of 28 assistant turns**, and the correlation with the cap is
+     **7 for 7**: every `finish_reason=length` in that window produced a user-visible broken reply,
+     matching to the second. Day-wide rate 10 of 102 LLM calls, 9.8%.
+
+     The mechanism is now pinned down, and it is not the cap alone. `thinking_stripper.py:97-111`
+     deliberately reclassifies an unclosed pre-opened `<think>` block as the answer — correct when
+     the model *chose* not to close it, wrong when it was cut off — and it cannot tell the two apart
+     because `orchestrator.py:946` calls `drain()` without passing the `finish_reason` it read at
+     line 922. The signature is reply length equal to thinking length exactly (13,299 = 13,299;
+     19,247 = 19,247), the same characters emitted once as thinking and again as the answer.
+     One reply was a bare `<|mask_start|>` special token, saved to the database as the assistant
+     message. A retried prompt reproduced byte-identically at 14,025 characters, so a fix has an
+     exact target to verify against. Full writeup and the open decision in
+     `specs/truncated-thinking-becomes-the-answer.md`.
+
+     **Needs a decision before building:** narrowing that reclassification reverses a documented
+     choice, and the alternative to showing reasoning is showing nothing. Separately, 9.8% of calls
+     hitting the cap may mean the cap is the real problem.
 - **Nothing is established about which sampling config is safer, and two probe rounds prove why.**
   Same prompt, same parameters, two rounds on 2026-08-09, flatly contradictory:
 
