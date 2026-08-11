@@ -78,3 +78,21 @@ def test_task_done_invokes_callback():
     result = tool_registry.dispatch("task_done", {"summary": "all set"}, ctx)
     assert result == {"done": True}
     assert captured["summary"] == "all set"
+
+
+@pytest.mark.parametrize("name, args, result", [
+    ("list_attachments", {}, "No files attached to this conversation."),
+    ("read_attachment", {"name": "a.txt"}, "[a.txt]\nhello"),
+])
+def test_a_string_result_still_gets_a_ui_label(name, args, result):
+    """The label layer must not assume every tool hands back a dict.
+
+    It did, and it cost three turns of a real conversation: the model called
+    list_attachments, the done-label lambda ran .get on a str, and the stream
+    died with "Internal error" after the tool_start event had already been sent.
+    """
+    from core.orchestrator import _tool_ui_labels
+
+    start, done = _tool_ui_labels(name, args)
+    assert start
+    assert done(result) == "Done"

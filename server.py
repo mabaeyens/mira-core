@@ -745,7 +745,14 @@ async def chat(
                                     "message": "Earlier conversation summarised to free up context.",
                                 })
 
-                except Exception as e:
+                except Exception:
+                    # Log it. The message below tells the user to check the
+                    # server logs, and until 2026-08-11 this handler bound the
+                    # exception and then dropped it, so the logs it points at
+                    # held nothing. Three turns died this way during a corpus
+                    # run with no traceback anywhere to say why.
+                    logger.exception("chat stream failed for conversation %s",
+                                     getattr(orch, "conv_id", "?"))
                     if not cancel_event.is_set():
                         loop.call_soon_threadsafe(
                             queue.put_nowait,

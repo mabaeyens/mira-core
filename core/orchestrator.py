@@ -70,7 +70,11 @@ def _degenerate_run(text: str):
 
 def _tool_ui_labels(name: str, args: dict):
     """Return (start_label, done_label_fn) for a tool call."""
-    def _err(r): return r.get("error", "")
+    # Not every tool returns a dict. list_attachments and read_attachment hand
+    # back a plain string, and calling .get on one raised mid-stream, killing
+    # three turns of a corpus conversation with "Internal error". The registry
+    # has always allowed a string result; this layer just never believed it.
+    def _err(r): return r.get("error", "") if isinstance(r, dict) else ""
     def _ok(r, msg): return msg if not _err(r) else f"Error: {_err(r)}"
 
     if name == "read_file":

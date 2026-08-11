@@ -417,6 +417,28 @@
      the whole corpus run, not one runaway turn: the loop is bounded at `MAX_AGENT_STEPS=15` /
      `MAX_TOOL_CALLS_PER_TURN=20` / `SAME_TOOL_REPEAT_LIMIT=15`, and no turn came near any of them.
      The repeated searching was a *consequence* of fetch_url returning junk, not a loop of its own.
+
+     **Batch 3 says the fix holds.** Post-fix replication on the three topics that broke worst,
+     chosen deliberately rather than an easier set: set analysis (was 5 of 9), data modelling
+     (was 5 of 8 and died outright), kernel debate (was 2 of 9). **0 broken turns of 23**, against
+     29.6% and 20.8%, and **zero `finish_reason=length` warnings** in the batch window against 5
+     in batch 2. Median reply length held at 3,518 characters and 17 of 23 turns cleared the
+     "long enough to reach the cap" threshold, so this is not a batch of shorter answers dodging
+     the problem. Two confounds, stated rather than hidden: fetched pages now return real content
+     instead of CSS, so fetching turns had more to work with (one turn made 34 tool calls, the
+     largest of any batch), and the askers were new agent instances writing their own wording.
+
+     Batch 3 did surface **three errored turns, and they are a different, pre-existing bug** —
+     now fixed. `_tool_ui_labels`'s default done-label lambda called `.get` on the tool result,
+     but `list_attachments` and `read_attachment` return a plain string, so the stream raised
+     `AttributeError` after `tool_start` had already been sent and the user got "Internal error —
+     see server logs". `git log -L` dates both lines to `502344f`, 2026-04-25; batches 1 and 2
+     never hit it because the model never called that tool. The line at `orchestrator.py:1135`
+     already guarded the same result with `isinstance(result, dict)`, so the string case was
+     known here and the label layer alone did not believe it. Two things shipped with it: the
+     handler in `server.py` bound the exception and dropped it, which is why the logs it tells the
+     user to check held nothing, and that now calls `logger.exception`. Verified on the live
+     server, not assumed: the same request now emits `tool_start` then `tool_done`, no error.
 - **Nothing is established about which sampling config is safer, and two probe rounds prove why.**
   Same prompt, same parameters, two rounds on 2026-08-09, flatly contradictory:
 
