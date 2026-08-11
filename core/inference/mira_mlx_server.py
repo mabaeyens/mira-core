@@ -213,6 +213,36 @@ def _build_state_machine(tokenizer, stop_words=()):
     return SequenceStateMachine(transitions, initial="normal")
 
 
+def _rfind_subseq(tokens, needle) -> int:
+    """Index of the last occurrence of ``needle`` in ``tokens``, or -1."""
+    n = len(needle)
+    if not n or len(tokens) < n:
+        return -1
+    for i in range(len(tokens) - n, -1, -1):
+        if all(tokens[i + j] == needle[j] for j in range(n)):
+            return i
+    return -1
+
+
+def _think_preopened(prompt_tokens, think_start_tokens, think_end_tokens=()) -> bool:
+    """True when the chat template left a thinking block open at the end of the prompt.
+
+    Qwen3-style templates put the thinking marker in the prompt, so the model never
+    emits think_start and the state machine stays in "normal" for the whole reasoning
+    stretch. Without this, every reasoning token on the default model is counted as
+    answer text.
+
+    Testing the prompt's last tokens is not enough: Qwen3.6 ends the prompt with
+    ``<think>\\n``, a newline token *after* the marker, and with thinking disabled it
+    emits a pre-*closed* ``<think>\\n\\n</think>\\n\\n``. What decides it is whether the
+    last opener comes after the last closer.
+    """
+    start = _rfind_subseq(prompt_tokens, tuple(think_start_tokens))
+    if start < 0:
+        return False
+    return _rfind_subseq(prompt_tokens, tuple(think_end_tokens)) < start
+
+
 @dataclass
 class ChatJob:
     messages: list
@@ -223,6 +253,10 @@ class ChatJob:
     top_p: float
     top_k: int = 0
     chat_template_kwargs: Optional[dict] = None
+    # OpenAI's `stream_options.include_usage`. Streaming responses carry no
+    # usage unless the client asks, and then it arrives as one extra chunk with
+    # an empty `choices` list after the finish_reason chunk.
+    include_usage: bool = False
     out_queue: "queue.Queue" = field(default_factory=queue.Queue)
     request_id: str = field(default_factory=lambda: f"chatcmpl-{uuid.uuid4().hex[:24]}")
 
@@ -1195,12 +1229,28 @@ class GenerationEngine:
             input_embeddings=[image_embeds] if image_embeds is not None else None,
         )
         logger.info("insert_segments took %.2fs (rest=%d tokens)", time.time() - _t2, len(rest))
+        think_end = tuple(getattr(self.tokenizer, "think_end_tokens", ()) or ())
+        preopened = _think_preopened(
+            prompt_tokens,
+            getattr(self.tokenizer, "think_start_tokens", ()) or (),
+            think_end,
+        )
+
         self._pending[uid] = {
             # Set only when prefill was actually split, so the first
             # end_of_segment for this uid is the boundary and not the trailing
             # single token insert_segments always peels off for generation.
             "snapshot_tokens": snapshot_tokens,
             "job": job,
+            # Usage accounting. prompt_tokens is the whole prompt, cached or not
+            # — cached_tokens reports the reused share separately, as OpenAI does.
+            "prompt_tokens": len(prompt_tokens),
+            "cached_tokens": prompt_cache_count,
+            "completion_tokens": 0,
+            "reasoning_tokens": 0,
+            "in_reasoning": preopened,
+            "think_end": think_end,
+            "tail": [],
             "detokenizer": self.tokenizer.detokenizer,
             "tool_formatter": ToolCallFormatter(self.tokenizer.tool_parser, job.tools, streaming=job.stream),
             "tool_text": "",
@@ -1220,6 +1270,19 @@ class GenerationEngine:
         state["detokenizer"].add_token(r.token)
         with self._stats_lock:
             self._total_generated_tokens += 1
+
+        # Count every sampled token, reasoning included — that is what OpenAI's
+        # completion_tokens means, and it is what actually cost compute.
+        state["completion_tokens"] += 1
+        if state["in_reasoning"] or r.current_state == "reasoning":
+            state["reasoning_tokens"] += 1
+        if state["in_reasoning"] and state["think_end"]:
+            # The closing marker can be more than one token, so match on a
+            # rolling tail rather than the current token alone.
+            state["tail"].append(r.token)
+            del state["tail"][: -len(state["think_end"])]
+            if tuple(state["tail"]) == state["think_end"]:
+                state["in_reasoning"] = False
 
         # Buffer raw text while inside a "tool" state segment.
         in_tool_text = r.current_state == "tool" or state["prev_state"] == "tool"
@@ -1268,18 +1331,25 @@ class GenerationEngine:
                 finish_reason = "tool_calls"
             tool_calls = state["tool_formatter"](state["tool_calls_raw"])
 
+            usage = self._usage(state)
             if job.stream:
                 if text_delta:
                     job.out_queue.put(self._chunk(job, delta={"content": text_delta}, finish_reason=None))
                 if tool_calls:
                     job.out_queue.put(self._chunk(job, delta={"tool_calls": tool_calls}, finish_reason=None))
                 job.out_queue.put(self._chunk(job, delta={}, finish_reason=finish_reason))
+                if job.include_usage:
+                    # Separate trailing chunk with no choices, per OpenAI. Clients
+                    # that don't ask never see it, so this can't shift the shape
+                    # of a stream anyone is already parsing.
+                    job.out_queue.put(self._chunk(job, delta=None, finish_reason=None, usage=usage))
             else:
                 message = {"role": "assistant", "content": state.get("full_text", "") + text_delta}
                 if tool_calls:
                     message["tool_calls"] = tool_calls
                     message["content"] = message["content"] or None
-                job.out_queue.put(self._response(job, message=message, finish_reason=finish_reason))
+                job.out_queue.put(self._response(job, message=message, finish_reason=finish_reason,
+                                                 usage=usage))
             job.out_queue.put(DONE)
 
             if r.prompt_cache is not None and r.all_tokens is not None:
@@ -1298,22 +1368,48 @@ class GenerationEngine:
         elif not job.stream and text_delta:
             state["full_text"] = state.get("full_text", "") + text_delta
 
-    def _chunk(self, job: ChatJob, delta: dict, finish_reason: Optional[str]) -> dict:
+    @staticmethod
+    def _usage(state: dict) -> dict:
+        """OpenAI-shaped usage for one finished job.
+
+        ``cached_tokens`` is the prompt-cache hit for this request specifically —
+        /v1/stats only ever exposed a lifetime hit rate, which says nothing about
+        the turn in front of you. ``reasoning_tokens`` is counted from the
+        sequence state machine, not estimated from character length.
+        """
+        prompt = state["prompt_tokens"]
+        completion = state["completion_tokens"]
+        return {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": prompt + completion,
+            "prompt_tokens_details": {"cached_tokens": state["cached_tokens"]},
+            "completion_tokens_details": {"reasoning_tokens": state["reasoning_tokens"]},
+        }
+
+    def _chunk(self, job: ChatJob, delta: Optional[dict], finish_reason: Optional[str],
+               usage: Optional[dict] = None) -> dict:
+        # `delta=None` builds the usage-only chunk: no choices at all, which is
+        # how OpenAI marks it and how bc.normalize_oai_stream recognises it.
         return {
             "id": job.request_id,
             "object": "chat.completion.chunk",
             "created": int(time.time()),
             "model": self.model_path,
-            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+            "choices": ([] if delta is None
+                        else [{"index": 0, "delta": delta, "finish_reason": finish_reason}]),
+            "usage": usage,
         }
 
-    def _response(self, job: ChatJob, message: dict, finish_reason: Optional[str]) -> dict:
+    def _response(self, job: ChatJob, message: dict, finish_reason: Optional[str],
+                  usage: Optional[dict] = None) -> dict:
         return {
             "id": job.request_id,
             "object": "chat.completion",
             "created": int(time.time()),
             "model": self.model_path,
             "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+            "usage": usage,
         }
 
 
@@ -1340,6 +1436,7 @@ def create_app(engine: GenerationEngine) -> FastAPI:
             top_p=body.get("top_p", 0.0) or 0.0,
             top_k=int(body.get("top_k", 0) or 0),
             chat_template_kwargs=body.get("chat_template_kwargs"),
+            include_usage=bool((body.get("stream_options") or {}).get("include_usage")),
         )
         loop = asyncio.get_event_loop()
         engine.submit(job)

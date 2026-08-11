@@ -10,10 +10,13 @@ lives here.
 
 from typing import List, Dict, Optional, Tuple
 
-# A backend's eval_count covers only visible content tokens; thinking tokens arrive
-# separately and are not counted. We approximate them from character length so
-# the displayed output-token total reflects the real compute. ~3.5 chars/token
-# matches typical Qwen3/Gemma tokenization closely enough for a usage readout.
+# Fallback for backends that don't report reasoning_tokens. Their eval_count covers
+# only visible content tokens; thinking tokens arrive separately and are not counted,
+# so we approximate them from character length and the displayed output-token total
+# still reflects real compute. ~3.5 chars/token matches typical Qwen3/Gemma
+# tokenization closely enough for a usage readout. mira-mlx counts reasoning tokens
+# exactly (from its sequence state machine) and the orchestrator skips this estimate
+# whenever a backend reports them — adding both would double-count.
 _THINKING_CHARS_PER_TOKEN = 3.5
 
 # Cap each compressed message's excerpt so a few huge messages can't blow up the

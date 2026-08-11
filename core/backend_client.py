@@ -101,6 +101,22 @@ def parse_xml_tool_calls(text: str):
     return calls or None
 
 
+def _apply_usage(chunk, usage) -> None:
+    """Fold an OpenAI ``usage`` block onto a done chunk, in place.
+
+    ``reasoning_tokens`` matters beyond bookkeeping: when the backend reports it,
+    ``completion_tokens`` already covers the thinking stream, and the
+    orchestrator must not add its character-based estimate on top. Absent means
+    "not reported", which is why it stays None rather than defaulting to 0.
+    """
+    chunk.prompt_eval_count = getattr(usage, 'prompt_tokens', 0) or 0
+    chunk.eval_count = getattr(usage, 'completion_tokens', 0) or 0
+    details = getattr(usage, 'completion_tokens_details', None)
+    chunk.reasoning_tokens = getattr(details, 'reasoning_tokens', None) if details else None
+    prompt_details = getattr(usage, 'prompt_tokens_details', None)
+    chunk.cached_tokens = getattr(prompt_details, 'cached_tokens', None) if prompt_details else None
+
+
 def normalize_oai_stream(stream):
     """Yield Ollama-compatible chunk objects from an OpenAI-compatible stream."""
     acc_args: dict[int, str] = {}
@@ -116,8 +132,7 @@ def normalize_oai_stream(stream):
         if not chunk.choices:
             if pending_done is not None:
                 if last_usage:
-                    pending_done.prompt_eval_count = getattr(last_usage, 'prompt_tokens', 0) or 0
-                    pending_done.eval_count = getattr(last_usage, 'completion_tokens', 0) or 0
+                    _apply_usage(pending_done, last_usage)
                 yield pending_done
                 pending_done = None
             continue
@@ -152,8 +167,14 @@ def normalize_oai_stream(stream):
         is_done = finish_reason is not None
 
         msg = types.SimpleNamespace(content=content, tool_calls=None, thinking=reasoning)
+        # Carry the reason itself, not just the fact that one arrived. "length" means
+        # the model was cut off at max_tokens with more to say; "stop" means it chose
+        # to end. Collapsing both to `done` made a truncated reply indistinguishable
+        # from a finished one everywhere downstream. None on every chunk but the last.
         fake = types.SimpleNamespace(
-            message=msg, done=is_done, prompt_eval_count=0, eval_count=0
+            message=msg, done=is_done, finish_reason=finish_reason,
+            prompt_eval_count=0, eval_count=0,
+            reasoning_tokens=None, cached_tokens=None,
         )
 
         if is_done and acc_calls:
@@ -179,8 +200,7 @@ def normalize_oai_stream(stream):
 
         if is_done:
             if last_usage:
-                fake.prompt_eval_count = getattr(last_usage, 'prompt_tokens', 0) or 0
-                fake.eval_count = getattr(last_usage, 'completion_tokens', 0) or 0
+                _apply_usage(fake, last_usage)
                 yield fake
             else:
                 pending_done = fake
@@ -189,8 +209,7 @@ def normalize_oai_stream(stream):
 
     if pending_done is not None:
         if last_usage:
-            pending_done.prompt_eval_count = getattr(last_usage, 'prompt_tokens', 0) or 0
-            pending_done.eval_count = getattr(last_usage, 'completion_tokens', 0) or 0
+            _apply_usage(pending_done, last_usage)
         yield pending_done
 
 

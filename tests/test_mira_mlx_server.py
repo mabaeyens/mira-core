@@ -3,6 +3,7 @@ oversized-single-prompt rejection path. No real model load needed."""
 import asyncio
 import json
 import time
+import types
 
 import httpx
 import pytest
@@ -18,6 +19,7 @@ from core.inference.mira_mlx_server import (
     create_app,
     _build_state_machine,
     _prepare_messages,
+    _think_preopened,
 )
 
 
@@ -469,3 +471,216 @@ def test_zero_timeout_keeps_the_tower_resident():
     engine._tower_last_used = time.time() - 100000
     engine._release_idle_tower()
     assert engine.vision_tower is not None
+
+
+# -- usage accounting ---------------------------------------------------------
+
+class _FakeDetokenizer:
+    """Decodes each token id as a single character, like a toy BPE."""
+
+    def __init__(self):
+        self.last_segment = ""
+
+    def add_token(self, token):
+        self.last_segment = chr(token)
+
+    def finalize(self):
+        self.last_segment = ""
+
+
+def _usage_engine(job, *, prompt=100, cached=64, preopened=False, think_end=(), uid=7):
+    engine = GenerationEngine(model_path="fake/model")
+    engine._eos_ids = {1}
+    engine.tokenizer = types.SimpleNamespace(tool_call_end=None)
+    engine._pending[uid] = {
+        "snapshot_tokens": None,
+        "job": job,
+        "prompt_tokens": prompt,
+        "cached_tokens": cached,
+        "completion_tokens": 0,
+        "reasoning_tokens": 0,
+        "in_reasoning": preopened,
+        "think_end": tuple(think_end),
+        "tail": [],
+        "detokenizer": _FakeDetokenizer(),
+        "tool_formatter": lambda raw: None,
+        "tool_text": "",
+        "tool_calls_raw": [],
+        "made_tool_call": False,
+        "in_tool_state": False,
+        "prev_state": "normal",
+        "created": 0,
+        "start_time": time.time(),
+    }
+    return engine
+
+
+def _token(uid, token, state="normal", finish_reason=None):
+    return types.SimpleNamespace(uid=uid, token=token, current_state=state,
+                                 finish_reason=finish_reason,
+                                 prompt_cache=None, all_tokens=None)
+
+
+def _drain(job):
+    out = []
+    while True:
+        item = job.out_queue.get_nowait()
+        if item is DONE:
+            return out
+        out.append(item)
+
+
+def _stream_job(include_usage=True):
+    return ChatJob(messages=[{"role": "user", "content": "hi"}], tools=None, stream=True,
+                   max_tokens=128, temperature=0.0, top_p=0.0, include_usage=include_usage)
+
+
+def test_usage_block_has_the_openai_shape():
+    usage = GenerationEngine._usage({
+        "prompt_tokens": 1200, "completion_tokens": 300,
+        "cached_tokens": 1024, "reasoning_tokens": 250,
+    })
+    assert usage == {
+        "prompt_tokens": 1200,
+        "completion_tokens": 300,
+        "total_tokens": 1500,
+        "prompt_tokens_details": {"cached_tokens": 1024},
+        "completion_tokens_details": {"reasoning_tokens": 250},
+    }
+
+
+def test_stream_emits_a_trailing_usage_only_chunk_when_asked():
+    job = _stream_job(include_usage=True)
+    engine = _usage_engine(job, prompt=42, cached=8)
+    engine._handle_response(_token(7, ord("a")))
+    engine._handle_response(_token(7, ord("b"), finish_reason="stop"))
+
+    chunks = _drain(job)
+    # The finish_reason chunk comes first and carries no usage; the usage chunk
+    # follows it with an empty choices list, exactly as OpenAI specifies.
+    assert chunks[-2]["choices"][0]["finish_reason"] == "stop"
+    assert chunks[-2]["usage"] is None
+    assert chunks[-1]["choices"] == []
+    assert chunks[-1]["usage"]["prompt_tokens"] == 42
+    assert chunks[-1]["usage"]["completion_tokens"] == 2
+    assert chunks[-1]["usage"]["prompt_tokens_details"]["cached_tokens"] == 8
+
+
+def test_stream_stays_silent_about_usage_when_not_asked():
+    job = _stream_job(include_usage=False)
+    engine = _usage_engine(job)
+    engine._handle_response(_token(7, ord("a")))
+    engine._handle_response(_token(7, ord("b"), finish_reason="stop"))
+
+    chunks = _drain(job)
+    assert all(c["choices"] for c in chunks), "emitted a usage-only chunk unasked"
+    assert all(c["usage"] is None for c in chunks)
+
+
+def test_non_streaming_response_always_carries_usage():
+    """Only streaming gates usage behind stream_options — a plain response never does."""
+    job = ChatJob(messages=[{"role": "user", "content": "hi"}], tools=None, stream=False,
+                  max_tokens=128, temperature=0.0, top_p=0.0)
+    engine = _usage_engine(job, prompt=11, cached=0)
+    engine._handle_response(_token(7, ord("x"), finish_reason="stop"))
+
+    (response,) = _drain(job)
+    assert response["usage"]["prompt_tokens"] == 11
+    assert response["usage"]["completion_tokens"] == 1
+
+
+def test_reasoning_tokens_counted_from_the_state_machine():
+    job = _stream_job()
+    engine = _usage_engine(job)
+    engine._handle_response(_token(7, ord("a"), state="reasoning"))
+    engine._handle_response(_token(7, ord("b"), state="reasoning"))
+    engine._handle_response(_token(7, ord("c"), state="normal"))
+    engine._handle_response(_token(7, ord("d"), state="normal", finish_reason="stop"))
+
+    usage = _drain(job)[-1]["usage"]
+    assert usage["completion_tokens"] == 4
+    assert usage["completion_tokens_details"]["reasoning_tokens"] == 2
+
+
+def test_preopened_thinking_counts_despite_the_normal_state():
+    """Qwen3 opens <think> in the prompt, so the machine reports "normal"
+    throughout the reasoning stretch. Counting only "reasoning" would score 0."""
+    job = _stream_job()
+    engine = _usage_engine(job, preopened=True, think_end=(99,))
+    for tok in (ord("a"), ord("b"), 99):  # two thoughts, then </think>
+        engine._handle_response(_token(7, tok, state="normal"))
+    engine._handle_response(_token(7, ord("y"), state="normal"))
+    engine._handle_response(_token(7, ord("z"), state="normal", finish_reason="stop"))
+
+    usage = _drain(job)[-1]["usage"]
+    assert usage["completion_tokens"] == 5
+    # The closing marker itself is generation the model paid for: 2 thoughts + </think>.
+    assert usage["completion_tokens_details"]["reasoning_tokens"] == 3
+
+
+def test_multi_token_think_end_closes_the_reasoning_stretch():
+    """The closing marker can span tokens; a single-token match would never fire."""
+    job = _stream_job()
+    engine = _usage_engine(job, preopened=True, think_end=(98, 99))
+    for tok in (ord("a"), 98, 99, ord("y"), ord("z")):
+        engine._handle_response(_token(7, tok, state="normal"))
+    engine._handle_response(_token(7, ord("!"), state="normal", finish_reason="stop"))
+
+    usage = _drain(job)[-1]["usage"]
+    assert usage["completion_tokens_details"]["reasoning_tokens"] == 3
+
+
+def test_non_thinking_model_reports_zero_reasoning_not_none():
+    job = _stream_job()
+    engine = _usage_engine(job, preopened=False, think_end=())
+    engine._handle_response(_token(7, ord("a")))
+    engine._handle_response(_token(7, ord("b"), finish_reason="stop"))
+
+    usage = _drain(job)[-1]["usage"]
+    assert usage["completion_tokens_details"]["reasoning_tokens"] == 0
+
+
+def test_length_stop_still_reports_usage():
+    """A truncated turn is exactly when the token count matters most."""
+    job = _stream_job()
+    engine = _usage_engine(job, prompt=5)
+    engine._handle_response(_token(7, ord("a"), finish_reason="length"))
+
+    chunks = _drain(job)
+    assert chunks[-2]["choices"][0]["finish_reason"] == "length"
+    assert chunks[-1]["usage"]["total_tokens"] == 6
+
+
+# -- pre-opened thinking detection --------------------------------------------
+
+def test_think_preopened_true_when_prompt_ends_with_the_marker():
+    assert _think_preopened([5, 6, 151667], (151667,), (151668,)) is True
+
+
+def test_think_preopened_true_when_a_newline_follows_the_marker():
+    # The real Qwen3.6 tail: '<|im_start|>assistant\n<think>\n'. The marker is
+    # second-to-last, so an exact end-of-prompt match misses it and every
+    # reasoning token gets counted as answer text.
+    assert _think_preopened([5, 6, 248068, 198], (248068,), (248069,)) is True
+
+
+def test_think_preopened_false_when_the_template_pre_closed_the_block():
+    # Thinking disabled emits '<think>\n\n</think>\n\n' — opened and closed, so
+    # what the model generates next is answer text, not reasoning.
+    assert _think_preopened([5, 248068, 198, 248069, 198], (248068,), (248069,)) is False
+
+
+def test_think_preopened_false_for_a_model_without_thinking():
+    assert _think_preopened([5, 6, 7], (), ()) is False
+
+
+def test_think_preopened_handles_a_multi_token_marker():
+    assert _think_preopened([1, 27, 271], (27, 271), (28, 271)) is True
+    assert _think_preopened([271], (27, 271), (28, 271)) is False
+
+
+def test_think_preopened_reads_the_last_marker_pair_not_the_first():
+    # A closed block from an earlier turn must not mask the open one that the
+    # generation prompt just added.
+    tokens = [248068, 5, 248069, 9, 248068, 198]
+    assert _think_preopened(tokens, (248068,), (248069,)) is True

@@ -133,6 +133,102 @@ def test_stream_content_then_done_with_usage():
     assert final.eval_count == 5
 
 
+def test_stream_carries_finish_reason_stop():
+    stream = [
+        _chunk(_delta(content="done thinking")),
+        _chunk(_delta(content="."), finish_reason="stop"),
+    ]
+    out = list(bc.normalize_oai_stream(stream))
+    assert out[-1].finish_reason == "stop"
+    # Only the terminating chunk carries one.
+    assert out[0].finish_reason is None
+
+
+def test_stream_carries_finish_reason_length_distinctly():
+    """A reply cut off at max_tokens must not look like a finished one.
+
+    Both cases set ``done=True``, so ``done`` alone cannot tell them apart —
+    that collapse is what made truncation invisible to the orchestrator.
+    """
+    truncated = list(bc.normalize_oai_stream([
+        _chunk(_delta(content="the first half of a sentence that never"),
+               finish_reason="length"),
+    ]))
+    finished = list(bc.normalize_oai_stream([
+        _chunk(_delta(content="a complete sentence."), finish_reason="stop"),
+    ]))
+    assert truncated[-1].done is finished[-1].done is True
+    assert truncated[-1].finish_reason == "length"
+    assert finished[-1].finish_reason == "stop"
+    assert truncated[-1].finish_reason != finished[-1].finish_reason
+
+
+def test_stream_finish_reason_survives_trailing_usage_chunk():
+    """The done chunk is held back until usage arrives — it must keep its reason."""
+    stream = [
+        _chunk(_delta(content="cut off here"), finish_reason="length"),
+        _chunk(usage=_usage(30, 4096)),  # usage-only chunk, no choices
+    ]
+    out = list(bc.normalize_oai_stream(stream))
+    assert out[-1].finish_reason == "length"
+    assert out[-1].eval_count == 4096
+
+
+def _detailed_usage(prompt, completion, cached=None, reasoning=None):
+    """Usage with OpenAI's optional detail sub-objects, as mira-mlx now sends."""
+    return types.SimpleNamespace(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        prompt_tokens_details=types.SimpleNamespace(cached_tokens=cached),
+        completion_tokens_details=types.SimpleNamespace(reasoning_tokens=reasoning),
+    )
+
+
+def test_stream_surfaces_usage_details():
+    stream = [
+        _chunk(_delta(content="hi"), finish_reason="stop"),
+        _chunk(usage=_detailed_usage(1200, 300, cached=1024, reasoning=250)),
+    ]
+    final = list(bc.normalize_oai_stream(stream))[-1]
+    assert final.prompt_eval_count == 1200
+    assert final.eval_count == 300
+    assert final.cached_tokens == 1024
+    assert final.reasoning_tokens == 250
+
+
+def test_stream_usage_details_absent_stay_none():
+    """None means "not reported" — 0 would claim the backend measured no thinking."""
+    stream = [
+        _chunk(_delta(content="hi"), finish_reason="stop"),
+        _chunk(usage=_usage(12, 5)),  # plain usage, no detail sub-objects
+    ]
+    final = list(bc.normalize_oai_stream(stream))[-1]
+    assert final.eval_count == 5
+    assert final.reasoning_tokens is None
+    assert final.cached_tokens is None
+
+
+def test_stream_without_usage_leaves_counts_at_zero():
+    """A backend that sends no usage at all must still produce a usable done chunk."""
+    stream = [_chunk(_delta(content="hi"), finish_reason="stop")]
+    final = list(bc.normalize_oai_stream(stream))[-1]
+    assert final.done is True
+    assert (final.prompt_eval_count, final.eval_count) == (0, 0)
+    assert final.reasoning_tokens is None
+
+
+def test_stream_usage_arriving_on_the_done_chunk_itself():
+    """Non-streaming-style backends fold usage onto the finish chunk, not after it."""
+    stream = [
+        _chunk(_delta(content="hi"), finish_reason="stop",
+               usage=_detailed_usage(40, 9, cached=0, reasoning=4)),
+    ]
+    final = list(bc.normalize_oai_stream(stream))[-1]
+    assert (final.prompt_eval_count, final.eval_count) == (40, 9)
+    assert final.cached_tokens == 0
+    assert final.reasoning_tokens == 4
+
+
 def test_stream_surfaces_reasoning_as_thinking():
     stream = [_chunk(_delta(reasoning="thinking aloud"))]
     out = list(bc.normalize_oai_stream(stream))

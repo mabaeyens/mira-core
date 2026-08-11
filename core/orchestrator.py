@@ -229,6 +229,10 @@ class ChatOrchestrator:
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
         self.last_prompt_tokens: int = 0
+        # True once this turn's backend has reported reasoning_tokens, meaning
+        # eval_count already covers the thinking stream and the character-based
+        # estimate must not be added on top. Re-armed at the start of every turn.
+        self._backend_counts_reasoning: bool = False
         self.conv_id: Optional[str] = None
         self._is_new_conv: bool = False
         self.project: Optional[Dict] = None
@@ -582,6 +586,10 @@ class ChatOrchestrator:
 
         fetch_results = []
         _thinking_chars = 0  # accumulated across all tool steps for this turn
+        # Reset per turn, not per process: a backend switch mid-conversation can
+        # change whether reasoning_tokens is reported at all, and a sticky flag
+        # would either double-count or silently stop counting after the switch.
+        self._backend_counts_reasoning = False
         self._task_done = False
         self._task_done_summary = ""
         self._task_done_refused = False   # one refusal per turn; see the guard below
@@ -621,7 +629,7 @@ class ChatOrchestrator:
                     forced = self._llm_chat_sync(forced_history)
                     if forced:
                         self._mark_task_done(forced)
-                        if _thinking_chars:
+                        if _thinking_chars and not self._backend_counts_reasoning:
                             self.total_output_tokens += ctxmgr.thinking_tokens(_thinking_chars)
                         yield {
                             "type": "stats",
@@ -684,11 +692,13 @@ class ChatOrchestrator:
                             for c in rag_chunks
                         ],
                     }
-                # Ollama's eval_count covers only the visible content tokens; thinking
-                # tokens arrive separately via chunk.message.thinking and are not included.
-                # Convert accumulated thinking chars to approximate tokens (~3.5 chars/tok)
-                # and fold into total_output_tokens so the display reflects actual compute.
-                if _thinking_chars:
+                # Fallback only. Backends that report reasoning_tokens already count
+                # the thinking stream inside eval_count (mira-mlx does, from its
+                # sequence state machine). For the ones that don't, convert
+                # accumulated thinking chars to approximate tokens (~3.5 chars/tok)
+                # so the display still reflects actual compute rather than ignoring
+                # what is often most of the generation.
+                if _thinking_chars and not self._backend_counts_reasoning:
                     self.total_output_tokens += ctxmgr.thinking_tokens(_thinking_chars)
                 yield {
                     "type": "stats",
@@ -782,7 +792,7 @@ class ChatOrchestrator:
                     continue
                 task_done_args = next(args for _, name, args, _ in prepared if name == "task_done")
                 self._mark_task_done(task_done_args.get("summary", "Task complete."))
-                if _thinking_chars:
+                if _thinking_chars and not self._backend_counts_reasoning:
                     self.total_output_tokens += ctxmgr.thinking_tokens(_thinking_chars)
                 yield {
                     "type": "stats",
@@ -858,11 +868,16 @@ class ChatOrchestrator:
     def _stream_llm_with_thinking(self, thinking_enabled: bool):
         """Call the LLM, strip thinking tags, yield typed events.
 
-        Final event: {"type": "llm_done", "full_content": str, "final_message": obj, "thinking_chars": int}
+        Final event: {"type": "llm_done", "full_content": str, "final_message": obj,
+                      "thinking_chars": int, "finish_reason": str | None}
+        ``finish_reason`` is what the engine reported — "stop" when the model chose
+        to end, "length" when it was cut off at max_tokens with more to say, None
+        when the backend didn't say. See specs/generation-runaway-guard.md.
         On failure:  {"type": "error", "message": str} — caller should forward and return.
         """
         full_content = ""
         final_message = None
+        final_finish_reason = None
         thinking_chars = 0
 
         for attempt in range(1, MAX_RETRIES + 1):
@@ -904,6 +919,7 @@ class ChatOrchestrator:
 
                     if chunk.done:
                         final_message = chunk.message
+                        final_finish_reason = getattr(chunk, "finish_reason", None)
                         if not final_message.tool_calls and accumulated_tool_calls:
                             # Gemma4 quirk: tool_calls arrive in intermediate chunks
                             if hasattr(final_message, 'model_copy'):
@@ -919,6 +935,12 @@ class ChatOrchestrator:
                             self.total_input_tokens += p
                         if isinstance(e, int):
                             self.total_output_tokens += e
+                        # A backend that reports reasoning_tokens has already
+                        # counted the thinking stream inside eval_count, so the
+                        # character estimate elsewhere would double it. isinstance,
+                        # not `is not None`, for the same reason as p and e above.
+                        if isinstance(getattr(chunk, 'reasoning_tokens', None), int):
+                            self._backend_counts_reasoning = True
 
                 # Drain remaining buffered content.
                 yield from stripper.drain()
@@ -939,12 +961,29 @@ class ChatOrchestrator:
             return
 
         logger.info(
-            "LLM response — content_len=%d tool_calls=%s thinking_len=%d",
+            "LLM response — content_len=%d tool_calls=%s thinking_len=%d finish_reason=%s",
             len(final_message.content or ""),
             bool(final_message.tool_calls),
             len(getattr(final_message, 'thinking', None) or ""),
+            final_finish_reason,
         )
-        yield {"type": "llm_done", "full_content": full_content, "final_message": final_message, "thinking_chars": thinking_chars}
+        if final_finish_reason == "length":
+            # Logged loudly on purpose: this is the only record that a reply was cut
+            # off mid-sentence rather than finished, and counting these in the log is
+            # how we size how often it happens. See specs/generation-runaway-guard.md.
+            logger.warning(
+                "LLM hit the token cap (finish_reason=length) — reply is truncated. "
+                "content_len=%d thinking_len=%d",
+                len(final_message.content or ""),
+                len(getattr(final_message, 'thinking', None) or ""),
+            )
+        yield {
+            "type": "llm_done",
+            "full_content": full_content,
+            "final_message": final_message,
+            "thinking_chars": thinking_chars,
+            "finish_reason": final_finish_reason,
+        }
 
     def _execute_tools(self, prepared: list, step: int, fetch_results: list):
         """Emit start events, run tools in parallel, emit result events, update history."""
