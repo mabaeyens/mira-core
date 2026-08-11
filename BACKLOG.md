@@ -1,6 +1,29 @@
 # Backlog
 
 ## Done
+- [2026-08-11] **The eval suite was cut to GPQA alone and scheduled overnight, and a 165-hour trap
+  in the old plan was found before it ran.** Two things happened here. First, `limit=1000` on
+  `mmlu_pro` never meant 1000 questions: `mmlu_pro` is a **group of 14 category subtasks** (12,032
+  docs), lm-eval applies `limit` per task in the *flattened* list (`evaluator.py:535-539`), and
+  `get_sample_size` (`evaluator_utils.py:49-54`) returns `int(limit)` with **no clamp to the doc
+  count** — so the group would have run `sum(min(1000, N_i))` = **11,149 questions, ~165h**, turning
+  the "~26h suite" into ~176h. The same trap applies to `samples=`, which is keyed by *subtask* name,
+  so `samples={"mmlu_pro": [...]}` matches nothing and silently runs all 12,032. Caught at dry-run,
+  cost nothing. Second, and the reason it matters less than it might: at the real 1739 questions the
+  suite is still 25.8h, i.e. **four nights of a personal laptop**, and that is not a trade worth
+  making. It now runs **GPQA diamond only — 198 questions, ~2.9h, one night.** IFEval was dropped as
+  the weakest of the three (with thinking on and a 16384 cap, a generation that never closes
+  `</think>` has its whole reasoning chain scored as the answer and still collects marks), MMLU-Pro
+  on cost alone. Machinery, all gitignored: `notes/lm_evals_nightly.py` (stratified plan, 25-question
+  chunks, JSON state so a chunk is consumed exactly once and an interrupt costs 25 questions rather
+  than the night, wall-clock deadline checked *between* chunks), `notes/lm_evals_nightly.sh`
+  (caffeinate, stop/restore production Mira), LaunchAgent `com.mab.mira-evals` at 00:30 with a hard
+  stop at 08:15, and `notes/lm_evals_merge.py` to pool the chunks. **Chunking does not cost
+  accuracy** — every metric is a mean over independent per-question scores, so the pooled mean and
+  the n are what a single run would have produced; the only difference is which questions batch
+  together, which is the batch-composition term every score here already carries and already has to
+  report. The merge script re-derives each chunk's own score from its samples and refuses to certify
+  the run if it cannot reproduce what the harness wrote.
 - [2026-08-11] **IFEval's generation cap decided: 16384, overriding the task's own 1280, and the
   thing that gates publishing is no longer the cap.** Miguel delegated the number ("raise the limit
   as you see fit"), so the useful part is the reasoning rather than the value. **1280 predates
@@ -274,6 +297,12 @@
   cannot change a generated answer and accuracy evals are unaffected by it.
 
 ### Needs Miguel
+- **Arm the wake for the GPQA night.** The LaunchAgent fires at 00:30 but launchd cannot wake a
+  sleeping Mac, and that needs root, so it is the one step Claude cannot do:
+  `sudo pmset schedule wakeorpoweron "08/12/2026 00:25:00"`. **The lid must stay open** — `caffeinate`
+  does not defeat clamshell sleep. Arq's own wakes (00:00/01:00/01:30/03:00) are separate one-off
+  events and are not disturbed by this. One night only; use `pmset repeat wakeorpoweron MTWRFSU
+  00:25:00` instead if the plan ever grows past one night.
 - ~~**Decide IFEval's generation cap.**~~ **DONE 2026-08-11** — see the Done entry. IFEval runs at
   16384, overriding its `max_gen_toks: 1280`, and the publishing condition moved off the cap and
   onto reporting it. Nothing blocks the eval suite now.
