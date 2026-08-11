@@ -398,6 +398,18 @@
   harness deliberately does not make.
 
 ### Small, no decision needed
+- **Memory-state notifications should only fire when Miguel can act, or when they explain something
+  he caused.** Asked for directly on 2026-08-11, after the log showed **302 `advisory → evicted`
+  transitions in 70.5 hours** — one every ~14 minutes, round the clock, including 01:30, 03:00 and
+  06:53 while he was asleep. macOS compresses an idle 20 GB process and Mira decompresses it back;
+  there is nothing for a user to do about either, so the notification is pure noise and it trains him
+  to ignore the channel that should carry the real ones. **The rule: keep the log line, drop the
+  notification, unless the state is one the user can change (close another app, plug in) or one his
+  own action produced.** Not the same thing as suppressing the *event* — that is
+  `specs/idle-decompress-treadmill.md`, which may or may not be worth building; this item stands
+  either way and is much cheaper. Touches whatever in mira-apps consumes `system_memory.advisory`,
+  so it is a mira-apps change with a mira-core decision behind it: mira-core owns the advisory field
+  and should say which transitions are user-facing.
 - **The question set is now the limiting factor, not the harness.** Tier 1 scored 24/24 three runs
   running, so the deterministic half no longer discriminates between builds — it is a regression
   alarm, not a measure of quality. The judged half carries a ±1 floor, so it cannot be read finely
