@@ -390,6 +390,11 @@ class GenerationEngine:
         self._cache_hits = 0
         self._cache_misses = 0
         self._memory_pressure_trim_events = 0
+        # Times the ceiling was breached but releasing MLX's reuse cache was
+        # enough, so no prefill was thrown away. Counted separately from
+        # _memory_pressure_trim_events: they are the same trigger with very
+        # different costs, and collapsing them hides which one is happening.
+        self._buffer_cache_sufficed = 0
         self._last_trim: dict | None = None
         self._total_prompt_tokens = 0
         self._total_generated_tokens = 0
@@ -862,38 +867,69 @@ class GenerationEngine:
             self._cache_memory_bytes = cache
             self._peak_memory_bytes = mx.get_peak_memory()
 
+        ceiling = self._memory_ceiling_bytes
         used = active + cache
-        if used <= self._memory_ceiling_bytes:
+        if used <= ceiling:
             return
-        # Record what the response cost against what it was responding to. Halving
-        # the pool is a fixed reaction to a variable overshoot: across the five
-        # trims in the 2026-08-08..11 log the overshoot was 0.00-0.11GB and the
-        # response freed 0.53-1.14GB, i.e. 7x to 53x more than needed. The open
-        # question is whether mx.clear_cache() below would have cleared the
-        # condition on its own, which needs `cache` beside the overshoot at the
-        # moment of the trim -- so log both rather than infer them later.
-        overshoot = used - self._memory_ceiling_bytes
+        overshoot = used - ceiling
+
+        # Give back MLX's own reuse cache FIRST, then re-measure. `used` counts
+        # mx.get_cache_memory(), which is a reuse pool capped at ceiling//8
+        # (~3.6GB here) and is free to discard: it costs a later reallocation,
+        # never a recomputation. The prompt cache is the opposite -- every entry
+        # discarded is a prefill somebody pays again, and a system checkpoint is
+        # ~88MB that takes a full system-prompt prefill to rebuild.
+        #
+        # Ordering used to be the other way round, and it was expensive. Across
+        # the five trims in the 2026-08-08..11 log the overshoot was 0.00-0.11GB
+        # while the response freed 0.53-1.14GB of prompt cache, 7x to 53x more
+        # than needed, with clear_cache() running immediately afterwards anyway.
+        mx.clear_cache()
+        used = mx.get_active_memory() + mx.get_cache_memory()
+        with self._stats_lock:
+            self._cache_memory_bytes = mx.get_cache_memory()
+
+        if used <= ceiling:
+            # The reuse cache alone covered it. Nothing recomputable was lost.
+            with self._stats_lock:
+                self._buffer_cache_sufficed += 1
+                self._last_trim = {
+                    "overshoot_bytes": overshoot,
+                    "mlx_cache_bytes": cache,
+                    "freed_by_buffer_cache_alone": True,
+                    "pool_before_bytes": self.prompt_cache.nbytes,
+                    "pool_after_bytes": self.prompt_cache.nbytes,
+                }
+            logger.info(
+                "memory pressure: over by %.3fGB; releasing the %.3fGB mlx reuse "
+                "cache cleared it, prompt cache untouched",
+                overshoot / (1024**3), cache / (1024**3),
+            )
+            return
+
+        # Still over. Free what is actually needed and no more. The margin is the
+        # remaining overshoot again: trim_to() pops whole entries, so the real
+        # granularity is one ~88MB entry regardless, and doubling only guarantees
+        # the check does not retrigger on the very next pass.
+        remaining = used - ceiling
         pool_before = self.prompt_cache.nbytes
-        target = max(pool_before // 2, 0)
+        target = max(pool_before - remaining * 2, 0)
         logger.warning(
-            "memory pressure: %.2fGB used vs %.2fGB ceiling (over by %.3fGB; "
-            "mlx buffer cache %.3fGB) — trimming prompt cache pool %.2fGB -> %.2fGB",
-            used / (1024**3), self._memory_ceiling_bytes / (1024**3),
-            overshoot / (1024**3), cache / (1024**3),
+            "memory pressure: %.2fGB used vs %.2fGB ceiling, still over by %.3fGB "
+            "after releasing the reuse cache — trimming prompt cache %.2fGB -> %.2fGB",
+            used / (1024**3), ceiling / (1024**3), remaining / (1024**3),
             pool_before / (1024**3), target / (1024**3),
         )
         self.prompt_cache.trim_to(n_bytes=target)
-        mx.clear_cache()
         with self._stats_lock:
             self._memory_pressure_trim_events += 1
             self._last_trim = {
                 "overshoot_bytes": overshoot,
                 "mlx_cache_bytes": cache,
+                "freed_by_buffer_cache_alone": False,
+                "remaining_after_clear_bytes": remaining,
                 "pool_before_bytes": pool_before,
                 "pool_after_bytes": self.prompt_cache.nbytes,
-                # If this is >= 1, clearing MLX's own buffer cache would have
-                # cleared the condition and the prompt-cache trim was wasted.
-                "mlx_cache_covers_overshoot": (cache / overshoot) if overshoot else None,
             }
 
     def stats_snapshot(self) -> dict:
@@ -901,6 +937,7 @@ class GenerationEngine:
         with self._stats_lock:
             hits, misses = self._cache_hits, self._cache_misses
             trims = self._memory_pressure_trim_events
+            buffer_sufficed = self._buffer_cache_sufficed
             last_trim = self._last_trim
             prompt_tokens = self._total_prompt_tokens
             generated_tokens = self._total_generated_tokens
@@ -966,10 +1003,11 @@ class GenerationEngine:
             "cache_hit_rate": round(hits / total_requests, 3) if total_requests else None,
             "disk_cache_hits": disk_store.hits if disk_store is not None else 0,
             "expert_cache": expert_cache_stats,
+            # Both counters share a trigger and differ in cost: a trim discards
+            # prefills somebody pays for again, the other discards a reuse pool
+            # that only costs a reallocation. Read them as a ratio.
             "memory_pressure_trim_events": trims,
-            # What the last trim cost against what it was reacting to. The counter
-            # alone cannot say whether the response was proportionate, and the
-            # measured answer so far is that it is not.
+            "memory_pressure_buffer_cache_sufficed": buffer_sufficed,
             "last_trim": last_trim,
             # Sequences and bytes per eviction class (SNAPSHOT_CACHE_TYPE). The
             # counters above cannot show whether a miss was a cold start or the
