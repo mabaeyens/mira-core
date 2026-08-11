@@ -353,9 +353,37 @@
      exact target to verify against. Full writeup and the open decision in
      `specs/truncated-thinking-becomes-the-answer.md`.
 
+     **REPLICATED on a second batch, and the cap is the real problem.** Three more conversations
+     on unrelated topics, same protocol, nothing changed in between: 5 of 24 turns broken (20.8%)
+     against 8 of 27 (29.6%) in batch 1, and 26.1% vs 29.4% counting only turns long enough to
+     reach the cap. Median reply length was near identical across batches, so answer length is not
+     driving it. Four of the six conversations were hit.
+
+     Batch 2's failures took a **different and worse shape**: replies of exactly 4096 `!`
+     characters, a full `max_tokens` of one repeated token. Five consecutive turns in one
+     conversation. It began on a turn where `fetch_url` started three fetches and completed two,
+     and from there the conversation never recovered — later turns called no tools at all and still
+     returned 4096 `!`, because the poisoned reply is saved to history and fed back in. **The
+     conversation is permanently dead with no user-facing way to recover it.** The other two
+     conversations in the batch were clean throughout, so the poisoning is conversation-scoped.
+
+     Same trigger (`finish_reason=length`), two outcomes. Leaked reasoning at least carries
+     information; this carries none. Ranking that follows from it:
+     1. **`max_tokens=4096` is the root cause worth fixing first** — it makes truncation common and
+        produces both disasters. The stripper only decides what a truncated turn looks like.
+     2. **Guard the output.** A reply that is 4096 of one character should never be shown or
+        persisted. Detecting it is one line, and persisting it is what turns a bad answer into a
+        dead conversation.
+     3. **Then** the stripper fix, which still needs the decision below.
+
      **Needs a decision before building:** narrowing that reclassification reverses a documented
-     choice, and the alternative to showing reasoning is showing nothing. Separately, 9.8% of calls
-     hitting the cap may mean the cap is the real problem.
+     choice, and the alternative to showing reasoning is showing nothing.
+
+     Also observed and not yet chased: `fetch_url` returns ~970 chars on JS-rendered pages
+     (both Apple HIG URLs) against 24,038 for a Qlik help page, and Mira answers an empty fetch by
+     looping on `web_search` — 36 calls across the run. Three unrelated URLs returned exactly
+     24,038 chars, so there is a truncation cap sitting at that value. Whether a failed fetch
+     *causes* the repetition loop is one observation, not a finding.
 - **Nothing is established about which sampling config is safer, and two probe rounds prove why.**
   Same prompt, same parameters, two rounds on 2026-08-09, flatly contradictory:
 
