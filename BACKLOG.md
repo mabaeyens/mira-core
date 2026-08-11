@@ -439,6 +439,20 @@
      handler in `server.py` bound the exception and dropped it, which is why the logs it tells the
      user to check held nothing, and that now calls `logger.exception`. Verified on the live
      server, not assumed: the same request now emits `tool_start` then `tool_done`, no error.
+
+     **Two residues, both left in place on purpose.** Batch 2's poisoned conversations are still
+     in the production database with their 4096-`!` replies saved as assistant messages. The fix
+     stops new poisoning at generation time; it does not clean history, so continuing one of those
+     conversations feeds the model five turns of `!`. Miguel read them in the app on 2026-08-11
+     and chose to keep them as they are. Untested and uncleaned, deliberately.
+
+     And a caution about the corpus as an instrument, found by reading those same conversations:
+     the asking agents **did not notice a total failure while it was happening**. Turn 4 returned
+     4096 `!` and the asker replied "You hit on something I hadn't thought through yet... That's a
+     real insight", then carried on for four more turns and signed off thanking Mira for a
+     walkthrough it never gave. A corpus conversation can therefore read as a coherent exchange
+     while one side is punctuation. Never infer a turn was usable from the fact that the
+     conversation continued.
 - **Nothing is established about which sampling config is safer, and two probe rounds prove why.**
   Same prompt, same parameters, two rounds on 2026-08-09, flatly contradictory:
 
