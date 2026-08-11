@@ -297,12 +297,11 @@
   cannot change a generated answer and accuracy evals are unaffected by it.
 
 ### Needs Miguel
-- **Arm the wake for the GPQA night.** The LaunchAgent fires at 00:30 but launchd cannot wake a
-  sleeping Mac, and that needs root, so it is the one step Claude cannot do:
-  `sudo pmset schedule wakeorpoweron "08/12/2026 00:25:00"`. **The lid must stay open** — `caffeinate`
-  does not defeat clamshell sleep. Arq's own wakes (00:00/01:00/01:30/03:00) are separate one-off
-  events and are not disturbed by this. One night only; use `pmset repeat wakeorpoweron MTWRFSU
-  00:25:00` instead if the plan ever grows past one night.
+- ~~**Arm the wake for the GPQA night.**~~ **ARMED 2026-08-11** — `pmset -g sched` shows
+  `wakeorpoweron at 08/12/2026 00:25:00 by 'pmset'`, and Arq's four wakes (00:00/01:00/01:30/03:00)
+  survived alongside it. **The lid must stay open** — `caffeinate` does not defeat clamshell sleep,
+  and that is now the only thing between the plan and a result. If the plan ever grows past one
+  night, `pmset repeat wakeorpoweron MTWRFSU 00:25:00` is the form to use instead of a one-off.
 - ~~**Decide IFEval's generation cap.**~~ **DONE 2026-08-11** — see the Done entry. IFEval runs at
   16384, overriding its `max_gen_toks: 1280`, and the publishing condition moved off the cap and
   onto reporting it. Nothing blocks the eval suite now.
