@@ -76,34 +76,67 @@ TOUCH_ID_STRIDE = 7919
 # something that saves a second.
 SNAPSHOT_MIN_BOUNDARY_TOKENS = 1024
 
-# Entry-count ceiling for the in-memory prompt cache. Two entries per turn now
-# (the completed turn and its boundary snapshot), so this is double mlx-lm's
-# default of 10 to keep the same number of conversations warm. Bytes are capped
-# separately by prompt_cache_max_bytes, which is what actually bounds memory.
-PROMPT_CACHE_MAX_ENTRIES = 20
+# Entry-count ceiling for the in-memory prompt cache. Up to three entries per
+# turn now (the completed turn, its history snapshot, and the shared system
+# snapshot), so this is triple mlx-lm's default of 10 to keep the same number of
+# conversations warm. Bytes are capped separately by prompt_cache_max_bytes,
+# which is what actually bounds memory.
+PROMPT_CACHE_MAX_ENTRIES = 30
+
+# Which eviction class each boundary snapshot goes into.
+#
+# LRUPromptCache.CacheOrder evicts over ["assistant", "user", "system"] and
+# drains the earlier classes before touching the later ones, so the tag is a
+# priority: an entry tagged "system" is the last thing discarded. That matters
+# because the entries are not equally valuable and the LRU cannot tell — the
+# system snapshot is one ~88 MB object serving *every* conversation on the
+# machine, while a history snapshot serves exactly one and a completed turn is
+# the most replaceable thing in the pool. Losing the shared entry costs every
+# subsequent conversation a full system-prompt prefill; losing a completed turn
+# costs one request the tail of its own prompt.
+#
+# It is priority, not pinning: trim_to() still reaches a "system" entry once the
+# earlier classes are empty, which is what keeps this from becoming a leak.
+SNAPSHOT_CACHE_TYPE = {"system": "system", "history": "user"}
 
 DONE = object()  # sentinel pushed onto a job's out_queue when generation finishes
 
 
-def plan_prefill_segments(rest, prompt_cache_count, boundary_n):
-    """Decide where prefill should stop to leave a reusable snapshot behind.
+def plan_prefill_segments(rest, prompt_cache_count, boundaries):
+    """Decide where prefill should stop to leave reusable snapshots behind.
 
-    Returns (segments, boundary_to_cache). `boundary_to_cache` is None when the
-    prompt should be prefilled in one piece exactly as before.
+    Returns (segments, boundaries_to_cache). `boundaries_to_cache` lines up with
+    the segment ends that precede the final segment: when segment i finishes,
+    the live state corresponds to `boundaries_to_cache[i]` tokens of the whole
+    prompt. It is empty when the prompt should be prefilled in one piece exactly
+    as before.
 
-    `boundary_n` indexes the whole prompt, while `rest` is only what the cache
-    did not already cover, so the split point is the difference. A boundary at
+    Each boundary indexes the whole prompt, while `rest` is only what the cache
+    did not already cover, so each split point is the difference. A boundary at
     or behind what was already reused needs no segment: the entry that supplied
     the reuse already covers it. A boundary at or past the end of `rest` would
-    make a second segment empty, and an empty trailing segment has nothing to
+    make a trailing segment empty, and an empty trailing segment has nothing to
     generate from.
+
+    Boundaries are sorted and de-duplicated because the callers find them
+    independently: a conversation whose history is nothing but the system
+    prompt yields the same index twice, and two segments split at the same
+    point would put an empty segment in the middle.
     """
-    if boundary_n is None:
-        return [rest], None
-    split_at = boundary_n - prompt_cache_count
-    if not 0 < split_at < len(rest):
-        return [rest], None
-    return [rest[:split_at], rest[split_at:]], boundary_n
+    cuts = []
+    for n in sorted({b for b in (boundaries or ()) if b is not None}):
+        split_at = n - prompt_cache_count
+        if 0 < split_at < len(rest):
+            cuts.append((split_at, n))
+    if not cuts:
+        return [rest], []
+    segments, to_cache, prev = [], [], 0
+    for split_at, n in cuts:
+        segments.append(rest[prev:split_at])
+        to_cache.append(n)
+        prev = split_at
+    segments.append(rest[prev:])
+    return segments, to_cache
 
 
 def _decode_image_part(part: dict):
@@ -311,6 +344,15 @@ class GenerationEngine:
         self.proactive_decompress = proactive_decompress
         self.boundary_snapshot = boundary_snapshot
         self._snapshots_taken = 0
+        # Split by boundary kind, because the two answer different questions:
+        # "system" is what makes conversation openers cheap, "history" is what
+        # makes continuations cheap, and a change that helps one can quietly
+        # stop the other from firing at all.
+        self._snapshots_by_kind = {"system": 0, "history": 0}
+        # Memo for the two-render system probe. Rendering and encoding ~3,600
+        # tokens twice per request is not free, and the system prompt changes
+        # only when the project, memories or date do.
+        self._system_probe_cache = {}
         self._snapshots_skipped_short = 0
         self._snapshot_failures = 0
         self._snapshot_last_seconds = 0.0
@@ -857,6 +899,7 @@ class GenerationEngine:
             decompress_skipped = self._decompress_skipped_no_headroom
             decompress_failures = self._decompress_failures
             snapshots_taken = self._snapshots_taken
+            snapshots_by_kind = dict(self._snapshots_by_kind)
             snapshots_skipped_short = self._snapshots_skipped_short
             snapshot_failures = self._snapshot_failures
             snapshot_last_seconds = self._snapshot_last_seconds
@@ -887,6 +930,12 @@ class GenerationEngine:
                 "hit_rate": round(ec["hits"] / ec_total, 3) if ec_total else None,
                 "decode_hit_rate": round(ec["hits_decode"] / ec_total_decode, 3) if ec_total_decode else None,
             }
+
+        try:
+            prompt_cache_by_type = self.prompt_cache.stats_by_type()
+        except Exception:  # noqa: BLE001 - diagnostics must never break /v1/stats
+            prompt_cache_by_type = None
+
         return {
             "uptime_seconds": round(time.time() - self._start_time, 1),
             "cache_hits": hits,
@@ -895,6 +944,12 @@ class GenerationEngine:
             "disk_cache_hits": disk_store.hits if disk_store is not None else 0,
             "expert_cache": expert_cache_stats,
             "memory_pressure_trim_events": trims,
+            # Sequences and bytes per eviction class (SNAPSHOT_CACHE_TYPE). The
+            # counters above cannot show whether a miss was a cold start or the
+            # shared system entry being discarded, and those call for opposite
+            # responses. Best-effort: it reads LRUPromptCache internals, so a
+            # future upstream rename must degrade to None rather than 500 /v1/stats.
+            "prompt_cache_by_type": prompt_cache_by_type,
             "total_prompt_tokens": prompt_tokens,
             "total_generated_tokens": generated_tokens,
             "latency_p50_ms": _percentile(latencies, 0.50),
@@ -941,6 +996,7 @@ class GenerationEngine:
             "boundary_snapshot": {
                 "enabled": self.boundary_snapshot,
                 "taken": snapshots_taken,
+                "taken_by_kind": snapshots_by_kind,
                 "skipped_too_short": snapshots_skipped_short,
                 "failures": snapshot_failures,
                 "last_seconds": snapshot_last_seconds,
@@ -1057,9 +1113,16 @@ class GenerationEngine:
         return expanded, merged
 
     def _maybe_snapshot_boundary(self, pr) -> None:
-        """Cache the state at the history boundary, on the way past.
+        """Cache the state at each planned boundary, on the way past.
 
-        Fires on the first end_of_segment for a job whose prefill was split.
+        Consumes one planned boundary per end_of_segment, in prefill order.
+        mlx-lm raises end_of_segment as each segment drains (`generate.py:2005`)
+        and once more when the sequence moves to generation, so the queue is
+        always exactly one shorter than the number of events and the trailing
+        event correctly finds it empty. Order is what makes the pairing safe:
+        the queue was built from the same sorted boundary list that produced the
+        segments, so the Nth event is the Nth boundary.
+
         The cache the generator is actually filling is not the one handed to
         insert_segments — PromptProcessingBatch merges the supplied caches, so
         that object is never mutated and its offset stays 0. The live state
@@ -1074,10 +1137,10 @@ class GenerationEngine:
         state = self._pending.get(pr.uid)
         if not state:
             return
-        tokens = state.get("snapshot_tokens")
-        if not tokens:
+        queue = state.get("snapshot_queue")
+        if not queue:
             return
-        state["snapshot_tokens"] = None  # once per job, boundary segment only
+        kind, tokens = queue.pop(0)
         try:
             _t = time.time()
             batch = self.batch_generator._prompt_batch
@@ -1085,15 +1148,19 @@ class GenerationEngine:
             snapshot = batch.extract_cache(idx)
             mx.eval([c.state for c in snapshot if hasattr(c, "state")])
             nbytes = sum(c.nbytes for c in snapshot)
-            self.prompt_cache.insert_cache(self.model_path, tokens, snapshot)
+            self.prompt_cache.insert_cache(
+                self.model_path, tokens, snapshot,
+                cache_type=SNAPSHOT_CACHE_TYPE[kind],
+            )
             elapsed = time.time() - _t
             with self._stats_lock:
                 self._snapshots_taken += 1
+                self._snapshots_by_kind[kind] = self._snapshots_by_kind.get(kind, 0) + 1
                 self._snapshot_last_seconds = round(elapsed, 3)
                 self._snapshot_last_bytes = nbytes
             logger.info(
-                "boundary snapshot: %d tokens, %.1f MB, %.3fs",
-                len(tokens), nbytes / (1024 ** 2), elapsed,
+                "boundary snapshot [%s]: %d tokens, %.1f MB, %.3fs",
+                kind, len(tokens), nbytes / (1024 ** 2), elapsed,
             )
         except Exception as exc:  # noqa: BLE001
             with self._stats_lock:
@@ -1112,10 +1179,100 @@ class GenerationEngine:
         caching, and it can only be captured while prefill passes through it.
 
         Returns None when the boundary is unusable, and the caller then behaves
-        exactly as before. Verifying the prefix rather than assuming it matters:
-        a template that renders history differently with and without
-        `add_generation_prompt` would otherwise produce a cache entry keyed on
-        tokens that were never processed, which silently corrupts output.
+        exactly as before.
+        """
+        return self._render_boundary(messages, tools, ckwargs, prompt_tokens)
+
+    def _system_boundary(self, messages, tools, ckwargs, prompt_tokens):
+        """Length of the prompt up to the end of the leading system message(s).
+
+        The history boundary only ever helps turn N+1 of the conversation that
+        produced it. Every *opener* still re-prefills the system prompt plus
+        project context from scratch: measured 2026-08-08 over an agentic bench,
+        8 of 23 requests were full misses of 3,787-4,025 identical tokens, about
+        4.8s each. That prefix is shared by every conversation on the machine,
+        so one entry serves all of them, which makes it the cheapest entry in
+        the cache by a wide margin.
+
+        Staleness needs no special handling. The entry is keyed on the token ids
+        actually processed, so a system prompt that changes with the project,
+        the memories or the date produces a different key and simply misses,
+        rather than serving a stale state.
+
+        The system messages cannot simply be rendered on their own. Qwen3's
+        template raises `TemplateError: No user query found in messages` for a
+        list with no user turn, so the obvious implementation returns None on
+        every request and the entry is never created. Measured 2026-08-11: that
+        is exactly what the first version of this method did.
+
+        So render the system messages twice, with two different throwaway user
+        messages. Both renders contain the same system block and then diverge
+        where the user content starts, so their common prefix is the system
+        block plus the opening of the user turn, and it does not depend on what
+        this request's user actually asked. Measured on the real system prompt
+        with 15 tools: 3,625 tokens of a 3,641-token opener, 99.6%.
+
+        Returns None when there is no leading system message, when the template
+        refuses both renders, or when the result is not a verified prefix of
+        this prompt.
+        """
+        lead = 0
+        for m in messages:
+            role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
+            if role != "system":
+                break
+            lead += 1
+        if lead == 0:
+            return None
+
+        key = (lead, id(tools), repr(sorted(ckwargs.items())) if ckwargs else "",
+               tuple(str(m) for m in messages[:lead]))
+        probe = self._system_probe_cache.get(key)
+        if probe is None:
+            probes = []
+            for filler in ("zzz alpha", "qqq beta"):
+                try:
+                    text = self.tokenizer.apply_chat_template(
+                        list(messages[:lead]) + [{"role": "user", "content": filler}],
+                        tools=tools, add_generation_prompt=True,
+                        tokenize=False, **ckwargs
+                    )
+                    probes.append(self.tokenizer.encode(text, add_special_tokens=False))
+                except Exception as exc:  # noqa: BLE001 - never break a request for this
+                    logger.debug("system probe render failed (%s); skipping", exc)
+                    return None
+            n = 0
+            for a, b in zip(*probes):
+                if a != b:
+                    break
+                n += 1
+            probe = probes[0][:n]
+            # One system prompt per server in practice; bound it anyway so a
+            # caller varying tools or template kwargs cannot grow this forever.
+            if len(self._system_probe_cache) > 8:
+                self._system_probe_cache.clear()
+            self._system_probe_cache[key] = probe
+
+        n = len(probe)
+        if n == 0 or n >= len(prompt_tokens):
+            return None
+        if list(prompt_tokens[:n]) != list(probe):
+            logger.warning(
+                "system boundary is not a prefix of the prompt; skipping snapshot"
+            )
+            return None
+        return n
+
+    def _render_boundary(self, messages, tools, ckwargs, prompt_tokens):
+        """Render `messages` without the generation prompt and prove the result
+        really is a prefix of `prompt_tokens`, returning its length.
+
+        Verifying rather than assuming is the whole safety argument for both
+        callers. A template that renders the same messages differently in a
+        partial list than in the full one, or differently with and without
+        `add_generation_prompt`, would otherwise produce a cache entry keyed on
+        tokens that were never processed. That does not slow generation down, it
+        silently changes what the model says.
         """
         try:
             text = self.tokenizer.apply_chat_template(
@@ -1132,7 +1289,7 @@ class GenerationEngine:
         if list(prompt_tokens[:n]) != list(boundary):
             logger.warning(
                 "boundary is not a prefix of the prompt; skipping snapshot "
-                "(template renders history differently with add_generation_prompt)"
+                "(template renders these messages differently in isolation)"
             )
             return None
         return n
@@ -1204,18 +1361,29 @@ class GenerationEngine:
         # when the boundary is both ahead of what the cache already covered and
         # long enough that reusing it next turn beats re-prefilling it.
         segments = [rest]
-        snapshot_tokens = None
+        snapshot_queue = []
         if self.boundary_snapshot and image_embeds is None:
-            boundary_n = self._history_boundary(messages, job.tools, ckwargs, prompt_tokens)
-            if boundary_n is not None and boundary_n < SNAPSHOT_MIN_BOUNDARY_TOKENS:
-                with self._stats_lock:
-                    self._snapshots_skipped_short += 1
-            else:
-                segments, to_cache = plan_prefill_segments(
-                    rest, prompt_cache_count, boundary_n
-                )
-                if to_cache is not None:
-                    snapshot_tokens = list(prompt_tokens[:to_cache])
+            # Two boundaries, and they pay off for different requests. The
+            # system one is a prefix of every conversation's first turn; the
+            # history one is a prefix of the next turn of this conversation.
+            # An opener has only the first, a continuation usually has both.
+            found = {}
+            for kind, finder in (
+                ("system", self._system_boundary),
+                ("history", self._history_boundary),
+            ):
+                n = finder(messages, job.tools, ckwargs, prompt_tokens)
+                if n is None:
+                    continue
+                if n < SNAPSHOT_MIN_BOUNDARY_TOKENS:
+                    with self._stats_lock:
+                        self._snapshots_skipped_short += 1
+                    continue
+                found[n] = kind  # same index from both finders: one segment, one entry
+            segments, to_cache = plan_prefill_segments(
+                rest, prompt_cache_count, list(found)
+            )
+            snapshot_queue = [(found[n], list(prompt_tokens[:n])) for n in to_cache]
 
         _t2 = time.time()
         (uid,) = self.batch_generator.insert_segments(
@@ -1237,10 +1405,12 @@ class GenerationEngine:
         )
 
         self._pending[uid] = {
-            # Set only when prefill was actually split, so the first
-            # end_of_segment for this uid is the boundary and not the trailing
-            # single token insert_segments always peels off for generation.
-            "snapshot_tokens": snapshot_tokens,
+            # One (kind, tokens) pair per planned boundary, in prefill order,
+            # popped by _maybe_snapshot_boundary as each segment drains. Empty
+            # when prefill was not split, which is what stops the trailing
+            # end_of_segment (the single token insert_segments peels off for
+            # generation) from caching the prompt minus its last token.
+            "snapshot_queue": snapshot_queue,
             "job": job,
             # Usage accounting. prompt_tokens is the whole prompt, cached or not
             # — cached_tokens reports the reused share separately, as OpenAI does.
@@ -1353,7 +1523,12 @@ class GenerationEngine:
             job.out_queue.put(DONE)
 
             if r.prompt_cache is not None and r.all_tokens is not None:
-                self.prompt_cache.insert_cache(self.model_path, r.all_tokens, r.prompt_cache)
+                # Explicitly "assistant" — already the default, but stated so the
+                # three eviction classes are visible in one grep (SNAPSHOT_CACHE_TYPE).
+                # A completed turn is the most replaceable entry in the pool and
+                # should be the first thing evicted.
+                self.prompt_cache.insert_cache(self.model_path, r.all_tokens, r.prompt_cache,
+                                               cache_type="assistant")
                 logger.info("insert_cache: registered %d tokens (finish_reason=%s)", len(r.all_tokens), r.finish_reason)
             else:
                 logger.info(
