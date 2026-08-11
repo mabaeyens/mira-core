@@ -1,6 +1,34 @@
 # Backlog
 
 ## Done
+- [2026-08-12] **`max_thinking_tokens` was never enforced, and wiring it uncovered an mlx-lm
+  batching bug that could take the whole engine down.** The setting has existed since the
+  truncated-thinking work and was sent to the model as a chat-template kwarg — but Qwen3.6's
+  `chat_template.jinja` does not reference `thinking_budget` anywhere, and Jinja discards unknown
+  kwargs in silence, so the number travelled the full length of the stack and did nothing. It is
+  now a logits processor (`ThinkingBudget`) that watches the reasoning block and, once past the
+  budget, floors every logit except `</think>` — forcing the closer rather than stopping
+  generation, because a hard stop at the budget produces a reply that is all reasoning and no
+  answer, which is exactly the failure this project already fixed once. **Verified against prod:**
+  same prompt, same model, budget 32 → the engine logged `thinking budget HIT at 32 tokens` and
+  the turn came back with exactly 32 reasoning tokens, 1,731 completion tokens and a complete
+  83KB answer in 39.9s, against 1,996 / 3,827 / 73.9s unbudgeted.
+  **The bug it uncovered is the more important half.** mlx-lm's `PromptProcessingBatch.extend`
+  replaces a sequence's logits-processor list with `None` whenever `any()` of the batch's lists is
+  falsy, and `GenerationBatch._step` then does `for processor in None`. Mira issues two concurrent
+  jobs per turn — one thinking, one not — so the moment the first carried a processor and the
+  second carried `[]`, the second got `None` and the engine thread died with a `TypeError` after
+  one generated token. The failure mode is the worst kind: `/v1/stats` kept answering 200, and
+  every request after it hung forever rather than erroring. It also hung a `pytest` run for 72
+  minutes on an established socket to the dead engine. Fixed here by never handing mlx-lm an empty
+  processor list (`_build_logits_processors` appends a no-op), with a test pinning the invariant.
+  **Two follow-ups this leaves open**, both deliberately not done: (a) an exception anywhere in the
+  engine's `_run` loop kills the thread silently and turns every in-flight and future request into
+  a hang — it should fail the pending jobs and log, not vanish; (b) at the restored default of
+  8192 the budget is a runaway guard and nothing more, since the worst real turn measured so far
+  spent ~5k reasoning tokens. ~2048 would make it an actual budget. Also measured while here:
+  search-result injection costs ~696 new prompt tokens per round with 79% cache reuse, so the
+  old cutoff forcing a web search on nearly every question is **not** a throughput problem.
 - [2026-08-11] **Instrumented the prefill/decode split and settled a question three separate
   arguments had failed to settle: Mira is decode-dominated, and the "effective 21.7 tok/s" figure
   that motivated the work was my own measurement artifact.** Every previous attempt compared a

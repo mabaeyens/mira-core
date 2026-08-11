@@ -276,6 +276,114 @@ def _think_preopened(prompt_tokens, think_start_tokens, think_end_tokens=()) -> 
     return _rfind_subseq(prompt_tokens, tuple(think_end_tokens)) < start
 
 
+def _passthrough_processor(tokens, logits):
+    """A logits processor that does nothing, to keep a sequence's list non-empty.
+
+    See the note at its call site: mlx-lm turns a falsy per-sequence processor
+    list into None when batching mixes sequences with and without processors.
+    """
+    return logits
+
+
+class ThinkingBudget:
+    """Closes the reasoning block once it has run past its budget.
+
+    The budget was nominally configurable since MAX_THINKING_TOKENS was added,
+    but it travelled as a chat-template kwarg and **Qwen3.6's template does not
+    reference `thinking_budget` at all** — Jinja discards unknown kwargs in
+    silence, so nothing ever enforced it. This does.
+
+    It forces `</think>` rather than stopping generation, which is the whole
+    point: a hard stop at the budget yields a reply that is all reasoning and no
+    answer, which is the truncated-thinking failure this project already fixed
+    once. Forcing the closer lets the model spend its remaining tokens saying
+    something.
+
+    Attached per sequence, so the state here is one request's.
+    """
+
+    def __init__(self, budget: int, think_start, think_end, preopened: bool):
+        self.budget = budget
+        self.think_start = tuple(think_start or ())
+        self.think_end = tuple(think_end or ())
+        # Qwen3-style templates open the block in the prompt, so the model never
+        # emits think_start and reasoning is already running at token 0.
+        self.started = preopened
+        self.closed = False
+        self.forced = 0
+        self.count = 0
+
+    def __call__(self, tokens, logits):
+        if self.closed or not self.think_end:
+            return logits
+
+        # `tokens` is this sequence's whole history and it grows by one per step,
+        # so only ever look at the tail: reading all of it would mean a Python
+        # list of thousands of ints on every decode step. Shapes differ between
+        # mlx-lm's single and batched paths, hence the flatten.
+        if not self.started or self.forced == 0:
+            window = max(len(self.think_start), len(self.think_end))
+            flat = tokens.reshape(-1) if hasattr(tokens, "reshape") else tokens
+            tail = flat[-window:]
+            tail = [int(t) for t in (tail.tolist() if hasattr(tail, "tolist") else tail)]
+            if not self.started and self.think_start and \
+                    _rfind_subseq(tail, self.think_start) >= 0:
+                self.started = True
+            if _rfind_subseq(tail, self.think_end) >= 0:
+                # The model closed it on its own, inside budget. Nothing to do,
+                # ever again for this request.
+                self.closed = True
+                return logits
+
+        if not self.started:
+            return logits
+
+        self.count += 1
+        if self.count < self.budget:
+            return logits
+
+        # Over budget: emit think_end one token at a time by flooring every
+        # other logit. -1e4 rather than -inf so this is representable in float16
+        # and cannot produce a NaN in softmax; it is far below any real logit.
+        target = self.think_end[self.forced]
+        self.forced += 1
+        if self.forced >= len(self.think_end):
+            self.closed = True
+        logger.info("thinking budget HIT at %d tokens: forcing token %d (%d/%d)",
+                    self.count, target, self.forced, len(self.think_end))
+        idx = mx.arange(logits.shape[-1])
+        return mx.where(idx == target, logits, mx.array(-1e4, logits.dtype))
+
+
+def _build_logits_processors(thinking_budget, think_start, think_end,
+                             prompt_tokens, enable_thinking):
+    """The per-sequence logits processors for one job. Never returns an empty list.
+
+    The budget is attached only when thinking is actually on for this turn: with
+    it off the model never opens a block, and a processor watching for a closer
+    that will never come could force one into ordinary answer text.
+
+    The list is never empty because mlx-lm's PromptProcessingBatch.extend
+    replaces a sequence's processors with None whenever `any()` of the batch's
+    lists is falsy. Batch one sequence that has a processor with one that has
+    none and the second ends up holding None, and _step() then runs
+    `for processor in None` -- which raises inside the engine thread and takes
+    the whole engine down. A no-op keeps every sequence's list truthy.
+    """
+    processors = list(make_logits_processors())
+    if thinking_budget and think_end and enable_thinking is not False:
+        preopened = _think_preopened(prompt_tokens, think_start, think_end)
+        processors.append(ThinkingBudget(
+            budget=thinking_budget,
+            think_start=think_start,
+            think_end=think_end,
+            preopened=preopened,
+        ))
+        logger.info("thinking budget active: %d tokens (preopened=%s, end_ids=%s)",
+                    thinking_budget, preopened, think_end)
+    return processors or [_passthrough_processor]
+
+
 @dataclass
 class ChatJob:
     messages: list
@@ -1387,7 +1495,12 @@ class GenerationEngine:
 
     def _start_job(self, job: ChatJob) -> None:
         try:
-            ckwargs = job.chat_template_kwargs or {}
+            ckwargs = dict(job.chat_template_kwargs or {})
+            # Not a template variable — the orchestrator nests it here because
+            # that is the only extra_body channel the OpenAI client exposes.
+            # Pop it: Qwen3.6's template ignores unknown kwargs, but a future
+            # template that errors on them would break every request.
+            thinking_budget = ckwargs.pop("thinking_budget", 0)
             messages, images = _prepare_messages(job.messages, vision=self.vision)
             prompt_tokens = self.tokenizer.apply_chat_template(
                 messages, tools=job.tools, add_generation_prompt=True,
@@ -1445,7 +1558,13 @@ class GenerationEngine:
             self._total_prompt_tokens += len(prompt_tokens)
 
         sampler = make_sampler(temp=job.temperature, top_p=job.top_p, top_k=job.top_k)
-        logits_processors = make_logits_processors()
+        logits_processors = _build_logits_processors(
+            thinking_budget=thinking_budget,
+            think_start=tuple(getattr(self.tokenizer, "think_start_tokens", ()) or ()),
+            think_end=tuple(getattr(self.tokenizer, "think_end_tokens", ()) or ()),
+            prompt_tokens=prompt_tokens,
+            enable_thinking=ckwargs.get("enable_thinking", True),
+        )
 
         # Split prefill at the history boundary so the state there can be
         # snapshotted on the way past. Only worth a segment (and an LRU slot)

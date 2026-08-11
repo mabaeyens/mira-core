@@ -390,6 +390,123 @@ def test_record_timing_ignores_cached_tokens_in_prefill_rate():
     assert 95 < timing["prefill_tps"] < 105
 
 
+# -- thinking budget --------------------------------------------------------
+# MAX_THINKING_TOKENS travelled as a chat-template kwarg, and Qwen3.6's template
+# never references `thinking_budget`, so Jinja discarded it and nothing enforced
+# the cap. These pin the enforcement that replaced it.
+
+def _budget_logits(vocab=8):
+    mx = pytest.importorskip("mlx.core")
+    return mx.zeros((1, vocab))
+
+
+def _forced_token(logits):
+    """The id this processor has pinned, or None if it left the logits alone."""
+    mx = pytest.importorskip("mlx.core")
+    row = logits[0]
+    top = int(mx.argmax(row).item())
+    return top if float(row[top].item()) > -1e3 and float(mx.min(row).item()) < -1e3 else None
+
+
+def test_thinking_budget_leaves_logits_alone_under_budget():
+    mx = pytest.importorskip("mlx.core")
+    from core.inference.mira_mlx_server import ThinkingBudget
+
+    tb = ThinkingBudget(budget=10, think_start=(1,), think_end=(2, 3), preopened=True)
+    for _ in range(9):
+        out = tb(mx.array([[0]]), _budget_logits())
+        assert _forced_token(out) is None
+    assert not tb.closed
+
+
+def test_thinking_budget_forces_the_closer_in_order_then_stops():
+    mx = pytest.importorskip("mlx.core")
+    from core.inference.mira_mlx_server import ThinkingBudget
+
+    tb = ThinkingBudget(budget=3, think_start=(1,), think_end=(2, 3), preopened=True)
+    tokens = mx.array([[0]])
+    assert _forced_token(tb(tokens, _budget_logits())) is None   # 1
+    assert _forced_token(tb(tokens, _budget_logits())) is None   # 2
+    # 3rd call reaches the budget: emit "</think>" one token at a time.
+    assert _forced_token(tb(tokens, _budget_logits())) == 2
+    assert _forced_token(tb(tokens, _budget_logits())) == 3
+    assert tb.closed
+    # Closed means closed — it must never touch the answer that follows.
+    assert _forced_token(tb(tokens, _budget_logits())) is None
+
+
+def test_thinking_budget_does_nothing_when_the_model_closes_itself():
+    mx = pytest.importorskip("mlx.core")
+    from core.inference.mira_mlx_server import ThinkingBudget
+
+    tb = ThinkingBudget(budget=2, think_start=(1,), think_end=(2, 3), preopened=True)
+    # think_end already present in the history: the model finished inside budget.
+    out = tb(mx.array([[9, 2, 3]]), _budget_logits())
+    assert _forced_token(out) is None
+    assert tb.closed
+    for _ in range(5):
+        assert _forced_token(tb(mx.array([[9, 2, 3, 4]]), _budget_logits())) is None
+
+
+def test_thinking_budget_never_fires_when_reasoning_never_started():
+    """Thinking off: no block is ever opened, so no closer may be injected."""
+    mx = pytest.importorskip("mlx.core")
+    from core.inference.mira_mlx_server import ThinkingBudget
+
+    tb = ThinkingBudget(budget=2, think_start=(1,), think_end=(2, 3), preopened=False)
+    for _ in range(20):
+        assert _forced_token(tb(mx.array([[7, 8, 9]]), _budget_logits())) is None
+    assert not tb.closed
+
+
+def test_thinking_budget_starts_counting_when_the_model_opens_the_block():
+    mx = pytest.importorskip("mlx.core")
+    from core.inference.mira_mlx_server import ThinkingBudget
+
+    tb = ThinkingBudget(budget=2, think_start=(1,), think_end=(2, 3), preopened=False)
+    assert _forced_token(tb(mx.array([[7]]), _budget_logits())) is None
+    assert not tb.started
+    # think_start appears -> reasoning is running and the budget starts.
+    assert _forced_token(tb(mx.array([[7, 1]]), _budget_logits())) is None
+    assert tb.started
+    assert _forced_token(tb(mx.array([[7, 1]]), _budget_logits())) == 2
+
+
+def test_logits_processors_are_never_empty():
+    # mlx-lm swaps a falsy per-sequence processor list for None when it batches
+    # that sequence alongside one that has processors, and then iterates it. An
+    # empty list here is an engine-thread crash, not a missing feature.
+    pytest.importorskip("mlx.core")
+    from core.inference.mira_mlx_server import _build_logits_processors
+
+    for budget, enable in ((0, True), (512, False), (512, True), (0, False)):
+        processors = _build_logits_processors(
+            thinking_budget=budget, think_start=(1,), think_end=(2,),
+            prompt_tokens=[1], enable_thinking=enable,
+        )
+        assert processors, f"empty for budget={budget} enable_thinking={enable}"
+
+
+def test_thinking_budget_is_attached_only_when_thinking_is_on():
+    pytest.importorskip("mlx.core")
+    from core.inference.mira_mlx_server import (
+        ThinkingBudget, _build_logits_processors,
+    )
+
+    def has_budget(**kwargs):
+        kwargs.setdefault("think_start", (1,))
+        kwargs.setdefault("think_end", (2,))
+        kwargs.setdefault("prompt_tokens", [1])
+        return any(isinstance(p, ThinkingBudget)
+                   for p in _build_logits_processors(**kwargs))
+
+    assert has_budget(thinking_budget=512, enable_thinking=True)
+    assert not has_budget(thinking_budget=0, enable_thinking=True)
+    assert not has_budget(thinking_budget=512, enable_thinking=False)
+    # No closer to force means nothing can be enforced.
+    assert not has_budget(thinking_budget=512, enable_thinking=True, think_end=())
+
+
 def test_usage_carries_timing_only_when_measured():
     plain = GenerationEngine._usage({
         "prompt_tokens": 10, "completion_tokens": 5,
