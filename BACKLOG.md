@@ -265,6 +265,23 @@
 
 ## Pending
 
+### `derive_resident_expert_fraction` is blind to gpt-oss-120b
+- **`gpt-oss-120b-MXFP4-Q8` reports `num_experts=None` in its config, so `_classify_weight_bytes`
+  finds 0GB of experts and `derive_resident_expert_fraction` returns the `floor_fraction` (0.3)
+  unchanged** — the same early return a dense model gets. Found 2026-08-11 while modelling what a
+  128GB Mac would do: at 32GB the model is over-DRAM either way so nothing is lost today, but on a
+  larger machine gpt-oss-120b is the obvious thing to run and the MoE sizing logic cannot see it.
+  The fix is a config-shape question, not a policy one: find what gpt-oss calls its expert count
+  (the key is not `num_experts`) and teach `_classify_weight_bytes` that spelling. Related and
+  already known: attention-sink models cannot use quantized KV, so gpt-oss needs the unquantized
+  path regardless. **No action while this Mac has 32GB** — it changes nothing at this size.
+- **The 128GB crossover, recorded so it is not re-derived:** the ceiling is
+  `min(0.55 x total, 0.78 x total - 3GB, total - 3GB)` = **70.4GB on a 128GB Mac**, so the offload
+  path only engages above that. Verified against the cached models: the 8-bit Qwen3.6 (35.1GB) and
+  gpt-oss-120b (59.0GB) both go from over-DRAM at 32GB to **fully resident** at 128GB. A 4-bit
+  100B-class model therefore never exercises offload on 128GB — that needs a 4-bit 235B-class
+  (~132GB) or an 8-bit 120B.
+
 ### Waiting on a week of ordinary use — no action until then
 - **`proactive_decompress` and `boundary_snapshot` are both ON in `mira.yaml` and OFF in
   `core/config.py`, and that split is the plan, not an oversight.** Decided 2026-08-08: this Mac
