@@ -224,12 +224,24 @@ MIRA_MLX_EXPERT_PROFILE_PATH: Optional[str] = _get("mira_mlx_expert_profile_path
 # equivalent to code execution. Enable only for a specific model you trust that
 # genuinely ships a custom tokenizer class.
 MIRA_MLX_TRUST_REMOTE_CODE: bool = _get("mira_mlx_trust_remote_code", False)
-# Post a macOS notification when another app evicts the model from memory. On by
-# default because the state it reports is otherwise invisible: the user gets one
-# unexplained slow reply (measured 15.37s against a warm 0.47s) and then normal
-# speed again, because the slow reply is itself what fixes it. Rate-limited and
-# fired only on the transition into eviction (see core/memory_watch.py).
-MEMORY_ADVISORY_NOTIFICATIONS: bool = _get("memory_advisory_notifications", True)
+# Post a macOS notification when another app evicts the model from memory.
+#
+# OFF by default since 2026-08-11, reversing the original on-by-default. The
+# reasoning that put it on still holds — the state is otherwise invisible and
+# produces one unexplained slow reply (15.37s against a warm 0.47s) — but it
+# assumed evictions were rare. Measured over 70.5 hours they are not: 302
+# transitions, one every ~14 minutes, round the clock, including three that woke
+# nobody up only because they arrived at 01:30, 03:00 and 06:53.
+#
+# The notification also fails both tests a user-facing alert has to pass: there
+# is nothing the user can do about another process taking memory, and it is not
+# something they caused. `proactive_decompress` makes it worse by clearing the
+# advisory each time, which re-arms the transition and manufactures the next
+# notification.
+#
+# The watcher still runs and still logs every transition — that record is what
+# made the 302 finding possible. Only the interruption is gone.
+MEMORY_ADVISORY_NOTIFICATIONS: bool = _get("memory_advisory_notifications", False)
 # Fault the model back into RAM on the engine's idle branch when another app has
 # had it compressed out, instead of letting the next reply pay for it. Measured
 # on a real unforced eviction (2026-08-08): all 18.80GB compressed, next turn

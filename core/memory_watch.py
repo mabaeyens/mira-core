@@ -13,6 +13,16 @@ model and the advisory cleared by itself. So the user experiences one
 unexplained slow reply and then normality, which is the least debuggable shape a
 performance problem can have. A notification turns it into something they can
 understand, and, if it keeps happening, act on.
+
+**That last sentence is why notifications are now off by default (2026-08-11).**
+It assumed evictions were rare enough that one message would be informative.
+Measured over 70.5 hours they are not: 302 transitions, one every ~14 minutes,
+round the clock. At that rate the notification is not an explanation, it is
+noise on the channel that should carry the alerts worth reading, and there is
+nothing a user can do about another process taking memory anyway.
+
+So the watcher keeps watching and keeps logging — the log is where the 302 came
+from — and the interruption is gated on `memory_advisory_notifications`.
 """
 import json
 import logging
@@ -94,16 +104,25 @@ def _poll_loop(stop_event: threading.Event) -> None:
         # 0.77GB shortly after, with no other app involved. Restarting Mira must
         # never accuse another app of evicting it.
         if current == "evicted" and previous not in (None, "evicted"):
-            now = time.time()
-            if now - last_notified_at >= _MIN_NOTIFY_INTERVAL_S:
-                if scheduler.notify(_TEXT):
-                    last_notified_at = now
-                    logger.warning("memory advisory: model evicted, notified user")
-            else:
-                logger.info(
-                    "memory advisory: model evicted again, suppressed (last notice %.0fs ago)",
-                    now - last_notified_at,
-                )
+            # Always record it. Whether to *interrupt* the user is a separate
+            # question, answered below, and the log line must not depend on it:
+            # the record is what made the 302-transitions-in-70-hours finding
+            # possible in the first place.
+            logger.warning("memory advisory: model evicted by another process")
+            # Not `continue` when notifications are off: the loop still has to
+            # advance `previous` below, or the same transition re-fires on every
+            # poll for as long as the state persists.
+            if MEMORY_ADVISORY_NOTIFICATIONS:
+                now = time.time()
+                if now - last_notified_at >= _MIN_NOTIFY_INTERVAL_S:
+                    if scheduler.notify(_TEXT):
+                        last_notified_at = now
+                        logger.info("memory advisory: notified user")
+                else:
+                    logger.info(
+                        "memory advisory: notification suppressed (last notice %.0fs ago)",
+                        now - last_notified_at,
+                    )
 
         # Only advance `previous` on a real reading. Letting None overwrite it
         # would make every backend restart look like a fresh transition and
@@ -115,10 +134,15 @@ def _poll_loop(stop_event: threading.Event) -> None:
 
 
 def start() -> threading.Event | None:
-    """Start the watcher. Returns its stop event, or None if disabled."""
+    """Start the watcher. Returns its stop event.
+
+    The watcher runs whether or not notifications are enabled: watching and
+    interrupting are different things, and only the second one is noise. With
+    notifications off the loop still records every transition, which is where
+    the useful history lives.
+    """
     if not MEMORY_ADVISORY_NOTIFICATIONS:
-        logger.info("Memory advisory notifications disabled by config")
-        return None
+        logger.info("Memory advisory notifications off; still recording transitions")
     stop_event = threading.Event()
     threading.Thread(
         target=_poll_loop, args=(stop_event,), name="mira-memory-watch", daemon=True
