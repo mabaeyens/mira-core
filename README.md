@@ -296,6 +296,22 @@ This project is the result of a strategic collaboration between human design and
 
 This approach demonstrates the ability to direct advanced AI tools to accelerate development without sacrificing creative control or technical quality.
 
+## Acknowledgements
+
+Mira is built on a lot of other people's work. This is what it leans on, what it copies outright, and under which licence.
+
+**Code vendored into this repo.** `core/inference/qwen3_vl_vision.py` is the Qwen3-VL vision tower from [mlx-vlm](https://github.com/Blaizzy/mlx-vlm) 0.6.8 (MIT, © 2025 Prince Canuma), copied rather than depended on because mlx-vlm pulls in opencv-python, mlx-audio and a torch stack Mira does not otherwise need. The file carries its own attribution header.
+
+**The inference stack.** mira-mlx is not an engine of its own. It drives [mlx](https://github.com/ml-explore/mlx) and [mlx-lm](https://github.com/ml-explore/mlx-lm) (both MIT, Apple) directly: model definitions, weight loading, `BatchGenerator` for continuous batching, `LRUPromptCache` for cross-turn prefix reuse and `ToolCallFormatter` for tool-call parsing are all theirs. What Mira adds on top is scheduling, RAM-aware sizing, disk cache overflow and MoE expert offload. [oMLX](https://omlx.ai), vllm-mlx and mlx-lm's own server are supported as alternative backends, unmodified and unbundled.
+
+**Models downloaded at runtime.** `Qwen3.6-35B-A3B` (Apache-2.0, Alibaba), `nomic-embed-text-v1.5` (Apache-2.0, Nomic AI) for embeddings and `Qwen3-Reranker-0.6B` for reranking. The MLX conversions come from the [mlx-community](https://huggingface.co/mlx-community) org.
+
+**Retrieval and serving.** ChromaDB, sentence-transformers, transformers and python-multipart (Apache-2.0), PyTorch (BSD-3-Clause), FastAPI (MIT), and Starlette, uvicorn and sse-starlette (BSD-3-Clause).
+
+**Documents and the web.** PyMuPDF (AGPL-3.0 or Artifex commercial, see below), trafilatura (Apache-2.0), Markdown (BSD-3-Clause), and beautifulsoup4, markdownify, ddgs, curl_cffi, httpx and rich (MIT).
+
+> **A note on PyMuPDF.** It is dual licensed, AGPL-3.0 or a commercial licence from Artifex, and it is the only strong copyleft in Mira's dependency tree. Mira does not redistribute it: the wheel declares it as a dependency and pip fetches it from Artifex directly, so hosting Mira yourself changes nothing. It is worth knowing about if you fork Mira into something closed or build a hosted product on top of it. `pypdfium2` (BSD) is the usual escape hatch.
+
 ## License
 
 This project is licensed under the **MIT License**. You can find the full text in the [`LICENSE`](./LICENSE) file.
