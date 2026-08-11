@@ -376,8 +376,25 @@
         dead conversation.
      3. **Then** the stripper fix, which still needs the decision below.
 
-     **Needs a decision before building:** narrowing that reclassification reverses a documented
-     choice, and the alternative to showing reasoning is showing nothing.
+     ~~**Needs a decision before building.**~~ **ALL THREE SHIPPED 2026-08-11**, Miguel approved
+     the ranking above.
+     1. `max_output_tokens` is a real setting now (`config.py`, `mira.yaml`, both call sites in
+        `backend_manager.py`), default **16384**. It was hardcoded to 4096 in three places. Worth
+        recording how long this hid: `MAX_THINKING_TOKENS` has been 8192 all along, double the
+        entire generation budget, so it could never bind — and the orchestrator sends it as
+        `thinking_budget` while **mira-mlx never reads it**. That knob is dead code; the config
+        was advertising a limit nothing enforced.
+     2. `_degenerate_run()` in `orchestrator.py` discards a reply that is one character repeated,
+        judged over non-drawing characters so ASCII diagrams survive. First version of the rule
+        scored two real diagrams as broken, which is why that exclusion exists.
+     3. `ThinkingStripper.truncated()` stops the reclassification when, and only when, the stream
+        was cut at the cap. A turn with nothing left to show now says so instead of returning empty.
+
+     Verified live, not assumed: engine restarted and running `--max-tokens 16384`, and the exact
+     prompt that produced 14,025 characters of chain of thought twice byte-identically now returns
+     a 2,968 character answer in 78.5s. Caveat on that check: it ran on a fresh conversation id, so
+     the context differs from the poisoned turn 8 it reproduces. 670 tests pass; the new ones in
+     `tests/test_truncated_generation.py` were checked against the old `drain()` and fail on it.
 
      Also observed and not yet chased: `fetch_url` returns ~970 chars on JS-rendered pages
      (both Apple HIG URLs) against 24,038 for a Qlik help page, and Mira answers an empty fetch by

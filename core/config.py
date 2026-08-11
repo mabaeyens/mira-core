@@ -85,6 +85,24 @@ EMBED_MODEL: str = _get("embed_model", "nomic-ai/nomic-embed-text-v1.5")
 # ── Context window ────────────────────────────────────────────────────────────
 CONTEXT_WINDOW: int = _get("context_window", 65536)
 
+# Cap on a single generation. Was hardcoded to 4096 in three places until
+# 2026-08-11, when two batches of real conversations showed what that costs:
+# 13 of 51 turns hit the cap, and every one of them reached the user broken --
+# either as raw chain of thought presented as the answer, or as 4096 copies of
+# one character, which then poisons the conversation history for good.
+#
+# 4096 was never enough for a thinking model. Measured reasoning on ordinary
+# questions ran to 19k characters, so thinking alone consumed the whole budget
+# before the answer began. Note that MAX_THINKING_TOKENS below is 8192 --
+# double the old total -- which is how long this went unnoticed: a budget that
+# large can never bind, and the backend ignores it anyway.
+#
+# Raising it does not make replies longer, it stops them being cut off; a model
+# that is done still emits its stop token. The cost of a higher ceiling is the
+# worst case, not the common case: 16384 tokens at ~59 tok/s is about four and
+# a half minutes, which the longest healthy turns already reached.
+MAX_OUTPUT_TOKENS: int = _get("max_output_tokens", 16384)
+
 # ── Thinking mode ─────────────────────────────────────────────────────────────
 THINKING_MODE: str = _get("thinking_mode", "adaptive")  # adaptive | always | never
 MAX_THINKING_TOKENS: int = _get("max_thinking_tokens", 8192)  # 0 = uncapped; minimum useful value ~512

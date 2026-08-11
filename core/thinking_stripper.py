@@ -72,6 +72,23 @@ class ThinkingStripper:
         # Everything emitted as thinking from that unclosed block, kept so drain()
         # can reclassify it as visible if the close tag never arrives.
         self._preopen_buf = ""
+        # Set by truncated() when the stream was cut at the token cap rather than
+        # ended by the model. Suppresses that reclassification: see drain().
+        self._truncated = False
+
+    def truncated(self) -> None:
+        """Tell the stripper the stream ended at the token cap, not by choice.
+
+        Without this, an unclosed pre-opened block is reclassified as the answer
+        by drain(), on the reasoning that the template promised a close tag so
+        the absence of one means the text was never reasoning. That inference
+        only holds when the model *chose* to stop. When it was cut off, the
+        block is unclosed because the model never got to finish, and publishing
+        the reasoning shows the user 19,000 characters of "The user wants me
+        to..." instead of an answer. Measured on 2026-08-11 across two batches of
+        real conversations: 13 of 51 turns, every single cap hit.
+        """
+        self._truncated = True
 
     def saw_reasoning(self) -> None:
         """Tell the stripper the backend delivers reasoning out of band.
@@ -99,6 +116,21 @@ class ThinkingStripper:
             # model would close it, so the safe reading is that this was never
             # reasoning at all — emit it as the answer rather than swallowing
             # the whole turn and saving an empty assistant message.
+            #
+            # Unless the stream was cut at the token cap, in which case the
+            # block is unclosed for a reason that has nothing to do with what
+            # the text is: the model simply ran out of budget mid-thought. It
+            # really was reasoning, so it stays on the thinking channel and the
+            # caller is left with empty content to report honestly.
+            if self._truncated:
+                if self._think_buf:
+                    self.thinking_chars += len(self._think_buf)
+                    yield {"type": "thinking", "content": self._think_buf}
+                self._preopen_buf = ""
+                self._think_buf = ""
+                self._preopen_active = False
+                self._in_thinking = False
+                return
             text = self._preopen_buf + self._think_buf
             self.thinking_chars -= len(self._preopen_buf)
             self._preopen_buf = ""

@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from core.config import CONTEXT_WINDOW, DB_PATH
+from core.config import CONTEXT_WINDOW, DB_PATH, MAX_OUTPUT_TOKENS
 from core.config import MLX_LM_CLI as _MLX_LM_CLI_PATH
 from core.config import (
     MIRA_MLX_KV_BITS,
@@ -126,7 +126,7 @@ def start_mlx_lm(model: str = MLX_LM_MODEL) -> None:
             "--model", model,
             "--host", "127.0.0.1",
             "--port", str(MLX_LM_PORT),
-            "--max-tokens", "4096",
+            "--max-tokens", str(MAX_OUTPUT_TOKENS),
             "--prompt-cache-bytes", "3G",
             "--decode-concurrency", "1",
             "--prefill-step-size", str(PREFILL_STEP_SIZE),
@@ -182,9 +182,9 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
         hardware.derive_disk_cache_max_bytes(MIRA_MLX_CACHE_DIR) if DISK_PROMPT_CACHE else 0
     )
     # A single response can't usefully exceed the machine's own derived context
-    # ceiling — on a smaller machine than this one, a flat 4096 could exceed
+    # ceiling — on a smaller machine than this one, a flat value could exceed
     # what --max-kv-size (context_window, below) actually allows.
-    max_tokens = min(4096, context_window)
+    max_tokens = min(MAX_OUTPUT_TOKENS, context_window)
 
     args = [
         sys.executable, "-m", "core.inference.mira_mlx_server",

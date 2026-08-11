@@ -7,6 +7,7 @@ import re
 import shutil
 import tempfile
 import threading
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict, Optional, Iterator
@@ -36,6 +37,35 @@ from . import backend_client as bc
 from . import context_manager as ctxmgr
 
 logger = logging.getLogger(__name__)
+
+
+# Box-drawing, rules and padding. A good ASCII diagram is legitimately dominated
+# by these characters, and a guard that ignored them would throw away some of the
+# better answers Mira gives — several of the diagrams in the 2026-08-11 corpus are
+# over 40% one glyph.
+_DRAWING = set("─│┌┐└┘├┤┬┴┼═║╔╗╚╝▼▲◄►·•*#=-_+|<>. \t\n")
+
+# Below this, a repetitive-looking reply is more likely to be a terse real answer
+# ("yes", "42", an emoji) than a generation loop.
+_DEGENERATE_MIN_CHARS = 200
+_DEGENERATE_SHARE = 0.4
+
+
+def _degenerate_run(text: str):
+    """Detect a reply that is one character repeated to fill the budget.
+
+    Returns ``(char, share)`` when the text is degenerate, else ``None``.
+
+    Judged over the non-drawing characters only, so a diagram is not mistaken for
+    a loop. The threshold is deliberately loose: real prose is never 40% one
+    letter, and the failure this exists for was 100%.
+    """
+    body = [c for c in text if c not in _DRAWING]
+    if len(body) < _DEGENERATE_MIN_CHARS:
+        return None
+    char, count = Counter(body).most_common(1)[0]
+    share = count / len(body)
+    return (char, share) if share > _DEGENERATE_SHARE else None
 
 
 def _tool_ui_labels(name: str, args: dict):
@@ -942,6 +972,12 @@ class ChatOrchestrator:
                         if isinstance(getattr(chunk, 'reasoning_tokens', None), int):
                             self._backend_counts_reasoning = True
 
+                # Tell the stripper *why* the stream ended before it decides what
+                # to do with an unclosed think block. It cannot tell "the model
+                # chose not to close it" from "the model was cut off" on its own,
+                # and the two want opposite handling.
+                if final_finish_reason == "length":
+                    stripper.truncated()
                 # Drain remaining buffered content.
                 yield from stripper.drain()
                 full_content = stripper.full_content
@@ -977,6 +1013,32 @@ class ChatOrchestrator:
                 len(final_message.content or ""),
                 len(getattr(final_message, 'thinking', None) or ""),
             )
+
+        degenerate = _degenerate_run(full_content)
+        if degenerate:
+            # A reply that is one character repeated thousands of times is not an
+            # answer, and it must not survive: it gets saved to the conversation
+            # and fed back in, after which every following turn returns the same
+            # thing. Observed 2026-08-11 — five consecutive turns of exactly 4096
+            # '!' , the last four with no tool calls at all, in a conversation
+            # that could not be recovered from the app.
+            logger.warning(
+                "discarding a degenerate reply: %d chars, %.0f%% the character %r",
+                len(full_content), degenerate[1] * 100, degenerate[0],
+            )
+            full_content = ""
+
+        if not full_content and not final_message.tool_calls and (
+                final_finish_reason == "length" or degenerate):
+            # Say what happened rather than return an empty turn. The reasoning
+            # has already been streamed on its own channel, so the user can still
+            # see the work; what they must not get is that work presented as the
+            # answer.
+            full_content = (
+                "I ran out of room before I finished answering. Ask me again, "
+                "or narrow the question, and I'll get further."
+            )
+
         yield {
             "type": "llm_done",
             "full_content": full_content,
