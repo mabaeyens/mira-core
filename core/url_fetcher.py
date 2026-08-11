@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 import httpx
 import trafilatura
+from bs4 import BeautifulSoup
 from markdownify import markdownify
 
 from .config import URL_FETCH_ALLOW_PRIVATE
@@ -80,8 +81,22 @@ def _extract(html: str) -> str:
     if text and len(text.strip()) >= 200:
         return text.strip()
 
-    # Fallback: structural HTML → Markdown (preserves headers, code, lists)
-    md = markdownify(html, heading_style="ATX", strip=["script", "style", "nav", "footer", "header", "aside", "form"])
+    # Fallback: structural HTML → Markdown (preserves headers, code, lists).
+    #
+    # script/style/noscript are removed outright rather than listed in `strip=`,
+    # because markdownify's `strip` only skips the *tag* and still walks its
+    # children — so the JavaScript and CSS inside came through as body text.
+    # Measured 2026-08-11 on developer.apple.com: 969 chars of `var baseUrl =
+    # "/tutorials/"` and `.noscript{font-family:...}` were handed to the model as
+    # the page content, comfortably clearing the 200-char "is this real?" floor
+    # in fetch_url and so suppressing the fallback that would have got the actual
+    # page. Removing them takes the same page to 55 chars, which correctly reads
+    # as empty. Verified the Qlik pages that already worked are unaffected.
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    md = markdownify(str(soup), heading_style="ATX",
+                     strip=["nav", "footer", "header", "aside", "form"])
     # Collapse excessive blank lines
     md = re.sub(r"\n{3,}", "\n\n", md)
     return md.strip()
@@ -167,8 +182,18 @@ def fetch_url(url: str) -> str:
         raw_html_len = len(html)
 
     # Jina fallback when: too little text, OR suspiciously low extraction ratio
-    # (large HTML + tiny extracted text = JS-rendered page with client-side data loading)
-    is_js_likely = raw_html_len > 50_000 and len(text) < 2_000
+    # (HTML that yields almost no text = JS-rendered page loading data client-side)
+    #
+    # This used to require raw_html_len > 50_000, which assumed a JS-rendered page
+    # ships a lot of HTML. Apple's docs disprove it: a 17 KB shell that loads
+    # everything client-side never reached the fallback, so the model got the
+    # shell. The ratio is the actual signal; the size floor now only exists to
+    # keep genuinely short pages, where a low ratio means nothing, out of it.
+    is_js_likely = (
+        raw_html_len > 10_000
+        and len(text) < 2_000
+        and len(text) / raw_html_len < 0.05
+    )
     if len(text) < 200 or is_js_likely:
         jina_text = _fetch_jina(url)
         if jina_text:

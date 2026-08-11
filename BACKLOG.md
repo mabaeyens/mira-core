@@ -396,11 +396,27 @@
      the context differs from the poisoned turn 8 it reproduces. 670 tests pass; the new ones in
      `tests/test_truncated_generation.py` were checked against the old `drain()` and fail on it.
 
-     Also observed and not yet chased: `fetch_url` returns ~970 chars on JS-rendered pages
-     (both Apple HIG URLs) against 24,038 for a Qlik help page, and Mira answers an empty fetch by
-     looping on `web_search` — 36 calls across the run. Three unrelated URLs returned exactly
-     24,038 chars, so there is a truncation cap sitting at that value. Whether a failed fetch
-     *causes* the repetition loop is one observation, not a finding.
+     **The `fetch_url` half of it — chased, and FIXED 2026-08-11.** Two independent defects, both
+     confirmed against the live URLs rather than reasoned about:
+     1. `markdownify`'s `strip=` argument only skips the *tag* and still walks its children, so the
+        contents of `<script>` and `<style>` came back as page text. developer.apple.com returned
+        969 characters of `var baseUrl = "/tutorials/"` and `.noscript{font-family:...}` — handed
+        to the model as the page. They are removed outright now, which takes the same page to 55
+        characters, correctly reading as empty.
+     2. The JS-page fallback required `raw_html_len > 50_000`, assuming a client-rendered page
+        ships a lot of HTML. Apple's shell is 17 KB, so it never qualified. The test is now the
+        text-to-HTML ratio with a much lower size floor.
+     Together: those two pages went from 969 and 978 characters of CSS to **17,964 and 8,291
+     characters of real content**, with the Qlik page that already worked unchanged at 24,038.
+     `tests/test_url_fetcher_extraction.py`, checked against the old code first — the old path
+     hands over 4,249 chars of JavaScript and never calls the fallback.
+
+     Two things that turned out **not** to be problems, recorded so they are not re-investigated:
+     the 24,038 seen on three unrelated URLs is `MAX_CONTENT_CHARS` (24,000) plus the 38-character
+     truncation notice, exactly as designed. And the 36 `web_search` calls were the total across
+     the whole corpus run, not one runaway turn: the loop is bounded at `MAX_AGENT_STEPS=15` /
+     `MAX_TOOL_CALLS_PER_TURN=20` / `SAME_TOOL_REPEAT_LIMIT=15`, and no turn came near any of them.
+     The repeated searching was a *consequence* of fetch_url returning junk, not a loop of its own.
 - **Nothing is established about which sampling config is safer, and two probe rounds prove why.**
   Same prompt, same parameters, two rounds on 2026-08-09, flatly contradictory:
 
