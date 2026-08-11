@@ -1,6 +1,28 @@
 # Backlog
 
 ## Done
+- [2026-08-11] **IFEval's generation cap decided: 16384, overriding the task's own 1280, and the
+  thing that gates publishing is no longer the cap.** Miguel delegated the number ("raise the limit
+  as you see fit"), so the useful part is the reasoning rather than the value. **1280 predates
+  reasoning models** — it is sized for an instruction-following answer and nothing else, so a
+  thinking model spends the whole budget inside `<think>` and the score measures the cap. **The
+  field has already moved:** lm-evaluation-harness added `think_end_token` and `enable_thinking`
+  specifically to score reasoning models on the text *after* the reasoning, and a unified ~16K
+  response length for IFEval-style benchmarks came with it, so 16384 is the convention rather than a
+  number chosen to flatter the model. **The comparability objection cuts both ways and that is what
+  settled it**: a 1280-capped score for a thinking model is not comparable to a published 1280 score
+  either, because those are for models that answer directly. Neither cap buys a free comparison, so
+  take the one that measures instruction following. **What replaces the block: report the cap and
+  the thinking setting beside any IFEval number, and check `unterminated_thinking` before believing
+  it at all.** That counter is the real hazard — on the 2-question smoke, 1 of 2 ran 16,383 tokens of
+  a repetition loop without closing `</think>`, had the whole chain scored as its answer, and still
+  collected `inst_level_loose_acc 0.75`. **No cap fixes that; it is the runaway problem, not the
+  budget problem**, which is one more argument for the guard spec'd in
+  `specs/generation-runaway-guard.md`. Also worth knowing for the truncation half:
+  [lm-evaluation-harness#3382](https://github.com/EleutherAI/lm-evaluation-harness/issues/3382) is
+  the same defect upstream — truncation before the think-end token gets parsed as the final
+  response. Applied in gitignored `notes/run_lm_evals.sh` and `notes/lm_evals_driver.py`; no
+  mira-core code changed, and **the run itself has not been started**.
 - [2026-08-11] **@pierre427 reviewed mlx-lm #1584 and found a real gap; verified it, replied, and
   decided to split the PR.** Their comment made two points. The first (supplied caches skip
   quantization in `insert_segments`) was already shipped in `3ebafab` back in July, so they were
@@ -252,15 +274,9 @@
   cannot change a generated answer and accuracy evals are unaffected by it.
 
 ### Needs Miguel
-- **Decide IFEval's generation cap — the one open question blocking an IFEval number.** IFEval sets
-  `max_gen_toks: 1280` (`ifeval.yaml:13`) and the runner's `--max-tokens 16384` overrides it. Both
-  choices are defensible and both are wrong in a different way: honouring 1280 truncates every
-  reasoning chain, so a thinking model scores near-zero for reasons unrelated to instruction
-  following; overriding it means the number cannot be compared to any published IFEval result, which
-  is the entire reason for running a standardised suite. **Miguel's point, and it is the right one:
-  if the cap is part of the spec and everyone else honours it, it cannot simply be broken.** Needs
-  evidence on what other implementations do for reasoning models before an IFEval score is
-  published. MMLU-Pro and GPQA are unaffected — run those whenever.
+- ~~**Decide IFEval's generation cap.**~~ **DONE 2026-08-11** — see the Done entry. IFEval runs at
+  16384, overriding its `max_gen_toks: 1280`, and the publishing condition moved off the cap and
+  onto reporting it. Nothing blocks the eval suite now.
 - ~~**Greedy decoding is not tweakable anywhere.**~~ **DONE 2026-08-09.** `temperature`, `top_p` and
   `top_k` are now configurable in `mira.yaml`, wired through `config.py` → orchestrator → `ChatJob`
   → `make_sampler`. Defaults are unchanged (0.0/0.0/0), so no reply changed. Verified rather than

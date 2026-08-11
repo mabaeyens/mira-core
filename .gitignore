@@ -25,9 +25,10 @@ wheels/
 venv/
 ENV/
 
-# IDE
+# IDE / editors
 .idea/
 .vscode/
+.obsidian/
 *.swp
 *.swo
 
