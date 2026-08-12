@@ -358,6 +358,17 @@
 
 ## Pending
 
+### `MAX_THINKING_TOKENS` is a runaway guard, not a budget — decide whether that is what it should be
+- **At the current default of 8192 the budget will essentially never bind.** The worst real turn
+  measured so far spent ~5k reasoning tokens, so the enforcement shipped on 2026-08-12 is live but
+  inert in normal use: it catches a runaway and nothing else. **~2048 would make it an actual
+  budget**, and that is the point — it would start changing replies, which is why it was not
+  changed unasked. This is a product decision about how much thinking a turn is worth, not a bug.
+  Follow-up (b) from the `max_thinking_tokens` entry under Done; (a) is done. Anyone lowering it
+  should re-run the corpus rather than reason about it — truncated thinking is a failure this
+  project has already fixed once and 2048 is inside the range where the model was cutting answers
+  short.
+
 ### `derive_resident_expert_fraction` is blind to gpt-oss-120b
 - **`gpt-oss-120b-MXFP4-Q8` reports `num_experts=None` in its config, so `_classify_weight_bytes`
   finds 0GB of experts and `derive_resident_expert_fraction` returns the `floor_fraction` (0.3)
