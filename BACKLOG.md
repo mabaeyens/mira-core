@@ -1,6 +1,56 @@
 # Backlog
 
 ## Done
+- [2026-08-12] **v1.3.0 released — 41 commits, and the changelog leads with what was broken rather
+  than what was built.** Tag-driven as always; Miguel asked for a minor rather than the conservative
+  patch default, which is also what SemVer wanted given the new sampling knobs, penalties, per-request
+  seed and usage fields. No backfill was needed, the changelog's highest version already matched the
+  newest tag. Wheel built clean at `mira_core-1.3.0-py3-none-any.whl` (no `.dev`/`.dirty` suffix) and
+  attached. The release body was verified **rendered** rather than as written, per the skill's own
+  warning about hard-wrapped bullets coming out ragged. Twelve changelog entries, grouped so the
+  reply-integrity work reads as one story instead of five scattered fixes.
+- [2026-08-12] **Audited all 33 public markdown files against the code they describe; twelve
+  statements were wrong, not merely dated.** Read for content, not link-checked. The pin SHA had gone
+  stale in three places within hours of moving — worst was `packaging.md` showing `branch = "mira-mistral-tool-call-fix"`,
+  a branch that no longer exists, in the exact form `mlx-lm-pin.md` exists to forbid. That doc had
+  predicted this failure in its own closing paragraph and then suffered it, so the SHA now lives in
+  `pyproject.toml` and `mlx-lm-pin.md` only and everything else links there. Three places described
+  behaviour the code had dropped: `architecture.md` and `diagram.md` both called the vector store an
+  `EphemeralClient` (it is a `PersistentClient` per project, so a reader concluded indexed documents
+  die on restart), and `diagram.md` ended the RAG flow at the system prompt while the code prepends to
+  the user message — the two docs contradicted each other. Two of five rows in the README's attachment
+  table predated OCR and were contradicted by the README's own prose twenty lines up.
+- [2026-08-12] **`docs/configuration.md`: all 45 settings, because three partial copies had drifted.**
+  README and `architecture.md` each documented six of what `config.py` reads, and `architecture.md`
+  listed `reranker_model` as source-only when it had been a config field for weeks. **Seven settings
+  `config.py` reads had never appeared in `mira.yaml.example` at all** — `shell_sandbox`,
+  `shell_sandbox_allow_network`, `url_fetch_allow_private`, `max_output_tokens`,
+  `mira_mlx_trust_remote_code`, `compress_threshold`, `compress_keep_recent` — so nobody could have
+  configured the shell sandbox or the SSRF guard. The example also stated the wrong default for
+  `memory_advisory_notifications`, which flipped to off on 2026-08-11. `_get()` in `config.py` is now
+  documented as the single source of truth: a key not passed through it is not a setting.
+- [2026-08-12] **The bug report template was GitHub's unedited default, in both repos.** It asked a
+  macOS-only Python backend's users about their iPhone 6's browser, while `CONTRIBUTING.md` promised
+  it would ask for OS, Python version, mira-core version and active backend. mira-apps had the same
+  hole for a subtler reason: Miguel *had* written a good template at `.github/ISSUE_TEMPLATE.md`, but
+  **GitHub ignores the legacy single-file form the moment a `.github/ISSUE_TEMPLATE/` directory
+  exists**, and that directory held the boilerplate. Both now carry real templates (mira-apps commit
+  `ef6e20b`). Also published the five-bullet spec format in `CONTRIBUTING.md` with the retry fix as a
+  worked example — it previously pointed at the machine-local root `CLAUDE.md`, a dead end for anyone
+  outside this machine.
+- [2026-08-12] **Swept all 159 tracked files; deleted six, trimmed roughly 320 lines of retired-backend
+  docs.** Inventory in `notes/file-sweep-2026-08-12.md`. Deleted with approval: an Ollama Modelfile,
+  an empty `src/.gitkeep` placeholder for a layout never adopted, two one-off analysis scripts, a
+  generic TODO grep, and `mlx-lm-kv-quant-pr-stack.md` (whose framing of the KV crash as a #1584
+  problem is exactly what the same day's fix disproved). `model-comparison-m5-macbook.md` went 496 →
+  ~175 lines: it was honestly labelled an archive but still linked as the current model guide and
+  still told readers to set `OLLAMA_CONTEXT_LENGTH` in their zprofile. Current verdicts, the
+  recommendation matrix rebuilt from selectable options only, backend-independent quality scores and
+  the dated bench index stay. The five bench-results files plus the omlx-era tuning record moved to
+  `docs/bench-archive/` behind an index naming 08-08 as the current comparison point. **Two things
+  that looked stale and are not**, recorded so they are not "fixed": CI on Python 3.12 is deliberate
+  (it exercises the `requires-python` floor while `.python-version` pins 3.13), and
+  `scripts/prefetch_models.py` is called by `ci.yml:53`.
 - [2026-08-12] **Repetition, presence and frequency penalties are now reachable, and a request can
   carry its own seed.** Two halves of the same gap: everything mlx-lm's sampler can do was already
   built and none of it had a route from `mira.yaml`. The penalties go
@@ -767,6 +817,25 @@
   `scripts/bench_eval.py` now scores these automatically, so this column is only for judgement the
   harness deliberately does not make.
 
+### Documentation leftovers from the 2026-08-12 sweep
+- **Two `.github/ISSUE_TEMPLATE.md` files are now dead weight, one per repo — deleting them needs
+  Miguel's word.** Neither is wrong any more, both are simply unreachable: GitHub ignores the legacy
+  single-file form for as long as a `.github/ISSUE_TEMPLATE/` directory exists, and both repos have
+  one. The mira-apps copy is the template Miguel wrote himself, so its content is not at risk — it
+  now lives inside `bug_report.md`. Left in place pending approval, per the standing rule on deletes.
+- **The three settings the sweep made configurable for the first time deserve a look now that
+  someone can actually set them.** `shell_sandbox`, `shell_sandbox_allow_network` and
+  `url_fetch_allow_private` were read by `config.py` and absent from `mira.yaml.example`, so their
+  non-default paths have never been exercised by anyone deliberately choosing them. Documenting a
+  security control is not the same as having reviewed what happens when it is switched off.
+- **`scripts/benchmark.py` and `scripts/bench_standard.py` still carry ollama** — fifteen references
+  in the first. ollama was retired 2026-08-01, so the harness can name a backend the server cannot
+  start. Left alone deliberately during the doc pass: it is code, not prose, and belongs in its own
+  small change rather than folded into a markdown commit.
+- **`docs/moe-offload-lazy-load-design.md` is a design doc for something that shipped.** The measured
+  outcome lives in the case study; this is the plan that preceded it, and the two now overlap. Fold
+  whatever is still true into the case study rather than maintaining both.
+
 ### Small, no decision needed
 - **Memory-state notifications should only fire when Miguel can act, or when they explain something
   he caused.** Asked for directly on 2026-08-11, after the log showed **302 `advisory → evicted`
@@ -897,3 +966,24 @@
 - `pyproject.toml` stays tag-driven via `hatch-vcs` — the git tag IS the version, never hand-edit. `mira.yaml` is gitignored runtime config, not tracked (confirmed 2026-07-06, no leaked secrets — a local `mira.yaml` with a real token exists only on disk, never committed).
 - Installer already automates nearly everything (uv, Python deps incl. mlx stack, disk/RAM preflight, mira.yaml bootstrap, optional tesseract/LaunchAgent via brew, doctor health check). The oMLX GUI step is the sole exception and is expected to stay manual indefinitely absent an oMLX-side scriptable install/model API.
 - Tried `MLX_METAL_FAST_SYNCH=1` + `MLX_MAX_OPS_PER_BUFFER=50` + `MLX_MAX_MB_PER_BUFFER=50` (undocumented MLX Metal-backend env vars, found via `strings` on `libmlx.dylib` and confirmed against MLX's C++ source — `mlx/backend/metal/device.cpp`/`fence.cpp`) on mira-mlx (2026-07-18): `subprocess.Popen()` in `backend_manager.py` inherits the parent env with no override, so setting these on `server.py`'s own process before launch propagates to the mira-mlx subprocess. A/B benched against a plain baseline on **both** models mira-mlx runs — Ministral 3 14B and Qwen3.6-35B-A3B, isolated — **no measurable TTFT difference on either** (within ±20ms noise on the 5 non-agentic questions for both models; Qwen3.6's Q1 showed an ~800ms gap but that's within normal first-request-after-switch variance, not a consistent effect across Q2-Q5). Apparent wins on agentic questions were fully explained by tool-call-count variance between runs, not the env vars, on both models. Correctness unaffected either way on both. Not worth setting as a default; not pursued further.
+- **A fact that must stay current belongs in exactly one file; everywhere else links to it.** The
+  mlx-lm pin SHA was written out in four places and went stale in three of them within hours of
+  moving — `docs/packaging.md` was still showing `branch = "mira-mistral-tool-call-fix"`, a branch
+  that no longer exists, in precisely the form `docs/mlx-lm-pin.md` was written to forbid. That
+  document had predicted the failure in its own closing paragraph and then suffered it, which is the
+  useful part: a warning is not a mechanism. **The SHA now appears in `pyproject.toml` and
+  `docs/mlx-lm-pin.md` and nowhere else**, stated as a rule inside the doc so the next copy is a
+  visible violation rather than an oversight. Same rule now applies to settings: `docs/configuration.md`
+  is the one reference, README and `docs/architecture.md` point at it instead of keeping short lists
+  that silently fall behind `config.py`.
+- **`_get()` in `core/config.py` is the definition of what a setting is.** Anything read through it
+  is configurable and must appear in `docs/configuration.md`; anything not read through it is a
+  constant, however much it looks like a knob. Written down because the drift it caused was invisible
+  from either end — seven keys the code honoured had never been offered to a user, three of them
+  security controls, while `docs/architecture.md` advertised `reranker_model` as source-only weeks
+  after it became a config field.
+- **GitHub silently ignores `.github/ISSUE_TEMPLATE.md` once a `.github/ISSUE_TEMPLATE/` directory
+  exists.** No warning, no precedence note in the repo, nothing in the UI. This is how a
+  well-written template in mira-apps went unseen for its entire life while GitHub's unedited default
+  — browser, iPhone 6, "Version [e.g. 22]" — collected every bug report for a macOS and iOS app.
+  If a template ever looks like it is not being used, check for the directory before rewriting it.
