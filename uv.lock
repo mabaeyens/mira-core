@@ -1007,7 +1007,7 @@ requires-dist = [
     { name = "markdown", specifier = ">=3.5.0,<4.0.0" },
     { name = "markdownify", specifier = ">=0.13,<1.0" },
     { name = "mlx", marker = "sys_platform == 'darwin'", specifier = ">=0.32.0" },
-    { name = "mlx-lm", marker = "sys_platform == 'darwin'", git = "https://github.com/mabaeyens/mlx-lm.git?rev=291a61a053eceee034d5aa24d931fd9b74f75a91" },
+    { name = "mlx-lm", marker = "sys_platform == 'darwin'", git = "https://github.com/mabaeyens/mlx-lm.git?rev=9721b950b65858c87083f3cfd59d2c69d068b452" },
     { name = "mlx-metal", marker = "sys_platform == 'darwin'", specifier = ">=0.32.0" },
     { name = "openai", specifier = ">=2.37.0" },
     { name = "pillow", specifier = ">=12.3.0" },
@@ -1045,7 +1045,7 @@ wheels = [
 [[package]]
 name = "mlx-lm"
 version = "0.31.3"
-source = { git = "https://github.com/mabaeyens/mlx-lm.git?rev=291a61a053eceee034d5aa24d931fd9b74f75a91#291a61a053eceee034d5aa24d931fd9b74f75a91" }
+source = { git = "https://github.com/mabaeyens/mlx-lm.git?rev=9721b950b65858c87083f3cfd59d2c69d068b452#9721b950b65858c87083f3cfd59d2c69d068b452" }
 dependencies = [
     { name = "jinja2" },
     { name = "mlx", marker = "sys_platform == 'darwin'" },

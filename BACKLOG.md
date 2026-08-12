@@ -395,7 +395,7 @@
 
 ## Pending
 
-### Batched quantized KV kills the engine on any GQA model — upstream fixed it, our pin predates the fix
+### ~~Batched quantized KV kills the engine on any GQA model~~ — FIXED 2026-08-12, kept for the lesson
 - **Production configuration crashes as soon as two requests overlap a long one.** Found 2026-08-12
   by the thinking-budget run, which was not looking for it: the engine thread dies with
   `ValueError: [broadcast_shapes] Shapes (3,1,1,1629) and (3,2,8,1,1629) cannot be broadcast` inside
@@ -423,20 +423,29 @@
   occurrences of the guard. So the fork branched before #1467 landed and has carried the pre-fix
   version ever since. **This is the failure mode a pin exists to cause: it freezes the bugs along
   with the API.**
-- **Fix: cherry-pick `a790972` onto the pin branch.** Two lines plus a test, touching nothing else,
-  so it does not drag in `SequenceStateMachine` or `_embed_tokens` — the two changes that make a full
-  pin move expensive. Rebasing #1584 onto current upstream `main` also fixes it as a side effect, and
-  has to happen before that PR can land anyway. **Not applied** — it touches the fork mid-review and
-  the branch `pyproject.toml` points at must not be force-pushed.
-- **This blocks the #1584 A/B/C split**, and for a sharper reason than "there is a bug near it": the
-  branch adds the batched quantized path on a base that predates the fix for the function that path
-  leans on, so **any reviewer running it on any GQA model at batch ≥ 2 gets a traceback instead of
-  the feature**. It also settles the thread's running argument the right way round — this was found
-  by running the batched path, and two code reads had not found it.
-- Production is exposed meanwhile: dropping `mira_mlx_kv_bits` avoids it at the cost of KV
-  compression, leaving it means an occasional engine death that now at least surfaces as a clean 503.
-  Full write-up in gitignored `notes/kv-quant-batched-mask-crash-2026-08-12.md`; the forcing condition
-  it meets is recorded in `docs/mlx-lm-pin.md`.
+- **PR #1584 was never affected, contrary to what this entry first said.** `git branch --contains
+  a790972` lists `kv-cache-quant-batching`: the PR branch picked the fix up through its merge of
+  `main` on 2026-07-09 and is only 3 commits behind upstream. **The exposure was Mira's alone**,
+  because the pin branches (`mira-core-pin`, `mira-core-pin-vision`) are the two that never took it.
+  Checking which branches contain a commit costs one command and would have saved a wrong claim —
+  "the PR that added the feature must be the PR that broke it" was an assumption, not a finding.
+- **FIXED 2026-08-12, and production is verified.** `a790972` cherry-picked onto
+  `mira-core-pin-vision` as `9721b95` (clean, original authorship kept, upstream's own regression
+  test came with it and passes). Pushed as a fast-forward — no history rewrite, the pin branch is
+  never force-pushed. `pyproject.toml` bumped `291a61a` → `9721b95` and the venv resynced; the
+  installed `mlx_lm/models/base.py` now carries the guard, checked rather than assumed.
+  **End-to-end check on the restarted server: three concurrent ~1,600-word requests — the same shape
+  as the 1,629-token crash — all answered, zero broadcast or `engine loop died` lines in the engine
+  log.** One trap worth recording: `uv sync` from a worktree silently re-points the editable
+  `mira-core` install at that worktree, so production would have started importing branch code.
+  Restored with `uv pip install -e <main checkout> --no-deps`; check `_editable_impl_mira_core.pth`
+  after any sync run from a worktree.
+- **PR #1584 was also rebased onto current upstream `main`** (5 commits, linear, merge commit
+  dropped, no conflicts; `tests/test_prompt_cache.py` + `tests/test_models.py` = 104 passed).
+  **Local only** — pushing it force-pushes an open public PR, which is a separate decision. The
+  pre-rebase tip is tagged `pre-rebase-1584-2026-08-12` (`443dd99`).
+- Full write-up in gitignored `notes/kv-quant-batched-mask-crash-2026-08-12.md`; the pin-move
+  reasoning is in `docs/mlx-lm-pin.md`.
 
 ### `MAX_THINKING_TOKENS` — measured 2026-08-12, and 2048 does not bind either
 - **The code default is now 2048; the live `mira.yaml` is deliberately still 8192.** Changing a

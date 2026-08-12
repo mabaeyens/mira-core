@@ -65,6 +65,13 @@ package = true
 # Do NOT bump this to a newer upstream-rebased commit without first verifying
 # mira_mlx_server.py's SequenceStateMachine import still resolves — upstream's
 # 2026-07 "Text-based state machine for tool/reasoning parsing" refactor
-# (PR #1501) renamed/replaced it with TextStateMachine, a different API.
+# (PR #1501) renamed/replaced it with TextStateMachine, a different API. The same
+# applies to _embed_tokens, which upstream removed and vision prefill calls.
+# 2026-08-12: bumped 291a61a → 9721b95, which is one cherry-pick on top —
+# upstream a790972 (PR #1467), "Fix broadcast crash in quantized SDPA with GQA +
+# batched padding mask (batch >= 2)". Without it the engine died on any GQA model
+# running quantized KV at batch ≥ 2, which is this machine's own configuration.
+# A single upstream commit lifted on its own: no rebase, so neither of the two
+# breaking changes above comes with it. docs/mlx-lm-pin.md has the reasoning.
 [tool.uv.sources]
-mlx-lm = { git = "https://github.com/mabaeyens/mlx-lm.git", rev = "291a61a053eceee034d5aa24d931fd9b74f75a91" }
+mlx-lm = { git = "https://github.com/mabaeyens/mlx-lm.git", rev = "9721b950b65858c87083f3cfd59d2c69d068b452" }

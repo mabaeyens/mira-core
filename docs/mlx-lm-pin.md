@@ -90,12 +90,18 @@ more — which is Mira's production configuration — and the engine thread dies
 Verified rather than assumed: the installed copy contains zero occurrences of
 that guard, and the crash reproduces standalone in a second.
 
-It is two lines plus a test and it touches nothing else, so **the cheap move is
-to cherry-pick `a790972` onto the pin branch, not to rebase**. That buys the
-correctness fix without paying for `SequenceStateMachine` or `_embed_tokens`. It
-also means the forcing condition does not force a *full* move here — worth
-remembering the next time this table says "moving costs a port": a single
-upstream commit may be liftable on its own.
+It is two lines plus a test and it touches nothing else, so **the cheap answer was
+to cherry-pick `a790972`, not to rebase** — that buys the correctness fix without
+paying for `SequenceStateMachine` or `_embed_tokens`. **Done the same day:**
+`9721b95` on `mira-core-pin-vision`, pushed as a fast-forward, `pyproject.toml`
+bumped from `291a61a`, venv resynced, and three concurrent long requests survived
+on the restarted server.
+
+The general lesson, which is why this section exists at all: **the forcing
+condition does not necessarily force a full move.** A single upstream commit may
+be liftable on its own, and checking that first is cheaper than either rebasing or
+living with the bug. Ask "does this fix stand alone?" before "is it time to move
+the pin?".
 
 Read `notes/kv-quant-batched-mask-crash-2026-08-12.md` for the mechanism.
 
