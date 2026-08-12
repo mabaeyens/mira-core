@@ -417,3 +417,58 @@ def test_date_check_matches_what_the_question_asked_for(be):
     strict = {"files": [{"path": "f", "contains": ["ok"], "contains_today": "iso"}]}
     assert be.score_tier1(q(strict), {"artifacts": {"f": f"{iso} ok"}}).tier1 == 2
     assert be.score_tier1(q(strict), {"artifacts": {"f": f"{pretty} ok"}}).tier1 == 1
+
+
+# ── reply integrity, added with questions 17-22 ──────────────────────────────
+
+
+def test_reply_that_is_the_reasoning_scores_zero(be):
+    """The signature measured on 2026-08-11: reply length equal to thinking
+    length exactly (13,299 = 13,299), the same characters emitted once as
+    thinking and again as the answer."""
+    check = {"answer_not_thinking": True}
+    leaked = "Let me think. The user wants X. First I should check Y."
+    assert be.score_tier1(q(check), {"content": leaked, "thinking": leaked}).tier1 == 0
+    assert be.score_tier1(
+        q(check), {"content": "X works like this.", "thinking": leaked}).tier1 == 2
+
+
+def test_no_thinking_captured_is_skipped_not_failed(be):
+    """Same rule as artifacts and truth: a run that did not record the channel
+    has not demonstrated a failure. Every run before 2026-08-12 is one."""
+    s = be.score_tier1(q({"answer_not_thinking": True}), {"content": "an answer"})
+    assert s.partial is True
+    assert s.tier1 is None
+
+
+def test_degenerate_reply_scores_zero_but_short_ones_are_left_alone(be):
+    check = {"not_degenerate": True}
+    assert be.score_tier1(q(check), {"content": "!" * 4096}).tier1 == 0
+    # Under the length floor: "..." and "?!" are real answers, not runaways.
+    assert be.score_tier1(q(check), {"content": "..."}).tier1 == 2
+    assert be.score_tier1(q(check), {"content": "A real answer. " * 20}).tier1 == 2
+
+
+def test_a_turn_that_errored_scores_zero(be):
+    """The shape of the list_attachments crash: tool_start had already been sent,
+    so the record has tool calls and looks healthy apart from this field."""
+    check = {"no_stream_error": True}
+    rec = {"content": "", "tool_calls": ["list_attachments"],
+           "error": "Internal error — see server logs"}
+    assert be.score_tier1(q(check), rec).tier1 == 0
+    assert be.score_tier1(q(check), {"content": "ok"}).tier1 == 2
+
+
+def test_legitimate_repetition_must_survive(be):
+    """The inverse guard. x16 identical lines happened in real traffic, and the
+    first version of _degenerate_run scored two real ASCII diagrams as broken."""
+    check = {"min_line_repeats": 8}
+    block = "\n".join(['  "enabled": true,'] * 12)
+    assert be.score_tier1(q(check), {"content": block}).tier1 == 2
+    assert be.score_tier1(q(check), {"content": "only once"}).tier1 == 1
+
+
+def test_answer_contains_all_deducts_per_missing_item(be):
+    check = {"answer_contains_all": ["bench-token-4713"]}
+    assert be.score_tier1(q(check), {"content": "it was bench-token-4713"}).tier1 == 2
+    assert be.score_tier1(q(check), {"content": "I don't recall"}).tier1 == 1

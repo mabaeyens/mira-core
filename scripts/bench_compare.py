@@ -528,6 +528,7 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
     t_start = time.perf_counter()
     ttft_ms = None
     content_parts = []
+    thinking_parts = []
     tool_calls = []
     task_done_fired = False
     divergence_guard_fired = False
@@ -562,6 +563,13 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
 
                 if event_type == "token":
                     content_parts.append(event.get("content", ""))
+
+                # Captured because the reply-integrity checks need to compare the
+                # two channels: a reply that is byte-identical to the reasoning
+                # is the signature of a truncated turn being reclassified as the
+                # answer, and that is invisible if only `content` is recorded.
+                elif event_type == "thinking":
+                    thinking_parts.append(event.get("content", ""))
 
                 elif event_type == "tool_start":
                     tool_name = event.get("tool", "unknown")
@@ -619,6 +627,7 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
         "ttft_ms": round(ttft_ms) if ttft_ms else None,
         "wall_ms": round(wall_ms),
         "content": "".join(content_parts),
+        "thinking": "".join(thinking_parts),
         "tool_calls": tool_calls,
         "task_done": task_done_fired,
         "divergence_guard_fired": divergence_guard_fired,
@@ -627,39 +636,65 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
     }
 
 
-def run_multi_turn(q: dict, model: str) -> dict:
-    """Run a 2-turn question (Q10). Uses a fresh conversation.
+def run_multi_turn(q: dict, model: str, project_id: str | None = None,
+                   workspace_root: str = "") -> dict:
+    """Run a 2-turn question. Uses a fresh conversation.
 
-    The injected file comes from the question's `inject_file`, not from a
-    constant. It was hardcoded to server.py while Q10 asked about the divergence
-    guard, which lives in core/orchestrator.py — so a correct model had to
-    contradict the question and the item could not distinguish good retrieval
-    from a confident hallucination.
+    A question either pastes a file into turn 1 (`inject_file`) or asks its own
+    turn-1 question (`prompt_turn1`); see the comment below for why both exist.
+
+    When a file is injected it comes from the question's `inject_file`, not from
+    a constant. It was hardcoded to server.py while Q10 asked about the
+    divergence guard, which lives in core/orchestrator.py — so a correct model
+    had to contradict the question and the item could not distinguish good
+    retrieval from a confident hallucination.
     """
-    conv_id = create_bench_conversation()
+    use_project = project_id if q.get("tools") else None
+    conv_id = create_bench_conversation(use_project)
 
+    # Two shapes of multi-turn question, and they need different turn-1 prompts.
+    # Q10 pastes a file; questions 21-22 (added 2026-08-12) ask a normal question
+    # whose *effect* on the conversation is what turn 2 tests -- a tool result
+    # that has to survive into history, or an injected instruction that has to
+    # stay resisted once it is history. Requiring inject_file made the second
+    # kind unrepresentable.
     rel = q.get("inject_file")
-    if not rel:
-        return {"error": f"Q{q['id']} is multi-turn but declares no inject_file"}
-    target = (SOURCE_REPO / rel).resolve()
-    if not target.exists():
-        return {"error": f"inject_file not found: {target}"}
-    server_content = target.read_text()
-    turn1_prompt = (
-        f"I'm going to share a Python file with you. Here are its contents:\n\n"
-        f"```python\n{server_content}\n```\n\n"
-        f"Acknowledge that you've read it."
-    )
+    if rel:
+        target = (SOURCE_REPO / rel).resolve()
+        if not target.exists():
+            return {"error": f"inject_file not found: {target}"}
+        injected = target.read_text()
+        turn1_prompt = (
+            f"I'm going to share a Python file with you. Here are its contents:\n\n"
+            f"```python\n{injected}\n```\n\n"
+            f"Acknowledge that you've read it."
+        )
+        label = f"inject {rel}, {len(injected):,} chars"
+    elif q.get("prompt_turn1"):
+        turn1_prompt = q["prompt_turn1"]
+        if workspace_root:
+            turn1_prompt = turn1_prompt.replace("{workspace_root}", workspace_root)
+        label = "setup"
+    else:
+        return {"error": f"Q{q['id']} is multi-turn but declares neither "
+                         f"inject_file nor prompt_turn1"}
 
-    print(f"    Turn 1 (inject {rel}, {len(server_content):,} chars)...", end="", flush=True)
-    r1 = stream_chat(turn1_prompt, model, thinking=False, tools=False, conversation_id=conv_id)
+    thinking = q.get("thinking", False)
+    tools = q.get("tools", False)
+
+    print(f"    Turn 1 ({label})...", end="", flush=True)
+    r1 = stream_chat(turn1_prompt, model, thinking=thinking, tools=tools,
+                     conversation_id=conv_id)
     if "error" in r1:
         return r1
     print(f" {r1['wall_ms']}ms")
 
-    # Turn 2: actual question
-    print(f"    Turn 2 (retrieval)...", end="", flush=True)
-    r2 = stream_chat(q["prompt_turn2"], model, thinking=False, tools=False, conversation_id=conv_id)
+    turn2_prompt = q["prompt_turn2"]
+    if workspace_root:
+        turn2_prompt = turn2_prompt.replace("{workspace_root}", workspace_root)
+    print("    Turn 2...", end="", flush=True)
+    r2 = stream_chat(turn2_prompt, model, thinking=thinking, tools=tools,
+                     conversation_id=conv_id)
     if "error" in r2:
         return r2
     print(f" {r2['wall_ms']}ms")
@@ -668,8 +703,15 @@ def run_multi_turn(q: dict, model: str) -> dict:
         "ttft_ms": r2["ttft_ms"],
         "wall_ms": r1["wall_ms"] + r2["wall_ms"],
         "content": r2["content"],
-        "tool_calls": [],
-        "task_done": False,
+        # Both turns. `tool_absent` on a multi-turn injection question is about
+        # the whole conversation, not its last message: a payload that arrives in
+        # turn 1 and is acted on in turn 2 is the failure being tested for, and
+        # discarding turn 1's calls would have hidden the opposite case too.
+        "tool_calls": r1["tool_calls"] + r2["tool_calls"],
+        "thinking": (r1.get("thinking") or "") + (r2.get("thinking") or ""),
+        "task_done": bool(r1.get("task_done") or r2.get("task_done")),
+        "divergence_guard_fired": bool(r1.get("divergence_guard_fired")
+                                       or r2.get("divergence_guard_fired")),
         "eval_tokens": r2["eval_tokens"],
         "eval_tps": r2["eval_tps"],
         "multi_turn": True,
@@ -792,7 +834,7 @@ def run_benchmark(model: str, questions: list[dict], project_id: str | None = No
         print(f"  Q{qid} [{category}]...", end="", flush=True)
 
         if q.get("turns", 1) > 1:
-            result = run_multi_turn(q, model)
+            result = run_multi_turn(q, model, project_id, workspace_root)
         else:
             # Fresh conversation per question; scoped to project for agentic questions
             use_project = project_id if q.get("tools") else None

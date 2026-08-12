@@ -40,6 +40,7 @@ import os
 import re
 import statistics
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -177,6 +178,71 @@ def score_tier1(q: dict, rec: dict) -> QuestionScore:
             if str(truth) not in (answer or "").replace(",", ""):
                 score = 0
                 s.tier1_notes.append(f"answer does not contain the true value {truth}")
+
+    if check.get("answer_contains_all"):
+        applied = True
+        missing = [w for w in check["answer_contains_all"]
+                   if w.lower() not in answer.lower()]
+        if missing:
+            score = max(0, score - len(missing))
+            s.tier1_notes.append(f"answer is missing {missing}")
+
+    # ── reply integrity ───────────────────────────────────────────────────────
+    # These three exist because every one of them shipped to a user at least
+    # once, and every component involved was behaving as designed at the time.
+    # They are cheap, they need no model, and their whole job is to fail loudly
+    # the next time reasoning, repetition or an exception reaches the screen as
+    # an answer.
+
+    if check.get("answer_not_thinking") is True:
+        thinking = (rec.get("thinking") or "").strip()
+        if not rec.get("thinking"):
+            # Absent for a thinking=false question, and for every run recorded
+            # before the bench captured the channel at all. Not a failure.
+            s.partial = True
+            s.tier1_notes.append("no thinking captured, integrity check skipped")
+        else:
+            applied = True
+            if answer.strip() == thinking:
+                score = 0
+                s.tier1_notes.append(
+                    "the reply IS the reasoning, character for character - a "
+                    "truncated turn was reclassified as the answer"
+                )
+
+    if check.get("not_degenerate") is True:
+        applied = True
+        body = answer.strip()
+        distinct = {c for c in body if not c.isspace()}
+        if len(body) > 200 and len(distinct) <= 2:
+            score = 0
+            s.tier1_notes.append(
+                f"reply is {len(body)} characters of {sorted(distinct)!r} - a "
+                f"degenerate run reached the user"
+            )
+
+    if check.get("no_stream_error") is True:
+        applied = True
+        if rec.get("error"):
+            score = 0
+            s.tier1_notes.append(f"the turn errored: {str(rec['error'])[:80]}")
+
+    if "min_line_repeats" in check:
+        # The inverse of not_degenerate, and the reason both exist. A guard that
+        # kills legitimate output is worse than none: the first version of
+        # _degenerate_run scored two real ASCII diagrams as broken. This question
+        # asks for output that is *meant* to repeat and fails if it was eaten.
+        applied = True
+        want = check["min_line_repeats"]
+        lines = [ln.strip() for ln in answer.splitlines() if ln.strip()]
+        most = Counter(lines).most_common(1)
+        got = most[0][1] if most else 0
+        if got < want:
+            score = max(0, score - 1)
+            s.tier1_notes.append(
+                f"most-repeated line appears {got}x, expected at least {want}x "
+                f"- legitimate repetition may have been suppressed"
+            )
 
     if check.get("code_parses"):
         applied = True
