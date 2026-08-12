@@ -27,6 +27,23 @@
 # allowed_hosts:
 #   - your-mac.tailXXXX.ts.net
 
+# Whether fetch_url may reach loopback, private or link-local addresses. Off by
+# default: the URL is chosen by the model, which reads attacker-influenceable
+# text, so a crafted page should not be able to steer it at a LAN device, a
+# loopback service or a metadata endpoint. Turn on only if you genuinely want
+# Mira summarizing localhost or LAN pages.
+# url_fetch_allow_private: false
+
+# run_shell wraps every command in a macOS sandbox-exec profile that confines
+# writes to the workspace and temp dirs. Regex prefiltering cannot contain a
+# shell; this can. Fails closed if sandbox-exec is unavailable. Leave it on.
+# shell_sandbox: true
+
+# Whether sandboxed commands may open outbound connections. ON by default —
+# git pull, npm install and curl are legitimate here. Set false for untrusted
+# sessions to also block the network.
+# shell_sandbox_allow_network: true
+
 # ── LLM backend ──────────────────────────────────────────────────────────────
 # Recommended: mira-mlx (Mira's own inference server — bundled, no separate app to
 # install; RAM-aware sizing, disk-backed prompt cache). Supports Qwen3.6 (MoE, the
@@ -76,6 +93,20 @@ reranker_model: mlx-community/Qwen3-Reranker-0.6B-4bit
 # gemma4:26b: 65536 tokens (64K) - optimal for M5 with 32GB RAM
 # Qwen3.6-35B-A3B: 262144 tokens (256K) - requires >32GB RAM for best performance
 context_window: 65536
+
+# Ceiling on a single reply. Raising it does not make replies longer — a model
+# that is done still emits its stop token — it stops them being cut off. The
+# cost of a higher ceiling is the worst case, not the common case: 16384 tokens
+# at ~59 tok/s is about four and a half minutes, which the longest healthy turns
+# already reached. It was hardcoded to 4096 in three places until 2026-08-11.
+# max_output_tokens: 16384
+
+# When the context fills past compress_threshold percent, the orchestrator
+# summarises the older half of the conversation at the end of the turn, keeping
+# the system prompt and the most recent compress_keep_recent messages verbatim.
+# Clients are told via a `compress` event. Minimum keep is 2, enforced in code.
+# compress_threshold: 70
+# compress_keep_recent: 6
 
 # Thinking mode: adaptive (heuristic per request) | always | never
 # adaptive: enables thinking for complex/reasoning requests, skips for simple ones
@@ -208,6 +239,13 @@ prefill_step_size: 1024
 # mira_mlx_kv_group_size: quantization group size for mira_mlx_kv_bits (default 64).
 mira_mlx_kv_group_size: 64
 
+# mira_mlx_trust_remote_code: execute a model repo's own Python at load time.
+# Default off, and worth understanding before turning on: with this enabled,
+# loading any repo runs that repo's tokenizer code in-process, so a model id
+# becomes equivalent to code execution. Enable only for a specific model you
+# trust that genuinely ships a custom tokenizer class.
+# mira_mlx_trust_remote_code: false
+
 # mira_mlx_vision: read screenshots as images instead of running them through
 # OCR. Off by default. Only works on a checkpoint that actually ships a vision
 # tower; Qwen3.6-35B-A3B-4bit does. The tower is about 0.89GB, but it is no
@@ -250,13 +288,14 @@ mira_mlx_kv_group_size: 64
 # mira_mlx_vision_tower_idle_timeout: 300
 
 # memory_advisory_notifications: post a macOS notification when another app on
-# this Mac pushes Mira's model out of memory. Default true. Worth having on
-# because the state is otherwise invisible: macOS compresses the model out, your
-# next reply takes about 15s instead of under a second, and that reply is itself
-# what fixes it — so by the time you wonder what happened, it is already gone.
-# Fires only on the transition into that state, at most once every 15 minutes.
-# Set false if you would rather not be told.
-# memory_advisory_notifications: false
+# this Mac pushes Mira's model out of memory. Default FALSE since 2026-08-11.
+# The case for it still holds — the state is otherwise invisible: macOS
+# compresses the model out, your next reply takes about 15s instead of under a
+# second, and that reply is itself what fixes it, so by the time you wonder what
+# happened it is already gone. It ships off because a notification you cannot
+# act on is noise. Fires only on the transition into that state, at most once
+# every 15 minutes.
+# memory_advisory_notifications: true
 
 # ── Opt-in performance flags ─────────────────────────────────────────────────
 # All three ship OFF. Each is measured and working on the maintainer's machine;

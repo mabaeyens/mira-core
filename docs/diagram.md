@@ -138,7 +138,7 @@ flowchart LR
         FILE["Attachment\n(PDF/HTML/text)"] --> FH["file_handler\nextract text"]
         FH --> CHUNK["Chunker\n400 words, 40 overlap"]
         CHUNK --> EMBED["SentenceTransformer\nnomic-embed-text-v1.5\n768 dims\n(local, in-process)"]
-        EMBED --> CHROMA[("ChromaDB\nEphemeralClient\n(in-memory)")]
+        EMBED --> CHROMA[("ChromaDB\nPersistentClient per project\n(EphemeralClient with no project)")]
     end
 
     subgraph query["Retrieval (each turn)"]
@@ -147,7 +147,7 @@ flowchart LR
         CHROMA --> RET
         RET --> RERANK["Reranker (default qwen3)\nQwen3-Reranker-0.6B-4bit (mlx, in-process)\nor CrossEncoder ms-marco-MiniLM-L-6-v2"]
         RERANK --> FILTER{"score >\nthreshold?"}
-        FILTER -->|yes| INJECT["Inject into\nsystem prompt"]
+        FILTER -->|yes| INJECT["Prepend to the\nuser message\n[Relevant document sections]"]
         FILTER -->|no| DROP["Drop chunk"]
     end
 

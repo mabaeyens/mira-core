@@ -1,10 +1,13 @@
 # Model Comparison: MacBook Pro M5 (32GB RAM) Performance Guide
 
-> Most of this file is a **benchmark archive**, not a guide to what runs today. The
-> current verdict is the next section; everything from "gemma4:26b" downward is dated
-> measurement kept for the record. Several backends measured here (Ollama, dflash,
-> llama.cpp) are no longer part of Mira. The numbers were real when taken and are
-> still useful for comparison, but do not read them as configuration advice.
+> **What runs today, and how it was decided.** Trimmed on 2026-08-12: roughly 320 lines of
+> Ollama, llama.cpp and dflash measurement from May–June 2026 came out, because all three
+> stopped being Mira backends and the numbers had become configuration advice for software
+> nobody here runs. They are recoverable from git history — the *Bench History* index at the
+> bottom names every run and its date, so any single number can be found again.
+>
+> Verdicts are dated and kept in order, newest first. Where an older one is still true it
+> says so explicitly.
 
 ## Current Verdict (updated 2026-08-01)
 
@@ -49,7 +52,7 @@ received an explicit `enable_thinking` value; (2) mira-mlx's HTTP handler silent
 `chat_template_kwargs` even when sent; (3) the tool-text buffering logic (needed for Mistral's
 one-sided `[TOOL_CALLS]` marker) also captured Qwen's closing `</tool_call>` marker, breaking
 the parser's end-anchored regex. All three fixed 2026-07-10 — see `docs/architecture.md`
-"Model quirks" for details. Full writeup: `docs/bench-results-2026-07-10.md`.
+"Model quirks" for details. Full writeup: `docs/bench-archive/bench-results-2026-07-10.md`.
 
 **Current `mira.yaml`:**
 ```yaml
@@ -93,10 +96,8 @@ context_window: 65536
 
 ---
 
-> **Hardware**: MacBook Pro 14-inch, M5 (2025), 32GB LPDDR5X RAM, 1TB SSD, macOS 26.4.1, Ollama 0.24.0 / llama.cpp b9260
-> **Last Updated**: May 24, 2026 (historical benchmarks below) — current verdict above updated 2026-05-30
-
-> Benchmark results measured and timed directly via the Ollama API, llama-server, and mlx-lm on this hardware. All test runs executed locally.
+> All numbers on this page were measured locally on the hardware below. Nothing is quoted from
+> a vendor or a leaderboard except the *Model quality reference* table, which says so.
 
 ---
 
@@ -120,19 +121,19 @@ context_window: 65536
 
 ### Recommendation Matrix
 
+Options you can actually select today:
+
 | Option | Sustained t/s | Warm TTFT | Memory | Quality (SWE) | Verdict |
 |--------|--------------|-----------|--------|---------------|---------|
-| **Qwen3.6-35B-A3B-4bit (mira-mlx)** | **56–66 t/s** | **~1.1–1.2s pp1024** | ⚠️ 18GB | **58.7%** | **⭐ Current Mira default backend — see "Current Verdict" above** |
-| Qwen3.6-35B-A3B-4bit (mlx-lm) | ~52–55 t/s | 300–450ms | ⚠️ 18GB | 58.7% | Historical entry below (2026-05); superseded by mira-mlx |
-| **gemma-4-26b-a4b-it-4bit (mlx-lm)** | **~36 t/s** | **250–505ms** | ✅ 17GB | 42.3% | Manual fallback (demoted 2026-05-31) |
-| **qwen3.6:35b-mlx** (Ollama) | **~43 t/s** | **~60–245ms** | ⚠️ 21GB | **58.7%** | Archive — Ollama retired 2026-08-01 |
-| gemma4:26b-mlx (Ollama) | ~39 t/s | ~970–1,200ms | ✅ 17GB | 42.3% | Archive — Ollama retired 2026-08-01 |
-| Qwen3.6-35B-A3B (llama.cpp) | ~29 t/s | ~1s | ⚠️ 23GB | 58.7% | Archive — llama.cpp was never a Mira backend |
-| gemma4:26b Q4_K_M (Ollama) | ~39 t/s | ~290–420ms warm / 31s cold | ✅ 17GB | 42.3% | Archive — Ollama retired 2026-08-01 |
-| qwen3.6:latest Q4_K_M (Ollama) | ~1.5–2 t/s | 14s | ❌ 24GB | — | Archive — was "avoid" even then |
-| oMLX 0.3.9 | — | — | ❌ OOM | — | Fixed in 0.4.1; omlx is the current backup backend |
+| **Qwen3.6-35B-A3B-4bit (mira-mlx)** | **56–66 t/s** | **~1.1–1.2s pp1024** | ⚠️ 18GB | **58.7%** | **⭐ The default.** See "Current Verdict" above |
+| Qwen3.6-35B-A3B (omlx) | ~52–55 t/s | ~0ms warm | ⚠️ 20GB | 58.7% | Backup backend; unbeatable warm TTFT, separate GUI app |
+| Ministral-3-14B-4bit (mira-mlx) | 19.5–21 t/s | ~2900 t/s pp (warm) | — | — | Dense Mistral-family alternative; much faster prefill, 3× slower decode |
+| Qwen3.6-35B-A3B-4bit (mlx-lm) | ~52–55 t/s | 300–450ms | ⚠️ 18GB | 58.7% | Stock upstream server, no mira-mlx extras |
+| gemma-4-26b-a4b-it-4bit (omlx) | ~36 t/s | 250–505ms | ✅ 17GB | 42.3% | Reachable through omlx; lower quality, lighter |
 
-**Current Mira config (2026-08-01)**: mira-mlx + `Qwen3.6-35B-A3B-4bit` (port 8080). mlx-lm entries below are historical (2026-05); mira-mlx is built on the same mlx-lm continuous-batching primitives but as Mira's own server, with RAM-aware sizing and a disk-backed prompt cache. Gemma 4 stays available through omlx for workflows that want its leaderboard score.
+**Current Mira config (2026-08-01)**: mira-mlx + `Qwen3.6-35B-A3B-4bit` (port 8080). mira-mlx is built on the same mlx-lm continuous-batching primitives but as Mira's own server, with RAM-aware sizing and a disk-backed prompt cache. Gemma 4 stays available through omlx for workflows that want its leaderboard score.
+
+Retired options that used to be in this table — Ollama's `qwen3.6:35b-mlx` and `gemma4:26b` variants, llama.cpp, dflash, and oMLX 0.3.9's OOM — came out with the 2026-08-12 trim. See *Bench History* for when each was measured.
 
 ### Backends Evaluated
 
@@ -148,244 +149,10 @@ context_window: 65536
 
 ---
 
-## gemma4:26b
+## Model quality reference
 
-### Ollama: Q4_K_M vs MLX (May 23, 2026)
-
-Head-to-head via Ollama API (`stream:false`, `num_predict:512`, `temperature:0.1`).
-
-| Prompt | Model | t/s | TTFT | Wall time | Tokens |
-|--------|-------|-----|------|-----------|--------|
-| Short factual | gemma4:26b | 38.8 | 31,597ms ¹ | 34.8s | 115 |
-| Short factual | gemma4:26b-mlx | 38.3 | 2,643ms | 8.4s | 99 |
-| Reasoning | gemma4:26b | 39.3 | 418ms | 27.8s | 512 |
-| Reasoning | gemma4:26b-mlx | 39.3 | 1,208ms | 17.6s | 512 |
-| Code generation | gemma4:26b | 40.5 | 289ms | 19.2s | 512 |
-| Code generation | gemma4:26b-mlx | 39.4 | 969ms | 17.4s | 512 |
-| Long output | gemma4:26b | 41.1 | 317ms | 19.2s | 512 |
-| Long output | gemma4:26b-mlx | 38.5 | 1,051ms | 17.6s | 512 |
-
-¹ Cold-load penalty — 17GB weights paged from disk on first query.
-
-| Model | Avg t/s | Avg TTFT | Notes |
-|-------|---------|----------|-------|
-| gemma4:26b | 39.9 | 8,155ms | Brutal cold TTFT; warm queries fast |
-| **gemma4:26b-mlx** | **38.9** | **1,468ms** | Consistent TTFT; 10–20% faster wall time |
-
-- t/s is essentially identical (~39); MLX does not improve sustained throughput
-- MLX eliminates the cold-load penalty (31s → 2.6s on first query)
-- For a chat UI, MLX is meaningfully better — first word appears much sooner
-
-### Thinking mode (gemma4 via Ollama)
-
-| Prompt | Thinking | Total time | Eval tokens | Think chars |
-|--------|----------|-----------|-------------|-------------|
-| Simple (2+2) | Disabled | 2.79s | — | — |
-| Simple (2+2) | Enabled | 12.39s | — | — |
-| Coding (CSV reader) | Disabled | ~5s | 1,282 | — |
-| Coding (CSV reader) | Enabled | 43.79s | 1,282 | 1,995 |
-| Complex (caching layer) | Enabled | 91.1s | 2,125 | — |
-
-### Optimized Modelfile + environment
-
-The numbers above were taken with an Ollama Modelfile that pinned three parameters per-model,
-rather than relying on global env vars:
-
-| Parameter | Value | Effect |
-|-----------|-------|--------|
-| `num_ctx` | `65536` | Explicit 64K context. Overrides global env var if they diverge. |
-| `num_keep` | `768` | Pins system prompt in KV cache — saves ~200ms per turn. |
-| `llama.cpp.flash_attn` | `true` | Flash attention kernel pinned at model level. |
-
-The file itself (`models/gemma4-optimized.modelfile`) was deleted on 2026-08-12: the Ollama
-backend was retired on 2026-08-01, so nothing could load it. Recover it from git history if
-these runs ever need reproducing.
-
-See [Ollama environment (Performance Optimization Tips)](#performance-optimization-tips) for global env vars.
-
----
-
-## Qwen3.6:35B-A3B
-
-All Qwen3.6 models are MoE (Mixture of Experts) — only ~3B parameters active per token despite 35B total. This gives it fast TTFT and competitive t/s despite larger weight size than gemma4.
-
-| Active params | Total params | SWE-Bench Verified | Context |
-|--------------|-------------|-------------------|---------|
-| ~3B | 35.1B | 58.7% | 256K |
-
-### Ollama: 35b-mlx (May 24, 2026)
-
-**Model**: `qwen3.6:35b-mlx` — NVFP4 quantization, 21GB, MLX-optimized for Apple Silicon.
-
-| Prompt | Thinking | TTFT | Eval tok | Eval t/s | Wall time | Think chars |
-|--------|----------|------|----------|----------|-----------|-------------|
-| Simple (2+2) | disabled | 4,479ms ¹ | 7 | 42.2 | 9.3s | — |
-| Simple (2+2) | enabled | 59ms | 199 | 42.4 | 4.8s | 645 |
-| Coding (CSV reader) | disabled | 245ms | 143 | 43.3 | 3.6s | — |
-| Coding (CSV reader) | enabled | 67ms | 512 ² | 43.3 | 12.0s | 2,038 |
-| Complex (caching layer) | enabled | 201ms | 512 ² | 43.2 | 12.1s | 2,046 |
-
-¹ Cold-load penalty (21GB weights paged from disk).
-² Hit `num_predict:512` cap — full response truncated.
-
-**vs gemma4:26b-mlx:**
-- Sustained t/s: **+11% faster** (43 vs 39)
-- Cold TTFT: **1.7× slower** (4,479ms vs 2,643ms)
-- Warm TTFT: **4–20× faster** (60–245ms vs 969–1,208ms) — MoE active-param advantage at prefill
-- Model size: **4GB larger** (21GB vs 17GB; ~8GB headroom vs ~13GB)
-- Quality: **+38% SWE-bench** (58.7% vs 42.3%)
-
-**Memory fit**: 21GB weights + ~2GB KV cache (64K, q8_0) + ~1GB overhead ≈ **24GB total** (~8GB headroom).
-
-### Ollama: Q4_K_M (May 2026) — baseline
-
-`qwen3.6:latest` (Q4_K_M, 24GB). **Avoid** — extremely slow vs gemma4.
-
-| Prompt | Thinking | Total time | vs gemma4:26b |
-|--------|----------|-----------|----------------|
-| Simple (2+2) | Disabled | 64.47s | **23× SLOWER** |
-| Simple (2+2) | Enabled | 30.72s | **11× SLOWER** |
-| Coding (CSV reader) | Enabled | >180s (timeout) | >4× SLOWER |
-| Complex (caching layer) | Enabled | >180s (timeout) | >2× SLOWER |
-
-Cause: 24GB at Q4_K_M exhausts the Metal budget, forcing partial CPU offload. NVFP4 (35b-mlx, 21GB) stays fully on GPU.
-
-### mlx-lm 0.31.3 — thinking mode resolved (2026-05-30, updated 2026-05-31)
-
-> **Update 2026-05-31 (supersedes 2026-05-30):** Qwen3.6-35B-A3B-4bit is now the default model. Thinking is controlled per-request via `extra_body={"chat_template_kwargs": {"enable_thinking": True}}` — no server restart needed to toggle. Warm TTFT: 307ms (short), 315ms (medium), 355ms (long). Thinking overhead on mlx-lm: ≤14ms (noise). `_warmup_model()` on startup eliminates the 29–34s model-switch cold start. Benchmark run 2026-05-31: see `/tmp/mira_benchmark_report_2026-05-31.md`.
-
-mlx-lm was tested as a direct Python alternative after oMLX crashed. Raw throughput is excellent but thinking mode could not be disabled at the time of initial testing.
-
-| Model | Weights | t/s | TTFT (initial test) | Current status |
-|-------|---------|-----|------|---------|
-| Qwen3.6-35B-A3B-4bit | 16GB | **44–55** | 28–62s ⚠️ (was thinking on) | **✅ Default — thinking per-request** |
-| gemma-4-26b-a4b-it-4bit | 15.6GB | **36–38** | 250–505ms ✅ | Manual fallback |
-| gemma-4-26b-a4b-it-UD-MLX-4bit (unsloth) | 15.6GB | **32** | 11–68s ⚠️ | Not benched on current setup |
-
-Resolved: `--chat-template-args '{"enable_thinking": false}'` suppresses thinking at the server level (used for Gemma4). For Qwen3, per-request control is preferred. Models cached at `~/.cache/huggingface/hub/`.
-
-Detailed per-prompt results (budget = 4000 tokens):
-
-| Task | Think tok | Content tok | TTFT | Overall t/s |
-|------|-----------|-------------|------|------------|
-| Fibonacci fn | 1,588 | 74 | 37s | 44.5 |
-| FastAPI endpoint | 1,167 | 85 | 28s | 44.0 |
-| Code review | 1,896 | 804 | 62s | 43.3 |
-
-### llama.cpp b9260 (May 21, 2026)
-
-Tested because llama.cpp b9260 correctly compiles Metal shaders for the M5 (no tensor API errors), unlike Ollama 0.24.0.
-
-**Model**: `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` — `UD-Q4_K_XL.gguf` (22.9GB)
-
-| Prompt | Tokens | Time | Speed |
-|--------|--------|------|-------|
-| Simple (2+2) | 8 | 0.56s | ~14.2 t/s ¹ |
-| Coding (CSV reader) | 144 | 4.82s | **~29.9 t/s** |
-| Medium (TCP vs UDP) | 182 | 6.69s | **~27.2 t/s** |
-
-¹ Short response — prompt eval overhead dominates.
-
-MTP decode (`--spec-type draft-mtp --spec-draft-n-max 4`) showed no meaningful speedup (~+4% on coding, −10% on medium). Use standard decode.
-
-**Run command** (stop Ollama first to free Metal budget):
-
-```bash
-ollama stop gemma4:26b-mlx
-
-llama-server \
-  --model ~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf \
-  --alias qwen3.6-35b-a3b \
-  --n-gpu-layers 999 \
-  --ctx-size 16384 \
-  --parallel 1 \
-  --chat-template-kwargs '{"enable_thinking":false}' \
-  --port 8080
-```
-
----
-
-## Qwen3.6:27B
-
-The 27B model is a **dense** architecture (all 27B params active per token). Bandwidth ceiling: 153.6 GB/s ÷ 17.5GB ≈ 8.8 t/s theoretical max. This makes it fundamentally slower than the 35B MoE on bandwidth-bound hardware.
-
-### llama.cpp b9260 (May 21, 2026)
-
-**Model**: `Qwen3.6-27B Q4_K_M` (17.5GB, dense)
-
-| Prompt | Tokens | Time | Speed |
-|--------|--------|------|-------|
-| Simple (2+2) | 9 | 2.51s | ~3.6 t/s ¹ |
-| Coding (CSV reader) | 174 | 28.19s | **~6.2 t/s** |
-| Medium (TCP vs UDP) | 168 | 27.36s | **~6.1 t/s** |
-
-¹ Short response — prompt eval overhead dominates.
-
-~6 t/s actual vs 8.8 t/s theoretical is consistent. M5 Neural Accelerators being active in llama.cpp didn't help — the bottleneck is memory bandwidth, not compute. **Not viable for Mira.**
-
----
-
-## Final Comparison
-
-| Model | Server | Sustained t/s | TTFT (warm) | vs gemma4:26b-mlx |
-|-------|--------|--------------|-------------|-------------------|
-| **Qwen3.6-35B-A3B-4bit** | **mlx-lm 0.31.3** | **~52–55 t/s** | **300–450ms** | **⭐ Current default; thinking per-request ✅** |
-| **qwen3.6:35b-mlx** | Ollama 0.24.0 | **~43 t/s** | **~60–245ms** | +38% quality; 1.8× slower wall time on agentic tasks |
-| **gemma-4-26b-a4b-it-4bit** | **mlx-lm 0.31.3** | **~36 t/s** | **250–505ms** | Manual fallback (demoted 2026-05-31) |
-| **gemma4:26b-mlx** | Ollama 0.24.0 | **~39 t/s** | **~970–1,200ms** | Superseded by mlx-lm (2026-05-30) |
-| gemma4:26b Q4_K_M | Ollama 0.24.0 | **~39 t/s** | ~290–420ms warm / 31s cold | Superseded by MLX |
-| Qwen3.6-35B-A3B UD-Q4_K_XL | llama-server b9260 | **~29 t/s** | ~1s | 1.3× slower |
-| Qwen3.6-27B Q4_K_M (dense) | llama-server b9260 | ~6 t/s | ~1s | 6× slower |
-
----
-
-## Backend Notes
-
-### oMLX v0.3.9 — OOM dead end (May 23, 2026)
-
-oMLX was tested as an MLX inference backend. Loading Qwen3.6-35B-A3B (~23GB MLX format) plus oMLX's Python/MLX runtime (~3–4GB) exceeded the 32GB memory budget and crashed the machine. Consistent with a history of instability on base M5 32GB. oMLX has been uninstalled. **Do not revisit on this hardware.**
-
-### llama.cpp b9260 — M5 Neural Accelerators
-
-llama.cpp b9260 successfully compiles Metal shaders for M5 (no tensor API errors), unlike Ollama 0.24.0:
-
-```
-# Ollama 0.24.0 — tensor API not active
-ggml_metal_device_init: has tensor = false
-
-# llama.cpp b9260 — no errors, Metal VRAM budget: 25,559 MiB (~25.5 GB)
-```
-
-The M5 GPU has per-core Neural Accelerators (Apple advertises 4× AI speedup over M4). Despite llama.cpp activating them, the bottleneck for large MoE models on 32GB is memory bandwidth — not compute. Watch for an Ollama update fixing `has tensor = false`; when it lands, all Ollama-served models should see a speed increase.
-
-**Memory constraint**: Metal budget is 25.5GB. Running Ollama + llama-server simultaneously causes OOM. Stop Ollama before starting llama-server.
-
----
-
-## Reference
-
-### Qwen3.6 Variants Available on Ollama (May 2026)
-
-| Tag | Size | Quantization | Architecture | Context | Best For |
-|-----|------|--------------|--------------|---------|----------|
-| `qwen3.6:35b-mlx` | 21 GB | NVFP4 | Qwen3.5 MoE | 256K | General + coding (recommended) |
-| `qwen3.6:35b-a3b-coding-nvfp4` | 22 GB | NVFP4 | Qwen3.5 MoE | 256K | Coding tasks |
-| `qwen3.6:27b-coding-nvfp4` | 20 GB | NVFP4 | Qwen3.5 MoE | 256K | Coding tasks |
-| `qwen3.6:35b-a3b` | 24 GB | Q4_K_M | Qwen3.5 MoE | 256K | — |
-| `qwen3.6:27b` | 17 GB | Q4_K_M | Qwen3.5 MoE | 256K | — |
-| `qwen3.6:latest` | 24 GB | Q4_K_M | Qwen3.5 MoE | 256K | — |
-
-### Hardware Fit on 32GB RAM
-
-| Model | Size | Headroom | Memory Pressure |
-|-------|------|---------|------------------|
-| `gemma4:26b-mlx` | 17 GB | **~13 GB** | ✅ Low |
-| `qwen3.6:27b-coding-nvfp4` | 20 GB | **~10 GB** | ✅ Low-Medium |
-| `qwen3.6:35b-mlx` | 21 GB | **~8 GB** | ⚠️ Medium |
-| `qwen3.6:35b-a3b-coding-nvfp4` | 22 GB | **~8 GB** | ⚠️ Medium |
-| `qwen3.6:latest` | 24 GB | **~4 GB** | ❌ High (partial CPU offload) |
-
-### SWE Benchmark
+Published leaderboard scores, not measured here. Backend-independent — these are properties of
+the model, which is why they survived the trim while the throughput tables did not.
 
 | Model | SWE-Bench Verified | HumanEval | MBPP | Average |
 |-------|--------------------|-----------|------|---------|
@@ -393,21 +160,11 @@ The M5 GPU has per-core Neural Accelerators (Apple advertises 4× AI speedup ove
 | qwen3.6:27b | **54.1%** | **82.4%** | **68.9%** | **68.5%** |
 | qwen3.6:35b-a3b | **58.7%** | **84.2%** | **71.3%** | **71.4%** |
 
-### Quantization Reference
-
-| Quantization | Bits/Weight | Size Reduction | Best For |
-|--------------|-------------|----------------|----------|
-| FP16 | 16 | None | Maximum quality |
-| Q4_K_M | 4–6 (mixed) | ~50% | General use (Apple Silicon GGUF) |
-| Q8_0 | 8 | ~25% | KV cache |
-| NVFP4 | 4 | ~50% | Qwen3.6 MLX models on Apple Silicon |
-| MXFP8 | 8 | ~25% | AMD/Intel GPUs |
-
-For M5 MacBook: Q4_K_M is optimal for GGUF models; NVFP4 is the format used by Qwen3.6 MLX models.
-
----
-
 ## Bench History
+
+Every bench run, in order. This is the index to use when you want a number that used to be in
+this file: find the date, then `git log -- docs/model-comparison-m5-macbook.md` or the named
+`docs/bench-archive/` file.
 
 | Date | Key finding |
 |------|-------------|
@@ -419,78 +176,6 @@ For M5 MacBook: Q4_K_M is optimal for GGUF models; NVFP4 is the format used by Q
 | 2026-06-06 | omlx 0.4.1 vs dFlash: omlx 4–10× faster TTFT (963ms–4.7s vs 5.4–29.6s); dFlash OOM-safe above 18K KV |
 | 2026-06-07 | TTFT shootout: omlx 0.4.1 (0ms warm) vs ollama 0.30.6 MLX (90ms) vs dFlash (~48s); omlx becomes default |
 | 2026-07-09 | mira-mlx promoted to default: bundled, RAM-aware sizing, disk-backed prompt cache, `/v1/stats` |
-| 2026-07-18 | KV quantization at 8 bits and MoE expert offload measured on both models — `docs/bench-results-2026-07-18.md` |
-| 2026-08-01 | mlx 0.32.0 verified against the real model (25/26 on the quality suite, no regression) — `docs/bench-results-2026-08-01.md`. dflash and ollama retired the same day |
+| 2026-07-18 | KV quantization at 8 bits and MoE expert offload measured on both models — `docs/bench-archive/bench-results-2026-07-18.md` |
+| 2026-08-01 | mlx 0.32.0 verified against the real model (25/26 on the quality suite, no regression) — `docs/bench-archive/bench-results-2026-08-01.md`. dflash and ollama retired the same day |
 
----
-
-### Memory Usage Breakdown
-
-#### gemma4:26b-mlx (Q4_K_M, 17GB weights)
-
-```
-Model Weights:     17.0 GB
-KV Cache (64K):   ~1.0 GB (with q8_0 quantization)
-Other Overhead:    ~1.0 GB
-----------------------------
-Total:            ~19.0 GB   Headroom: ~13.0 GB ✅
-```
-
-#### qwen3.6:35b-mlx (NVFP4, 21GB weights)
-
-```
-Model Weights:     21.0 GB
-KV Cache (64K):   ~2.0 GB (with q8_0 quantization)
-Other Overhead:    ~1.0 GB
-----------------------------
-Total:            ~24.0 GB   Headroom: ~8.0 GB ⚠️
-```
-
-#### qwen3.6:27b-coding-nvfp4 (NVFP4, 20GB weights)
-
-```
-Model Weights:     20.0 GB
-KV Cache (64K):   ~2.0 GB (with q8_0 quantization)  ← actual config (OLLAMA_CONTEXT_LENGTH=65536)
-Other Overhead:    ~1.0 GB
-----------------------------
-Total:            ~23.0 GB   Headroom: ~9.0 GB ⚠️
-```
-
-> **Note:** The 256K in the Qwen3.6 reference table is the model's *native* maximum context. The actual running context is 64K, capped by `OLLAMA_CONTEXT_LENGTH=65536` in `~/.zprofile`. Raising it to 128K would push the KV cache to ~4GB (~5GB headroom — risky); 256K native would require ~8GB just for the KV cache and cause OOM. **Keep at 64K.**
-
-### Performance Optimization Tips
-
-#### Ollama environment (`~/.zprofile`) — no longer applicable
-
-Kept because it explains the numbers above. Ollama stopped being a Mira backend on
-2026-08-01, and mira-mlx has no equivalent knobs: it sizes context, prompt-cache pool
-and Metal cache limit from the RAM it finds (`core/hardware.py`). If these exports are
-still in your `~/.zprofile` they do nothing for Mira.
-
-```zsh
-export OLLAMA_CONTEXT_LENGTH=65536   # 64k context window — without this Ollama defaults to 4k–8k
-export OLLAMA_FLASH_ATTENTION=1      # reduces KV cache memory ~40%; confirmed active in log
-export OLLAMA_NUM_PARALLEL=1         # single-user app; avoids doubling KV cache cost
-export OLLAMA_KV_CACHE_TYPE=q8_0    # halves KV cache vs f16; negligible quality loss at 64k
-export OLLAMA_MAX_LOADED_MODELS=1   # prevents accidental dual-load when switching models
-```
-
-Reload: `source ~/.zprofile`, then restart Ollama (`killall ollama && open -a Ollama`).
-
-| Setting | Effect |
-|---------|--------|
-| `OLLAMA_CONTEXT_LENGTH=65536` | Sets KV cache to 64k; must match `context_window` in config |
-| `OLLAMA_FLASH_ATTENTION=1` | Flash attention kernel — confirmed active in server log |
-| `OLLAMA_NUM_PARALLEL=1` | Prevents a second KV cache; 32GB leaves no room for two |
-| `OLLAMA_KV_CACHE_TYPE=q8_0` | Frees ~1–2 GB at 64k context — negligible perplexity impact |
-| `OLLAMA_MAX_LOADED_MODELS=1` | Safety net: prevents a second model from lingering in VRAM during model switches |
-
-**Server log confirmation:**
-
-```
-GPULayers:31[ID:0 Layers:31(0..30)]   ← all layers on Metal GPU ✓
-FlashAttention:Enabled                 ← active ✓
-KvSize:65536                           ← correct ✓
-KvCacheType:q8_0                       ← active ✓
-Parallel:1                             ← correct ✓
-```

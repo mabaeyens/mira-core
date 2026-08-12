@@ -11,9 +11,9 @@ they compare to Python packaging best practice.
 | Filename encodes | name + version | name + version + Python tag + ABI tag + platform tag |
 | Speed/safety | Slower, can fail at install time (needs build tools) | Fast, deterministic |
 
-Our wheel is `mira_core-0.8.2-py3-none-any.whl`:
+Our wheel is `mira_core-<version>-py3-none-any.whl`, e.g. `mira_core-1.2.0-py3-none-any.whl`:
 
-- `mira_core` = package name, `0.8.2` = version (from the git tag)
+- `mira_core` = package name, `1.2.0` = version (**from the git tag**, never typed anywhere)
 - `py3` = any Python 3, `none` = no compiled C-ABI of our own, `any` = any OS
 
 `py3-none-any` ("pure-Python, universal") matters: **our wheel is platform-agnostic, but Mira is
@@ -123,18 +123,28 @@ include = ["core", "mira_cli.py", "main.py", "server.py"]
 `mira_mlx_server.py` and `disk_prompt_cache.py`) and `core/hardware.py` ship automatically — no
 change needed there when adding new modules under `core/`.
 
-**Pinned git dependency:** `mlx-lm` is pinned to a mira-owned fork rather than the PyPI release,
-carrying a Mistral tool-call-flush fix (tracks upstream `ml-explore/mlx-lm#1373`):
+**Pinned git dependency:** `mlx-lm` is installed from a mira-owned fork rather than the PyPI
+release, at an **exact commit**:
 
 ```toml
 [tool.uv.sources]
-mlx-lm = { git = "https://github.com/mabaeyens/mlx-lm.git", branch = "mira-mistral-tool-call-fix" }
+mlx-lm = { git = "https://github.com/mabaeyens/mlx-lm.git", rev = "<40-char sha>" }
 ```
 
+`rev`, never `branch`. A branch pin lets a force-push upstream silently change the installed
+tree; a rev cannot. This doc previously showed a `branch = …` form, which was both out of date
+and the exact shape the pin exists to avoid.
+
+The fork carries five groups of commits — the Mistral tool-call flush, KV-cache quantization for
+continuous batching, MoE disk-backed expert offload, the vision embeddings seam, and a
+cherry-picked upstream mask fix — three of which have open upstream PRs. The current SHA, what
+each group buys, and the conditions under which it is worth moving all live in
+**[mlx-lm-pin.md](mlx-lm-pin.md)**, which is the only place besides `pyproject.toml` that
+should carry the SHA.
+
 This is a deliberate deviation from "only PyPI-released dependencies" — same tradeoff logic as
-this project's own not-on-PyPI decision above: correct upstream (mlx-lm) behavior for Mistral
-tool-calling didn't exist in a released version yet, so pinning a branch was the pragmatic fix
-rather than waiting on or vendoring the patch. Revisit once the fix lands upstream and is released.
+this project's own not-on-PyPI decision above: the behaviour Mira needs does not exist in any
+released version, so pinning a commit beats waiting or vendoring.
 
 ## TL;DR
 

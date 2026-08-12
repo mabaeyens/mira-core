@@ -40,7 +40,7 @@ in [Issues](https://github.com/mabaeyens/mira-core/issues/new/choose). I read bo
 ## Requirements
 
 macOS on Apple Silicon (the inference backends are MLX-based). Everything else —
-`uv`, Python 3.12+, the virtualenv, and `mira.yaml` — is handled by the installer.
+`uv`, Python (`>=3.12,<3.14`), the virtualenv, and `mira.yaml` — is handled by the installer.
 
 ## Install
 
@@ -228,10 +228,10 @@ remove the Mira model weights from `~/.cache/huggingface/hub` manually if you wa
 | File type | Behaviour |
 |-----------|-----------|
 | PDF (any size) | Always indexed via RAG |
+| Scanned PDF (no text layer) | OCR'd page-by-page with `tesseract` when installed (capped at 50 pages, per-page timeout, only pages with no extractable text); a clear warning otherwise |
 | HTML | Text extracted (BeautifulSoup); RAG if > 80k chars |
 | Text / code | Injected directly; RAG if > 80k chars |
-| Images | Passed via multimodal API (base64) |
-| Scanned PDF | Warning emitted; no text extractable |
+| Images | OCR by default — text extracted with `tesseract` and folded into the prompt. Read as real images on omlx, or on mira-mlx with `mira_mlx_vision: true` |
 
 RAG documents persist in the session index across turns — no need to re-attach for follow-up questions. Use `/rag-remove` or Reset to clear.
 
@@ -256,23 +256,18 @@ context_window: 65536
 | `host` | `http://localhost:8080` | Backend host URL |
 | `embed_model` | `nomic-ai/nomic-embed-text-v1.5` | HuggingFace embedding model for RAG |
 | `context_window` | `65536` | Token context window |
-| `mira_mlx_vision` | `false` | Read image attachments with the model's own vision tower instead of OCR (mira-mlx only; ~1.1 GB) |
+| `auth_token` | unset | Required to reach Mira from another device — see *Access control* above |
+| `brave_api_key` | unset | Makes Brave the primary search provider instead of the DuckDuckGo fallback |
+| `mira_mlx_vision` | `false` | Read image attachments with the model's own vision tower instead of OCR (mira-mlx only) |
 
-Additional settings (not user-configurable via `mira.yaml` — edit `core/config.py` only if needed):
+Those are the ones most people touch. There are **45 in total**, covering sampling, thinking
+budget, the shell sandbox, MoE expert offload and the opt-in performance flags — all listed with
+their defaults in **[docs/configuration.md](docs/configuration.md)**, and annotated with the
+reasoning behind the awkward ones in `mira.yaml.example` itself.
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `MAX_SEARCH_RESULTS` | `5` | Results per web search |
-| `MAX_TOOL_STEPS` | `10` | Max tool calls per turn |
-| `MAX_RETRIES` | `3` | API error retries per call |
-| `SEARCH_TIMEOUT` | `30` | Web search timeout in seconds |
-| `RERANK_MODEL` | `Qwen3-Reranker-0.6B-4bit` | RAG reranker (mlx, in-process) |
-| `RAG_CHUNK_SIZE` | `400` | Words per RAG chunk |
-| `RAG_CHUNK_OVERLAP` | `40` | Word overlap between chunks |
-| `RAG_RETRIEVE_K` | `10` | Candidates retrieved before reranking |
-| `RAG_RERANK_TOP_K` | `4` | Chunks injected after reranking |
-| `RAG_SCORE_THRESHOLD` | `0.0` | Minimum CrossEncoder score to inject |
-| `RAG_MAX_CHUNKS` | `10000` | Warn when index exceeds this size |
+A handful of RAG and search internals (`RAG_CHUNK_SIZE`, `RAG_RETRIEVE_K`, `MAX_TOOL_STEPS`,
+`SEARCH_TIMEOUT` and friends) have no `mira.yaml` equivalent — edit `core/config.py` if you need
+them.
 
 ## Testing
 

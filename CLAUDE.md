@@ -4,7 +4,7 @@ FastAPI backend for Mira.
 
 ## Project Stack
 
-- **Framework:** FastAPI (Python 3.11+)
+- **Framework:** FastAPI (Python `>=3.12,<3.14`; `.python-version` pins 3.13, CI tests the 3.12 floor)
 - **LLM Engine:** mira-mlx (Mira-owned MLX server, `core/inference/mira_mlx_server.py`; default backend as of 2026-07-09) — Qwen3.6-35B-A3B is the normal default model, 64k+ context; Mistral-family models (Ministral 3 14B) also fully supported, including tool-calling. omlx (~0ms TTFT after warm-up) is the backup backend; mlx-lm and vllm-mlx are also selectable via `mira.yaml`. dflash and ollama were retired 2026-08-01. Optional vision on mira-mlx via `mira_mlx_vision`, off by default
 - **Embeddings:** sentence-transformers (`nomic-ai/nomic-embed-text-v1.5`, local, 768 dims)
 - **Vector DB:** ChromaDB (ephemeral, for RAG)
@@ -18,7 +18,7 @@ FastAPI backend for Mira.
 - `core/inference/disk_prompt_cache.py` — mira-mlx's disk-overflow prompt cache
 - `core/hardware.py` — RAM-aware sizing (context window, prompt-cache/disk-cache budgets) shared by mira-mlx
 - `core/backend_manager.py` — starts/stops/switches all inference backends (`KNOWN_BACKENDS`: mira-mlx, omlx, mlx-lm, vllm-mlx)
-- `core/rag_engine.py` — embedding (sentence-transformers), ChromaDB, CrossEncoder reranker
+- `core/rag_engine.py` — embedding (sentence-transformers), ChromaDB (PersistentClient per project), reranker: Qwen3-Reranker via mlx by default, CrossEncoder optional
 - `core/config.py` — all tunables (`EMBED_MODEL`, `CONTEXT_WINDOW`, `RAG_*`, etc.)
 
 ## Constraints
@@ -34,6 +34,7 @@ FastAPI backend for Mira.
 | `BACKLOG.md` | What's pending, known bugs |
 | `CHANGELOG.md` | What shipped in each version |
 | `mira.yaml` | Active backend/model and all runtime tunables |
+| `docs/configuration.md` | Every setting with its default. `mira.yaml.example` carries the reasoning; `core/config.py`'s `_get()` calls are the source of truth |
 | `SECURITY_AUDIT.md` | Findings from the monthly `/security-review`. **Gitignored, local only** — findings about Mira's own code are never published |
 | `docs/` | Architecture and design notes |
 

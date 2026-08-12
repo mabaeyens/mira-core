@@ -5,7 +5,7 @@ of a personal fork:
 
 ```toml
 [tool.uv.sources]
-mlx-lm = { git = "https://github.com/mabaeyens/mlx-lm.git", rev = "291a61a…" }
+mlx-lm = { git = "https://github.com/mabaeyens/mlx-lm.git", rev = "9721b95…" }
 ```
 
 That commit is the tip of the `mira-core-pin-vision` branch. This document exists
@@ -15,8 +15,8 @@ five minutes.
 
 ## Why a fork at all
 
-Twelve commits that are not on upstream `main`. They fall into four groups, and
-they are not equally important:
+Thirteen commits that are not on upstream `main`. They fall into five groups,
+and they are not equally important:
 
 | group | commits | what breaks without it |
 |---|---|---|
@@ -24,6 +24,7 @@ they are not equally important:
 | KV-cache quantization for continuous batching | `bbd8496` | `mira_mlx_kv_bits: 8`, live since 2026-07-18. Upstream PR #1584, unreviewed. |
 | MoE disk-backed expert offload | `f0c66a4` and five follow-ups | The offload path that cut peak memory 18.21 → 7.25GB. Upstream PR #1588, unreviewed. |
 | Vision prefill from embeddings | `839c707`, `291a61a` | `mira_mlx_vision`. Image turns cannot prefill. |
+| Batched quantized KV mask fix | `9721b95` (cherry-pick of upstream `a790972`) | Any GQA model with `mira_mlx_kv_bits` set dies on the first batch of 2+. Upstream's own fix, taken alone rather than by moving the pin. |
 
 So the fork is not a patch waiting to be upstreamed. It is four features, three
 of which have open PRs that no maintainer has looked at, and one (the Mistral
@@ -121,12 +122,20 @@ Read `notes/kv-quant-batched-mask-crash-2026-08-12.md` for the mechanism.
 5. Bump `rev` to the new commit, and update the comment above it to say what the
    new branch carries.
 
-## Bookkeeping that is currently wrong
+## Where the SHA is allowed to appear
 
-`BACKLOG.md` describes the pin as "frozen at `bbd8496`". It is not, and has not
-been for some time: `bbd8496` is now ten commits back, the branch named
-`mira-core-pin` stops at `65fcb4c`, and the installed rev is `291a61a` on
-`mira-core-pin-vision`. The freeze held; the record of which commit it froze at
-did not. When the pin moves, this document and that entry both need the new SHA,
-which is an argument for keeping the SHA in exactly one place — here — and
-letting the backlog point at the document instead.
+`pyproject.toml` and this document. Nowhere else.
+
+That rule was learned the hard way, twice. `BACKLOG.md` described the pin as
+"frozen at `bbd8496`" long after it had moved ten commits on; the freeze held,
+the record of it did not. Then on 2026-08-12 the pin moved from `291a61a` to
+`9721b95` and three other places went stale the same afternoon —
+`docs/architecture.md`, `docs/packaging.md`, and the opening of *this* file,
+which sat contradicting its own later section.
+
+So: `architecture.md` and `packaging.md` now link here instead of restating the
+SHA, and the backlog points at this document. When the pin moves, update
+`pyproject.toml` and this file, and nothing else should need touching.
+
+For the record, the branch named `mira-core-pin` stops at `65fcb4c`; the
+installed rev is the tip of `mira-core-pin-vision`.

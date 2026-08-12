@@ -36,8 +36,9 @@
   question.** The fork carries 12 commits in four groups; two of them are what actually break on any
   upgrade — `SequenceStateMachine`, and an undocumented `_embed_tokens` removal that no release note
   mentions. The doc lists four conditions that each argue for moving, the one condition that forces
-  it, and a five-step how-to. It also corrects this file: "frozen at bbd8496" was stale, the real pin
-  is `291a61a` on `mira-core-pin-vision`.
+  it, and a five-step how-to. It also corrects this file: "frozen at bbd8496" was stale. The live SHA
+  now lives in exactly two places, `pyproject.toml` and `docs/mlx-lm-pin.md` — do not restate it here,
+  which is how the stale one survived.
 - [2026-08-12] **A failed request can no longer take the engine with it, and an engine that does
   die now says so instead of hanging every client that asks.** Follow-up (a) from the entry below.
   `_start_job`'s guard covered the prepare block alone, so everything from `fetch_nearest_cache`
@@ -239,7 +240,7 @@
   executed. The one reproducible product finding: **injection is resisted through both channels
   every time and disclosed through only one** — on a fetched page Mira names the embedded
   instruction and says it ignored it, on a read file it stays silent in all three runs. Written up
-  in `docs/bench-accuracy-2026-08-08.md` (named for the runs' date, not the write-up's). Commits
+  in `docs/bench-archive/bench-accuracy-2026-08-08.md` (named for the runs' date, not the write-up's). Commits
   `068624d`, `698fd91`, `e4fd9ed`, `64e0e78`,
   `23f8ccd`, `485785f`, `26c9cb2`.
 - [2026-08-09] **The judge cannot rule on what it cannot see, and asking it to produced two
@@ -374,7 +375,7 @@
   chat-template backends. Confirmed live on 2026-08-01: zero `<think>`/`</think>`/`<|channel|>`
   occurrences across a full 13-question bench.
 - [2026-08-01] **Moved to mlx 0.32.0 + mlx-metal 0.32.0** (`5ba9c71`), then verified it end to end
-  (`docs/bench-results-2026-08-01.md`, 25/26, no regression vs the 2026-07-18 baseline). The
+  (`docs/bench-archive/bench-results-2026-08-01.md`, 25/26, no regression vs the 2026-07-18 baseline). The
   upgrade fixes nothing Mira had: measured against the four real 0.31.2 bugs, `BatchKVCache` uses
   an array offset so it never takes the broken rope branch, and `SwitchGLU` keeps M=1 so it never
   takes the broken gather_qmm one. The throughput win is real but only from about eight concurrent
@@ -761,7 +762,7 @@
   gate is accepted too. The underlying hazard stands: `~/.zprofile` line 10 exports an `HF_TOKEN`
   **which takes precedence over `hf auth login`**, so updating only the stored credential does
   nothing. `hf auth login --force` once would give a single source of truth.
-- **Score the 2026-08-08 agentic bench.** `docs/bench-results-2026-08-08.md` has timings and tool
+- **Score the 2026-08-08 agentic bench.** `docs/bench-archive/bench-results-2026-08-08.md` has timings and tool
   traces for Q6–Q12 filled in and the quality column empty. Less urgent than it was:
   `scripts/bench_eval.py` now scores these automatically, so this column is only for judgement the
   harness deliberately does not make.

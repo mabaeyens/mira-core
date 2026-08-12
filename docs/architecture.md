@@ -15,7 +15,7 @@ main.py (CLI)     server.py (FastAPI + SSE)
             ├── core/url_fetcher.py → fetch_url() → BeautifulSoup, Jina Reader fallback
             └── core/rag_engine.py → RagEngine
                       ├── SentenceTransformer (nomic-ai/nomic-embed-text-v1.5, local, 768 dims)
-                      ├── chromadb.EphemeralClient (in-memory)
+                      ├── chromadb: PersistentClient per project (survives restarts) / EphemeralClient with no project open
                       └── reranker: Qwen3-Reranker-0.6B-4bit (mlx, default) or CrossEncoder ms-marco (sentence-transformers)
 
 core/config.py       — all tunables; loads overrides from mira.yaml (git-ignored)
@@ -161,24 +161,28 @@ After the server is confirmed reachable, `_warmup_model(...)` sends a 1-token co
 - `core/inference/disk_prompt_cache.py` — evicted prompt-cache entries overflow to disk (content-addressed, safetensors) instead of being discarded, surviving both memory-pressure trims and process restarts.
 - `GET /v1/stats` on the mira-mlx port — cache hit/miss rate, disk-cache hits, memory-pressure trim events, latency percentiles, and live MLX memory (active/cache/peak/wired-limit bytes).
 - Oversized single prompts (≥ the derived context ceiling) are rejected with a clear `ValueError` rather than left to `RotatingKVCache`'s undefined behavior.
-- mlx-lm itself is pinned to a mira-owned fork (`github.com/mabaeyens/mlx-lm`) at an explicit commit, not a branch, so a force-push upstream cannot change the installed tree. The pin is currently `291a61a` on branch `mira-core-pin-vision`, which carries the Mistral tool-call-flush fix (tracks upstream `ml-explore/mlx-lm#1373`) plus the `input_embeddings` seam that vision needs — see below.
+- mlx-lm itself is pinned to a mira-owned fork (`github.com/mabaeyens/mlx-lm`) at an explicit commit, not a branch, so a force-push upstream cannot change the installed tree. The SHA lives in exactly one place — `pyproject.toml`, explained in **[docs/mlx-lm-pin.md](mlx-lm-pin.md)**, which also covers what the fork carries and when it is worth moving. Do not restate the SHA here; it goes stale the day it moves.
 - Vision is optional and off by default (`mira_mlx_vision` in `mira.yaml`). See "Vision on mira-mlx" below.
 
 ## Configuration reference
 
-**External config (preferred):** copy `mira.yaml.example` → `mira.yaml` (git-ignored) and edit:
+**External config (preferred):** copy `mira.yaml.example` → `mira.yaml` (git-ignored) and edit.
 
-| Field | Default | Notes |
-|-------|---------|-------|
-| `backend` | `mira-mlx` | `mira-mlx` (default), `omlx`, `mlx-lm`, or `vllm-mlx` |
-| `model` | `mlx-community/Qwen3.6-35B-A3B-4bit` | Model identifier — mlx-community repo id for mira-mlx/mlx-lm/vllm-mlx (e.g. `mlx-community/Ministral-3-14B-Instruct-2512-4bit` for the Mistral family), omlx's own model name for `backend: omlx` |
-| `host` | `http://localhost:8080` | LLM server URL. Named `BACKEND_HOST` in `config.py` (it was `OLLAMA_HOST` until 2026-08-01, which made a retired backend look load-bearing) |
-| `embed_model` | `nomic-ai/nomic-embed-text-v1.5` | HuggingFace embedding model for RAG (sentence-transformers) |
-| `context_window` | `65536` | Token context window |
-| `mira_mlx_vision` | `false` | Load the checkpoint's vision tower on mira-mlx instead of OCR-ing images |
+All 45 settings, with defaults, are in **[configuration.md](configuration.md)**. Do not restate
+them here — three partial copies of that table is how `reranker_model` came to be documented as
+source-only when it had been a config field for weeks.
 
-**RAG / search knobs in `core/config.py`** (no `mira.yaml` equivalent — edit directly):
-`MAX_SEARCH_RESULTS`, `SEARCH_TIMEOUT`, `MAX_RETRIES`, `MAX_TOOL_STEPS`, `VERBOSE_DEFAULT`, `RERANK_MODEL`, `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP`, `RAG_RETRIEVE_K`, `RAG_RERANK_TOP_K`, `RAG_SCORE_THRESHOLD`, `RAG_MAX_CHUNKS`
+Two mechanics worth knowing that belong here rather than there:
+
+- `_get(key, default)` in `core/config.py` is the single reader. A key that is not passed
+  through `_get` is not a `mira.yaml` setting, whatever the example file suggests.
+- `host` is named `BACKEND_HOST` in `config.py`. It was `OLLAMA_HOST` until 2026-08-01, which
+  made a retired backend look load-bearing.
+
+**Knobs that genuinely have no `mira.yaml` equivalent** (edit `core/config.py`):
+`MAX_SEARCH_RESULTS`, `SEARCH_TIMEOUT`, `MAX_RETRIES`, `MAX_TOOL_STEPS`, `VERBOSE_DEFAULT`,
+`RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP`, `RAG_RETRIEVE_K`, `RAG_RERANK_TOP_K`,
+`RAG_SCORE_THRESHOLD`, `RAG_MAX_CHUNKS`.
 
 ## Model quirks
 
