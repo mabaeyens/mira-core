@@ -818,11 +818,15 @@
   harness deliberately does not make.
 
 ### Documentation leftovers from the 2026-08-12 sweep
-- **Two `.github/ISSUE_TEMPLATE.md` files are now dead weight, one per repo — deleting them needs
-  Miguel's word.** Neither is wrong any more, both are simply unreachable: GitHub ignores the legacy
-  single-file form for as long as a `.github/ISSUE_TEMPLATE/` directory exists, and both repos have
-  one. The mira-apps copy is the template Miguel wrote himself, so its content is not at risk — it
-  now lives inside `bug_report.md`. Left in place pending approval, per the standing rule on deletes.
+- ~~**The legacy `.github/ISSUE_TEMPLATE.md` is dead weight now that a directory shadows it.**~~
+  **Deleted with approval 2026-08-12** in mira-apps `caad472`. Only mira-apps ever had one — the
+  earlier note here said "one per repo" and that was wrong, mira-core has only ever had the
+  directory form. Its content was not lost: `bug_report.md` was rewritten from it in `ef6e20b`.
+- **mira-apps has no feature request template, and now nothing else to fall back on.** The deleted
+  file was bug-and-feature both, opening with a Type selector; `bug_report.md` is bug-only by
+  design. So a feature request or a question currently lands on a form asking for steps to reproduce
+  and an expected-vs-actual. Either a second template or a `config.yml` with a discussions link
+  closes it — small, and worth doing before anyone files the next one.
 - **The three settings the sweep made configurable for the first time deserve a look now that
   someone can actually set them.** `shell_sandbox`, `shell_sandbox_allow_network` and
   `url_fetch_allow_private` were read by `config.py` and absent from `mira.yaml.example`, so their
