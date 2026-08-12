@@ -15,6 +15,7 @@ from core.inference.disk_prompt_cache import DiskBackedPromptCache
 from core.inference.mira_mlx_server import (
     ChatJob,
     DONE,
+    EngineDead,
     GenerationEngine,
     create_app,
     _build_state_machine,
@@ -217,9 +218,12 @@ def test_fitting_prompt_passes_the_ceiling_check():
 
     # prompt_cache/batch_generator are deliberately None: a fitting prompt must
     # get past the oversized-prompt check and fail later on real engine state,
-    # not be blocked by the check itself.
-    with pytest.raises(AttributeError):
-        engine._start_job(job)
+    # not be blocked by the check itself. AttributeError rather than ValueError
+    # is the whole assertion — it says the ceiling check let the prompt through.
+    engine._start_job(job)
+
+    assert isinstance(job.out_queue.get_nowait(), AttributeError)
+    assert job.out_queue.get_nowait() is DONE
 
 
 def test_no_max_kv_size_never_rejects():
@@ -227,8 +231,101 @@ def test_no_max_kv_size_never_rejects():
     engine.tokenizer = FixedLengthTokenizer(10_000_000)
     job = _job()
 
-    with pytest.raises(AttributeError):
-        engine._start_job(job)
+    engine._start_job(job)
+
+    assert isinstance(job.out_queue.get_nowait(), AttributeError)
+    assert job.out_queue.get_nowait() is DONE
+
+
+# -- admission failures are per job, engine failures are per engine -----------
+
+def test_admission_failure_never_escapes_to_the_engine_loop():
+    """The regression this whole guard exists for: anything raising during
+    admission used to travel out through _drain_inbox and kill the engine
+    thread, so one bad request hung every request after it."""
+    engine = GenerationEngine(model_path="fake/model", max_kv_size=None)
+    engine.tokenizer = FixedLengthTokenizer(50)
+    job = _job()
+
+    engine._drain_inbox()  # empty inbox, nothing to do
+    engine.submit(job)
+    engine._drain_inbox()  # must not raise: the job failed, the engine did not
+
+    assert isinstance(job.out_queue.get_nowait(), AttributeError)
+    assert job.out_queue.get_nowait() is DONE
+    # The engine is still healthy, so it still accepts work.
+    engine.submit(_job())
+
+
+def test_job_is_not_in_the_batch_before_pending_knows_about_it():
+    """_handle_response drops responses for a uid that is not in _pending, so a
+    job inserted into the batch without bookkeeping decodes into nowhere and
+    never sends DONE. Admission must therefore fail before insert_segments, not
+    after: _pending stays empty on any admission failure."""
+    engine = GenerationEngine(model_path="fake/model", max_kv_size=None)
+    engine.tokenizer = FixedLengthTokenizer(50)
+
+    engine._start_job(_job())
+
+    assert engine._pending == {}
+
+
+def test_engine_death_fails_in_flight_jobs_and_refuses_new_ones():
+    engine = GenerationEngine(model_path="fake/model")
+    in_flight = _job()
+    queued = _job()
+    engine._pending[1] = {"job": in_flight}
+    engine._inbox.put(queued)
+
+    boom = RuntimeError("batch generator exploded")
+    engine._die(boom)
+
+    for job in (in_flight, queued):
+        assert job.out_queue.get_nowait() is boom
+        assert job.out_queue.get_nowait() is DONE
+    assert engine._pending == {}
+
+    # And nothing new may queue onto an inbox with no reader.
+    with pytest.raises(EngineDead) as excinfo:
+        engine.submit(_job())
+    assert "batch generator exploded" in str(excinfo.value)
+
+
+def test_generation_loop_stops_loudly_instead_of_unwinding_in_silence():
+    """An exception out of the batch generator leaves the KV state and the MLX
+    stream of unknown validity, so the loop does stop — but it stops having told
+    every waiting client why, not by silently unwinding the thread."""
+    engine = GenerationEngine(model_path="fake/model")
+    job = _job()
+    engine._pending[1] = {"job": job}
+
+    boom = RuntimeError("next() exploded")
+
+    class _ExplodingBatchGenerator:
+        def next(self):
+            raise boom
+
+    engine.batch_generator = _ExplodingBatchGenerator()
+
+    engine._serve_forever()  # returns rather than propagating
+
+    assert job.out_queue.get_nowait() is boom
+    assert job.out_queue.get_nowait() is DONE
+    assert engine._error is boom
+    with pytest.raises(EngineDead):
+        engine.submit(_job())
+
+
+def test_dead_engine_answers_503_rather_than_hanging():
+    engine = GenerationEngine(model_path="fake/model")
+    engine._die(RuntimeError("batch generator exploded"))
+    client = TestClient(create_app(engine))
+
+    r = client.post("/v1/chat/completions",
+                    json={"messages": [{"role": "user", "content": "hi"}]})
+
+    assert r.status_code == 503
+    assert "batch generator exploded" in r.json()["detail"]
 
 
 # -- kv_bits/kv_group_size/quantized_kv_start CLI threading ------------------
@@ -308,8 +405,8 @@ def test_stats_snapshot_counts_a_cache_miss():
     engine.prompt_cache = DiskBackedPromptCache(max_size=10, max_bytes=1, disk_store=None)
     job = _job()
 
-    with pytest.raises(AttributeError):
-        engine._start_job(job)  # fails later at batch_generator.insert_segments (None), as expected
+    engine._start_job(job)  # fails later at batch_generator.insert_segments (None), as expected
+    assert isinstance(job.out_queue.get_nowait(), AttributeError)
 
     snap = engine.stats_snapshot()
     assert snap["cache_misses"] == 1

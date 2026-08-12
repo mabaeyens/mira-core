@@ -3,7 +3,7 @@ KV-cache/context budgeting, so the same code behaves sensibly on an 8GB Mac
 and a 128GB Mac Studio instead of using one fixed set of constants everywhere.
 
 A prompt whose own token count is >= the derived max_kv_size ceiling is
-rejected outright by GenerationEngine._start_job (mira_mlx_server.py) with a
+rejected outright by GenerationEngine._admit_job (mira_mlx_server.py) with a
 clear ValueError, rather than left to RotatingKVCache's undefined behavior for
 a single over-budget submission.
 """

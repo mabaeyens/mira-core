@@ -102,6 +102,15 @@ SNAPSHOT_CACHE_TYPE = {"system": "system", "history": "user"}
 DONE = object()  # sentinel pushed onto a job's out_queue when generation finishes
 
 
+class EngineDead(RuntimeError):
+    """The engine thread is gone and will not come back without a restart.
+
+    Raised by submit() rather than letting the job onto an inbox nothing
+    drains. A queued job on a dead engine is indistinguishable, from the
+    client's side, from a slow one: it waits on out_queue forever.
+    """
+
+
 def plan_prefill_segments(rest, prompt_cache_count, boundaries):
     """Decide where prefill should stop to leave reusable snapshots behind.
 
@@ -482,6 +491,12 @@ class GenerationEngine:
         self._ready = threading.Event()
         self._shutdown = False
         self._error: Optional[BaseException] = None
+        # Held for the check-then-put in submit() and for the set-then-drain in
+        # _die(). Without it a job can pass the liveness check on an HTTP thread
+        # and land in the inbox just after the engine thread finished draining
+        # it — the one job that would still hang on an engine that is already
+        # reporting itself dead to everyone else.
+        self._admit_lock = threading.Lock()
 
         self.model = None
         self.tokenizer = None
@@ -549,7 +564,13 @@ class GenerationEngine:
             raise TimeoutError("mira-mlx engine did not finish loading in time")
 
     def submit(self, job: ChatJob) -> None:
-        self._inbox.put(job)
+        with self._admit_lock:
+            if self._error is not None:
+                raise EngineDead(
+                    f"mira-mlx engine is not running: "
+                    f"{type(self._error).__name__}: {self._error}"
+                )
+            self._inbox.put(job)
 
     # --- everything below this line runs ONLY on the engine thread ---
 
@@ -664,35 +685,89 @@ class GenerationEngine:
             cache_limit_bytes / (1024**3),
         )
         self._ready.set()
+        self._serve_forever()
 
+    def _serve_forever(self) -> None:
+        """The generation loop. Split out of _run so it can be exercised without
+        a model load — the failure path below is the one that used to be
+        untestable and therefore untested."""
         while not self._shutdown:
-            drained = self._drain_inbox()
-            if self._pending:
-                _tn = time.time()
-                # next() rather than next_generated(): the end_of_segment signal
-                # the boundary snapshot needs rides on the prompt responses that
-                # next_generated() discards. A step with no generated tokens
-                # simply loops again, which is what next_generated() did
-                # internally anyway.
-                prompt_responses, responses = self.batch_generator.next()
-                _dt = time.time() - _tn
-                if _dt > 1.0:
-                    logger.info("next() took %.2fs, returned %d responses", _dt, len(responses))
-                for pr in prompt_responses:
-                    self._maybe_snapshot_boundary(pr)
-                for r in responses:
-                    self._handle_response(r)
-                self._check_memory_pressure()
-            elif not drained:
-                self._release_idle_tower()
-                self._refresh_system_memory_state()
-                self._maybe_decompress_model()
-                time.sleep(0.02)
+            try:
+                drained = self._drain_inbox()
+                if self._pending:
+                    _tn = time.time()
+                    # next() rather than next_generated(): the end_of_segment signal
+                    # the boundary snapshot needs rides on the prompt responses that
+                    # next_generated() discards. A step with no generated tokens
+                    # simply loops again, which is what next_generated() did
+                    # internally anyway.
+                    prompt_responses, responses = self.batch_generator.next()
+                    _dt = time.time() - _tn
+                    if _dt > 1.0:
+                        logger.info("next() took %.2fs, returned %d responses", _dt, len(responses))
+                    for pr in prompt_responses:
+                        self._maybe_snapshot_boundary(pr)
+                    for r in responses:
+                        self._handle_response(r)
+                    self._check_memory_pressure()
+                elif not drained:
+                    self._release_idle_tower()
+                    self._refresh_system_memory_state()
+                    self._maybe_decompress_model()
+                    time.sleep(0.02)
+            except BaseException as exc:  # noqa: BLE001 - see _die()
+                self._die(exc)
+                return
+
+    def _die(self, exc: BaseException) -> None:
+        """Fail every job the engine still owes an answer to, then stop.
+
+        Reached only when the generation loop itself raises. Admission failures
+        are handled per job in _start_job and never get here; this is the other
+        kind — the batch generator, the prompt cache or the memory watchdog
+        blew up mid-step, which leaves the batch's KV state and MLX stream of
+        unknown validity. Decoding the next token on top of that would produce
+        wrong output rather than an error, so the loop does not continue.
+
+        What it must not do is continue *silently*. Before this existed the
+        thread simply unwound: every in-flight request stayed blocked on its
+        out_queue, every later request queued onto an inbox with no reader, and
+        the server went on answering /v1/stats as if it were healthy. One
+        exception became a permanently hung process with nothing in the log to
+        say why. Now the exception reaches the clients that were waiting for
+        it, submit() refuses new work with the same cause attached, and the
+        traceback is on disk.
+        """
+        logger.exception(
+            "mira-mlx engine loop died; failing %d in-flight job(s)", len(self._pending)
+        )
+        # Set the flag before draining the inbox: submit() takes the same lock,
+        # so from here on a caller either sees the flag and raises, or already
+        # put its job where the drain below will find it.
+        with self._admit_lock:
+            self._error = exc
+            orphans = []
+            while True:
+                try:
+                    orphans.append(self._inbox.get_nowait())
+                except queue.Empty:
+                    break
+        for state in list(self._pending.values()):
+            orphans.append(state["job"])
+        self._pending.clear()
+        for job in orphans:
+            # Best effort per job: a client that has already disconnected must
+            # not stop the next one from being told.
+            try:
+                job.out_queue.put(exc)
+                job.out_queue.put(DONE)
+            except Exception:  # noqa: BLE001
+                logger.exception("could not deliver engine failure to job %s", job.request_id)
 
     def _ensure_tower(self):
         """Load the vision tower on first use, on the model thread.
 
-        Called only from _start_job, which runs on this thread, because the
+        Called only from _admit_job, which runs on this thread, because the
         tower's arrays have to live on the same MLX stream as everything else.
 
         A tower that fails to load is not fatal and, importantly, is not retried:
@@ -1494,39 +1569,50 @@ class GenerationEngine:
         return n
 
     def _start_job(self, job: ChatJob) -> None:
+        """Admit one job to the batch; a failure here costs only that job.
+
+        The guard used to cover the prepare block alone, so everything from
+        fetch_nearest_cache to insert_segments ran bare. Anything raising there
+        — a chat_template_kwargs the template rejects, a logits processor built
+        wrong, a prompt cache entry that will not load — propagated out through
+        _drain_inbox into the engine loop and killed the thread, turning one bad
+        request into a server that hangs every request after it. Admission is
+        per request and its failures are per request.
+        """
         try:
-            ckwargs = dict(job.chat_template_kwargs or {})
-            # Not a template variable — the orchestrator nests it here because
-            # that is the only extra_body channel the OpenAI client exposes.
-            # Pop it: Qwen3.6's template ignores unknown kwargs, but a future
-            # template that errors on them would break every request.
-            thinking_budget = ckwargs.pop("thinking_budget", 0)
-            messages, images = _prepare_messages(job.messages, vision=self.vision)
-            prompt_tokens = self.tokenizer.apply_chat_template(
-                messages, tools=job.tools, add_generation_prompt=True,
-                tokenize=True, **ckwargs
-            )
-            image_embeds = None
-            if images:
-                prompt_tokens, image_embeds = self._expand_image_tokens(
-                    prompt_tokens, images
-                )
+            self._admit_job(job)
         except BaseException as exc:  # noqa: BLE001
+            logger.exception("job %s rejected during admission", job.request_id)
             job.out_queue.put(exc)
             job.out_queue.put(DONE)
-            return
+
+    def _admit_job(self, job: ChatJob) -> None:
+        ckwargs = dict(job.chat_template_kwargs or {})
+        # Not a template variable — the orchestrator nests it here because
+        # that is the only extra_body channel the OpenAI client exposes.
+        # Pop it: Qwen3.6's template ignores unknown kwargs, but a future
+        # template that errors on them would break every request.
+        thinking_budget = ckwargs.pop("thinking_budget", 0)
+        messages, images = _prepare_messages(job.messages, vision=self.vision)
+        prompt_tokens = self.tokenizer.apply_chat_template(
+            messages, tools=job.tools, add_generation_prompt=True,
+            tokenize=True, **ckwargs
+        )
+        image_embeds = None
+        if images:
+            prompt_tokens, image_embeds = self._expand_image_tokens(
+                prompt_tokens, images
+            )
 
         # A single prompt at or beyond max_kv_size leaves no room for even one
         # generated token, and RotatingKVCache's behavior in that case is
         # undefined — reject clearly instead of letting it degrade silently.
+        # ValueError specifically: the HTTP layer maps it to 400, not 500.
         if self.max_kv_size is not None and len(prompt_tokens) >= self.max_kv_size:
-            exc = ValueError(
+            raise ValueError(
                 f"prompt is {len(prompt_tokens)} tokens, this machine's context "
                 f"ceiling is {self.max_kv_size} tokens"
             )
-            job.out_queue.put(exc)
-            job.out_queue.put(DONE)
-            return
 
         _t0 = time.time()
         if image_embeds is not None:
@@ -1595,18 +1681,6 @@ class GenerationEngine:
             )
             snapshot_queue = [(found[n], list(prompt_tokens[:n])) for n in to_cache]
 
-        _t2 = time.time()
-        (uid,) = self.batch_generator.insert_segments(
-            segments=[segments],
-            max_tokens=[min(job.max_tokens, self.max_tokens)],
-            caches=[cache],
-            all_tokens=[prompt_tokens[:prompt_cache_count]],
-            samplers=[sampler],
-            logits_processors=[logits_processors],
-            state_machines=[self.state_machine],
-            input_embeddings=[image_embeds] if image_embeds is not None else None,
-        )
-        logger.info("insert_segments took %.2fs (rest=%d tokens)", time.time() - _t2, len(rest))
         think_end = tuple(getattr(self.tokenizer, "think_end_tokens", ()) or ())
         preopened = _think_preopened(
             prompt_tokens,
@@ -1614,7 +1688,16 @@ class GenerationEngine:
             think_end,
         )
 
-        self._pending[uid] = {
+        # Built before insert_segments, not after, and deliberately: once a job
+        # is in the batch the generator decodes it whether or not _pending knows
+        # about it, and _handle_response silently drops responses for a uid it
+        # cannot find. An exception raised between the two — the detokenizer,
+        # ToolCallFormatter on a malformed tool schema — would therefore leave a
+        # job burning decode steps that nobody reads and a client waiting on a
+        # DONE that nobody sends, which is a hang the per-job guard cannot undo
+        # because the job is already inside the batch. So everything that can
+        # raise happens first and only the dict store is left after the insert.
+        state = {
             # One (kind, tokens) pair per planned boundary, in prefill order,
             # popped by _maybe_snapshot_boundary as each segment drains. Empty
             # when prefill was not split, which is what stops the trailing
@@ -1638,14 +1721,33 @@ class GenerationEngine:
             "made_tool_call": False,
             "in_tool_state": False,
             "prev_state": "normal",
-            "created": int(time.time()),
-            "start_time": time.time(),
+            # Stamped after the insert below, so the latency window still starts
+            # where it always did rather than silently growing by however long
+            # insert_segments took.
+            "created": 0,
+            "start_time": 0.0,
             # Set on the first generated token, which is the only boundary the
             # engine can actually observe between prefill and decode. Stays None
             # if the job dies before generating anything, and the split is then
             # simply not recorded rather than recorded as a zero.
             "first_token_time": None,
         }
+
+        _t2 = time.time()
+        (uid,) = self.batch_generator.insert_segments(
+            segments=[segments],
+            max_tokens=[min(job.max_tokens, self.max_tokens)],
+            caches=[cache],
+            all_tokens=[prompt_tokens[:prompt_cache_count]],
+            samplers=[sampler],
+            logits_processors=[logits_processors],
+            state_machines=[self.state_machine],
+            input_embeddings=[image_embeds] if image_embeds is not None else None,
+        )
+        logger.info("insert_segments took %.2fs (rest=%d tokens)", time.time() - _t2, len(rest))
+        state["created"] = int(time.time())
+        state["start_time"] = time.time()
+        self._pending[uid] = state
 
     def _handle_response(self, r) -> None:
         state = self._pending.get(r.uid)
@@ -1901,7 +2003,14 @@ def create_app(engine: GenerationEngine) -> FastAPI:
             include_usage=bool((body.get("stream_options") or {}).get("include_usage")),
         )
         loop = asyncio.get_event_loop()
-        engine.submit(job)
+        try:
+            engine.submit(job)
+        except EngineDead as exc:
+            # 503, and with the original cause in the body: the engine thread is
+            # gone and no amount of retrying this request brings it back. Same
+            # reason as the non-streaming branch below — FastAPI's default 500
+            # handler would throw the message away.
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
         if job.stream:
             async def event_gen():

@@ -1,6 +1,36 @@
 # Backlog
 
 ## Done
+- [2026-08-12] **A failed request can no longer take the engine with it, and an engine that does
+  die now says so instead of hanging every client that asks.** Follow-up (a) from the entry below.
+  `_start_job`'s guard covered the prepare block alone, so everything from `fetch_nearest_cache`
+  through `insert_segments` ran bare — a chat template that rejects its kwargs, a logits processor
+  built wrong, a cache entry that will not load — and any of it propagated out through
+  `_drain_inbox` into the engine loop and killed the thread. Admission is now a thin `_start_job`
+  wrapper around `_admit_job`: anything raising there is logged with the request id and delivered
+  to that job's queue as `exc` + `DONE`, which is the failure protocol the oversized-prompt check
+  already used. **Writing it turned up a second hang the guard alone could not have fixed.** The
+  `_pending` bookkeeping was built *after* `insert_segments`, and `_handle_response` silently drops
+  responses for a uid it cannot find, so anything raising in that window — the detokenizer,
+  `ToolCallFormatter` on a malformed tool schema — would leave a job burning decode steps nobody
+  reads and a client waiting on a `DONE` nobody sends, with the job already inside the batch and
+  past rescuing. The dict is now built before the insert and only the store is left after it;
+  `created`/`start_time` are stamped post-insert so the latency window does not silently grow by
+  the insert duration. **Loop failures deliberately do not recover in place.** An exception out of
+  the batch generator leaves the KV state and MLX stream of unknown validity, and decoding the next
+  token on top of that produces wrong output rather than an error — so `_die` logs the traceback,
+  fails every `_pending` job and everything still in the inbox with the real exception, and sets
+  `_error`. `submit()` then raises the new `EngineDead` under `_admit_lock`, which closes the
+  check-then-put race against `_die`'s set-then-drain: without it one job could still land on an
+  inbox nothing drains, which is the one hang left. `chat_completions` maps that to **503 with the
+  original cause in the body**, not FastAPI's default 500, which discards the message — the same
+  trap the non-streaming branch already documented. The loop moved out of `_run` into
+  `_serve_forever` for one reason: behind a model load its failure path was untestable and
+  therefore untested. **Verified live** on the restarted server: an oversized prompt returns 400 in
+  0.21s with the real ceiling in the message, and the engine answers normally before and after.
+  The arbitrary-crash and `_die` paths are covered by tests, **not** live-verified — forcing a real
+  engine crash to prove it costs more than the coverage is worth. 138 tests pass across the six
+  engine-adjacent files, 5 of them new.
 - [2026-08-12] **`max_thinking_tokens` was never enforced, and wiring it uncovered an mlx-lm
   batching bug that could take the whole engine down.** The setting has existed since the
   truncated-thinking work and was sent to the model as a chat-template kwarg — but Qwen3.6's
@@ -22,9 +52,10 @@
   every request after it hung forever rather than erroring. It also hung a `pytest` run for 72
   minutes on an established socket to the dead engine. Fixed here by never handing mlx-lm an empty
   processor list (`_build_logits_processors` appends a no-op), with a test pinning the invariant.
-  **Two follow-ups this leaves open**, both deliberately not done: (a) an exception anywhere in the
-  engine's `_run` loop kills the thread silently and turns every in-flight and future request into
-  a hang — it should fail the pending jobs and log, not vanish; (b) at the restored default of
+  **Two follow-ups this leaves open**, both deliberately not done here: (a) an exception anywhere
+  in the engine's `_run` loop kills the thread silently and turns every in-flight and future
+  request into a hang — it should fail the pending jobs and log, not vanish (**done 2026-08-12**,
+  see the entry above); (b) at the restored default of
   8192 the budget is a runaway guard and nothing more, since the worst real turn measured so far
   spent ~5k reasoning tokens. ~2048 would make it an actual budget. Also measured while here:
   search-result injection costs ~696 new prompt tokens per round with 79% cache reuse, so the
