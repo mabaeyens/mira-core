@@ -188,7 +188,8 @@ Head-to-head via Ollama API (`stream:false`, `num_predict:512`, `temperature:0.1
 
 ### Optimized Modelfile + environment
 
-**`models/gemma4-optimized.modelfile`** pins three parameters per-model (portable, not env-var dependent):
+The numbers above were taken with an Ollama Modelfile that pinned three parameters per-model,
+rather than relying on global env vars:
 
 | Parameter | Value | Effect |
 |-----------|-------|--------|
@@ -196,10 +197,9 @@ Head-to-head via Ollama API (`stream:false`, `num_predict:512`, `temperature:0.1
 | `num_keep` | `768` | Pins system prompt in KV cache — saves ~200ms per turn. |
 | `llama.cpp.flash_attn` | `true` | Flash attention kernel pinned at model level. |
 
-```bash
-ollama create gemma4-ultra -f ~/Projects/mira-core/models/gemma4-optimized.modelfile
-ollama run gemma4-ultra "hello" --verbose
-```
+The file itself (`models/gemma4-optimized.modelfile`) was deleted on 2026-08-12: the Ollama
+backend was retired on 2026-08-01, so nothing could load it. Recover it from git history if
+these runs ever need reproducing.
 
 See [Ollama environment (Performance Optimization Tips)](#performance-optimization-tips) for global env vars.
 
