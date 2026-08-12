@@ -279,6 +279,50 @@ def load_messages(conv_id: str) -> List[Dict]:
              "thinking_content": r["thinking_content"]} for r in rows]
 
 
+def drop_last_turn(conv_id: str) -> int:
+    """Delete the last user message and everything saved after it. Returns the row count.
+
+    This is what a retry needs and never had. `save_messages` appends, and the
+    client that retries drops the failed exchange from its own array only — so
+    before this existed every retry left the question twice in the database with
+    the broken answer still between them, and rebuilt context fed the model both.
+
+    Deletes from the last `user` row forward rather than a fixed two rows: a turn
+    can persist more than a question and an answer, and "the last question and
+    everything it produced" is the unit a retry actually replaces.
+    """
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM messages WHERE conversation_id = ? AND role = 'user'"
+            " ORDER BY id DESC LIMIT 1",
+            (conv_id,),
+        ).fetchone()
+        if row is None:
+            return 0
+        cur = conn.execute(
+            "DELETE FROM messages WHERE conversation_id = ? AND id >= ?",
+            (conv_id, row["id"]),
+        )
+        removed = cur.rowcount
+        # messages_fts is contentless-external in spirit but carries no row id we
+        # can match on, so the surviving rows are re-indexed wholesale — the same
+        # thing replace_messages does, for the same reason.
+        conn.execute("DELETE FROM messages_fts WHERE conversation_id = ?", (conv_id,))
+        for r in conn.execute(
+            "SELECT content FROM messages WHERE conversation_id = ? ORDER BY id",
+            (conv_id,),
+        ).fetchall():
+            conn.execute(
+                "INSERT INTO messages_fts (content, conversation_id) VALUES (?, ?)",
+                (r["content"], conv_id),
+            )
+        conn.execute(
+            "UPDATE conversations SET updated_at = ? WHERE id = ?",
+            (int(time.time()), conv_id),
+        )
+    return removed
+
+
 def replace_messages(conv_id: str, messages: List[Dict]) -> None:
     """Replace all messages for a conversation (used after summarize-and-compress)."""
     now = int(time.time())

@@ -81,6 +81,24 @@ cost above is paid whether it is convenient or not. Watch for new model support
 in particular: that is the change most likely to arrive as "the model everyone
 is using does not load".
 
+**That condition is already met, found 2026-08-12.** Upstream commit `a790972`,
+"Fix broadcast crash in quantized SDPA with GQA + batched padding mask
+(batch >= 2)" (PR #1467, merged 2026-07-09), is one of the 24 commits the pin
+does not have. Without it, `quantized_scaled_dot_product_attention` compares a
+4-D mask against 5-D scores whenever a GQA model runs quantized KV at batch 2 or
+more — which is Mira's production configuration — and the engine thread dies.
+Verified rather than assumed: the installed copy contains zero occurrences of
+that guard, and the crash reproduces standalone in a second.
+
+It is two lines plus a test and it touches nothing else, so **the cheap move is
+to cherry-pick `a790972` onto the pin branch, not to rebase**. That buys the
+correctness fix without paying for `SequenceStateMachine` or `_embed_tokens`. It
+also means the forcing condition does not force a *full* move here — worth
+remembering the next time this table says "moving costs a port": a single
+upstream commit may be liftable on its own.
+
+Read `notes/kv-quant-batched-mask-crash-2026-08-12.md` for the mechanism.
+
 ## How to move it, when the time comes
 
 1. Fetch upstream and read `git log --oneline <pin>..upstream/main` in full.

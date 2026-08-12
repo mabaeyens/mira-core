@@ -618,6 +618,22 @@ async def cancel(request: Request):
     return {"status": "cancelled", "count": cancelled}
 
 
+def _rollback_to_last_user(history: List[Dict]) -> int:
+    """Cut the in-memory history back to just before the last user message.
+
+    Mutates in place: the orchestrator holds this list, and rebinding it here
+    would leave the orchestrator prompting from the old one. Returns how many
+    entries were removed. Cuts from the last `user` entry rather than a fixed
+    count because a turn can leave tool messages behind it.
+    """
+    for i in range(len(history) - 1, -1, -1):
+        if history[i].get("role") == "user":
+            removed = len(history) - i
+            del history[i:]
+            return removed
+    return 0
+
+
 @app.post("/chat")
 async def chat(
     message: str = Form(...),
@@ -627,6 +643,14 @@ async def chat(
     thinking_enabled: Optional[bool] = Form(default=None),
     github_tools_enabled: bool = Form(default=False),
     tools_enabled: bool = Form(default=True),
+    # Set by a client that is re-sending a question because the last answer was
+    # broken. Without it a retry appends: the question ends up in the database
+    # twice with the failed reply between them, and every later turn is built on
+    # top of both. The client cannot fix this itself — it cannot un-save what it
+    # already sent — so the flag is the client telling the server which turn it
+    # means to replace. Off by default: asking the same question twice on purpose
+    # is a legitimate thing to do and must not silently delete history.
+    retry: bool = Form(default=False),
     # Approval tokens for destructive actions the user confirmed in the client.
     # These come from the USER via the client UI, never from model output — that
     # is what makes the confirmation gate unforgeable by the model.
@@ -697,6 +721,22 @@ async def chat(
         async with lock:
             loop = asyncio.get_running_loop()
             queue: asyncio.Queue = asyncio.Queue()
+
+            # A retry replaces the previous turn instead of stacking on it. Done
+            # under the lock and before the snapshot, so a turn in flight on this
+            # conversation cannot have its history cut from under it, and so the
+            # cancel rollback below measures the history the turn actually starts
+            # from. Both stores are trimmed: the database is what a later session
+            # reloads, and conversation_history is what this turn prompts with.
+            if retry and not fresh:
+                removed = db.drop_last_turn(conv_id)
+                cut = _rollback_to_last_user(orch.conversation_history)
+                if removed or cut:
+                    logger.info(
+                        "retry on %s: dropped %d saved message(s), %d in memory",
+                        conv_id, removed, cut,
+                    )
+
             snapshot = {"len": len(orch.conversation_history)}
 
             def produce():

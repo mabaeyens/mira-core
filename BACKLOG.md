@@ -395,7 +395,7 @@
 
 ## Pending
 
-### Batched quantized KV kills the engine on any GQA model — reproduced, one-line fix, not applied
+### Batched quantized KV kills the engine on any GQA model — upstream fixed it, our pin predates the fix
 - **Production configuration crashes as soon as two requests overlap a long one.** Found 2026-08-12
   by the thinking-budget run, which was not looking for it: the engine thread dies with
   `ValueError: [broadcast_shapes] Shapes (3,1,1,1629) and (3,2,8,1,1629) cannot be broadcast` inside
@@ -410,19 +410,33 @@
   set (`mira.yaml:28` has 8), past `quantized_kv_start` so the cache has really converted, two or
   more sequences decoding, and `n_repeats > 1` (Qwen3.6 is 16 heads over 2 KV heads).
   **Reproduced standalone** in a second with no model and no server —
-  `/tmp/claude_repro_qsdpa_mask.py`, identical error string — and the fix verified in the same run:
-  give the mask the axis the keys already get, `mx.expand_dims(mask, axis=-3)` when `n_repeats > 1`
-  and the mask is a 4-D array. It belongs in `base.py` where the reshape happens, not in one cache
-  class, since every caller quantizing a batched cache needs it. **Not applied**: the code is in the
-  fork, in the same area as PR #1584, and whether it rides in that PR or lands ahead of it as its own
-  commit is Miguel's call. **This blocks the #1584 A/B/C split** — #1584 is the PR that makes batched
-  KV quantization work, this is a crash in exactly that combination on any GQA model, and it is
-  invisible at batch 1. It also settles the running argument in that thread in favour of running the
-  batched path rather than reading it. Meanwhile production is exposed: dropping `mira_mlx_kv_bits`
-  avoids it at the cost of KV compression, leaving it means an occasional engine death that now at
-  least surfaces as a clean 503. No regression test yet; the natural one is the repro as a pytest
-  with `pytest.importorskip("mlx.core")`, parametrised over batch 1 and 3. Full write-up in
-  gitignored `notes/kv-quant-batched-mask-crash-2026-08-12.md`.
+  `/tmp/claude_repro_qsdpa_mask.py`, identical error string.
+- **Whose bug: the trigger is ours, the fix is upstream's, and nothing was deleted.** Worth checking
+  the ownership before writing any code, because it changed the answer completely. (a) The crashing
+  cache class `BatchRotatingQuantizedKVCache` **does not exist upstream** — it arrived with
+  `bbd8496`, the commit behind PR #1584, so the batched quantized path is Mira-side. (b) The function
+  that crashes is upstream's, and `base.py` differs from upstream by exactly two lines with the fork
+  on the lacking side. (c) Those two lines are the fix, and upstream merged them on **2026-07-09** as
+  `a790972`, *"Fix broadcast crash in quantized SDPA with GQA + batched padding mask (batch >= 2)"*
+  (PR #1467) — `if n_repeats > 1 and mask.ndim > 3: mask = mx.expand_dims(mask, -3)`, plus a test.
+  The pin is 24 commits behind and that is one of them; the installed copy contains **zero**
+  occurrences of the guard. So the fork branched before #1467 landed and has carried the pre-fix
+  version ever since. **This is the failure mode a pin exists to cause: it freezes the bugs along
+  with the API.**
+- **Fix: cherry-pick `a790972` onto the pin branch.** Two lines plus a test, touching nothing else,
+  so it does not drag in `SequenceStateMachine` or `_embed_tokens` — the two changes that make a full
+  pin move expensive. Rebasing #1584 onto current upstream `main` also fixes it as a side effect, and
+  has to happen before that PR can land anyway. **Not applied** — it touches the fork mid-review and
+  the branch `pyproject.toml` points at must not be force-pushed.
+- **This blocks the #1584 A/B/C split**, and for a sharper reason than "there is a bug near it": the
+  branch adds the batched quantized path on a base that predates the fix for the function that path
+  leans on, so **any reviewer running it on any GQA model at batch ≥ 2 gets a traceback instead of
+  the feature**. It also settles the thread's running argument the right way round — this was found
+  by running the batched path, and two code reads had not found it.
+- Production is exposed meanwhile: dropping `mira_mlx_kv_bits` avoids it at the cost of KV
+  compression, leaving it means an occasional engine death that now at least surfaces as a clean 503.
+  Full write-up in gitignored `notes/kv-quant-batched-mask-crash-2026-08-12.md`; the forcing condition
+  it meets is recorded in `docs/mlx-lm-pin.md`.
 
 ### `MAX_THINKING_TOKENS` — measured 2026-08-12, and 2048 does not bind either
 - **The code default is now 2048; the live `mira.yaml` is deliberately still 8192.** Changing a
@@ -660,9 +674,22 @@
      4 rows, 2 of them the same user message, and the test conversation was deleted afterwards. So
      every retry of a broken reply permanently doubles the question in history and keeps the
      corrupted answer next to it, and rebuilt context feeds the model both. That is the mechanism
-     behind the poisoned conversations above surviving a retry. The fix is a mira-core question
-     rather than a client one — the client cannot un-save what it already sent — so either the app
-     names the turn it is replacing or `/chat` grows an idempotency key. **Not built, not specced.**
+     behind the poisoned conversations above surviving a retry. The fix had to be mira-core's rather
+     than the client's — the client cannot un-save what it already sent.
+
+     **FIXED 2026-08-12 on the server side.** `/chat` takes `retry: bool` (default false); when set
+     it calls the new `db.drop_last_turn()` and trims `orch.conversation_history` back to before the
+     last user message, under the conversation lock and before the turn starts. **Both stores**,
+     because the database is what a later session reloads and the in-memory history is what this
+     turn prompts with — fixing only one would have looked correct in a test and wrong in use. It
+     deletes from the last `user` row forward rather than a fixed two rows, since a turn can persist
+     tool messages too. Off by default on purpose: asking the same question twice deliberately is
+     legitimate and must not silently delete history. **Verified live**, not only unit-tested: three
+     sends on one conversation gave 2 rows, then 4 — the control, proving the append still
+     reproduces without the flag — then 4 again rather than 6. 12 tests in
+     `tests/test_retry_replaces_turn.py`; 729 in the suite. Harness: `notes/retry_live_check.py`.
+     **The app half is not done.** Until mira-apps' `resendLast()` sends `retry=true`, nothing
+     changes for a real user — spec in `mira-apps/specs/retry-replaces-the-failed-turn.md`.
      Cheap check on the same run: a fresh 10-turn pass showed **0 reasoning-as-answer and 0
      degenerate replies**, so the generation-side fixes are still holding.
 - **Nothing is established about which sampling config is safer, and two probe rounds prove why.**
