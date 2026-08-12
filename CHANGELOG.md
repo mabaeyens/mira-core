@@ -1,5 +1,135 @@
 # Changelog
 
+## v1.3.0 — August 2026
+
+The release that went looking for broken replies and found them. v1.2.0 shipped
+nine measured performance wins and zero measured quality signals; this one reads
+what Mira actually sent people. Most of what follows was found in real
+conversation logs rather than in tests.
+
+- **Replies were being cut off, and a cut-off reply poisoned the rest of the
+  conversation.** Two batches of real conversations put 13 of 51 turns into the
+  token cap and every one of them arrived broken. Some showed nineteen thousand
+  characters of "The user wants me to..." where the answer should have been. One
+  conversation got five turns in a row of a single exclamation mark repeated 4,096
+  times and never recovered, because a ruined reply goes into the history and
+  produces itself again on the next turn. The cap was hardcoded to 4096 in three
+  places, which was never enough for a model that thinks: reasoning on ordinary
+  questions ran to nineteen thousand characters, so thinking spent the whole
+  budget before the answer started. It is a setting now, `max_output_tokens`,
+  defaulting to 16384. A model that is done still emits its stop token, so raising
+  the ceiling does not make replies longer, it stops them being truncated. A reply
+  that is one character repeated is now discarded rather than sent, judged over
+  non-drawing characters so ASCII diagrams survive, and a turn genuinely cut at
+  the cap says so instead of returning empty.
+
+- **The thinking budget was a number that crossed the whole stack and did
+  nothing.** `max_thinking_tokens` travelled as a chat-template kwarg, and
+  Qwen3.6's template never mentions it. Jinja discards unknown kwargs silently, so
+  the setting reached the model and evaporated at every value anyone set. It is
+  now a logits processor that forces `</think>` once reasoning runs past the
+  budget, rather than stopping generation: a hard stop at the budget yields a
+  reply that is all reasoning and no answer, which is the failure above. Wiring it
+  exposed a worse bug underneath. mlx-lm replaces a sequence's logits-processor
+  list with `None` whenever any list in the batch is empty, then iterates it, and
+  Mira runs two jobs per turn. The moment one carried a processor and the other
+  did not, the engine thread died with a `TypeError` after a single token.
+
+- **One bad request could take the engine down, and a dead engine kept answering
+  the door.** Admission ran unguarded past the prepare block, so anything from the
+  cache lookup to segment insertion killed the engine thread instead of just that
+  request. Failures in the generation loop cannot recover in place, since the KV
+  state and the MLX stream are of unknown validity afterwards, so the engine now
+  fails every in-flight and queued job with the real exception and the HTTP layer
+  answers 503 with the cause. Previously it hung every client that asked.
+
+- **Retrying a failed reply no longer saves your question twice.** The client
+  drops the failed exchange from its own list and re-sends; the server was never
+  told, and saves append. So the conversation kept the question twice with the
+  broken answer between them, and every later turn was built on both copies.
+  Demonstrated live before fixing: two identical posts on one conversation left
+  four rows. `/chat` now takes a `retry` flag that drops the last user message and
+  everything saved after it, from the database and from the in-memory history
+  both, under the conversation lock and before the turn starts.
+
+- **`fetch_url` was handing the model a page's CSS and calling it the page.**
+  Asked to read Apple's notification guidelines, Mira got 969 characters back. Not
+  an error, not a warning, just a successful fetch of a `baseUrl` variable and a
+  font-family declaration. It could not find what it had been asked about so it
+  went searching instead, and nobody watching could tell the page had never
+  arrived. markdownify's `strip` argument skips a tag and then walks its children
+  anyway, so everything inside `script` and `style` came through as body text.
+
+- **A tool that answers in plain English no longer kills the whole reply.** Three
+  turns of a corpus conversation ended with "Internal error, see server logs" and
+  the logs held nothing. `list_attachments` returns a string, and the done-label
+  lambda called `.get` on it, killing the stream after the client had already been
+  told the tool started. The empty log is fixed too: the handler bound the
+  exception and then dropped it, so the message telling you to check the logs
+  pointed at nothing.
+
+- **Sampling, penalties and the seed are yours to set, and regenerate now returns
+  a different answer.** Mira never sent a sampling parameter from anywhere, so the
+  engine's own defaults of 0.0 applied to every reply and greedy decoding was the
+  product of an absence rather than a decision. `temperature`, `top_p` and `top_k`
+  are configurable now, defaulting to exactly the old behaviour. Repetition,
+  presence and frequency penalties existed in mlx-lm with no route from
+  `mira.yaml`, so the one lever against a degenerate reply was unreachable; they
+  all ship off, because penalising repetition also penalises the legitimate kind
+  and code and tables are full of it. The seed was process-global and never set,
+  which made sampling reproducible by accident of ordering, so regenerating handed
+  you back the answer you had just rejected. It is now drawn per request.
+
+- **The token counter finally counts.** The stream carried no usage at all, so
+  the context gauge sat at 0 however full the window got. mira-mlx now emits usage
+  the way OpenAI does, including `reasoning_tokens` and `cached_tokens`. Counting
+  reasoning needed care: Qwen3 templates open `<think>` inside the prompt, so the
+  model never emits the marker and every thinking token would have been filed as
+  answer text.
+
+- **Starting a new conversation is faster.** Openers were re-prefilling the whole
+  system prompt every time. A snapshot taken at the system boundary is shared by
+  every conversation on the machine, which took openers from 10.0% to 78.7% prompt
+  reuse over ten fresh conversations, 98.4% per hit, leaving 43 tokens to prefill
+  instead of 2,599.
+
+- **Memory pressure handling stopped over-correcting, and stopped waking you
+  up.** The pressure trim halved the prompt-cache pool and then cleared MLX's
+  allocator pool, which is backwards: the allocator pool costs a reallocation to
+  rebuild, a prompt-cache entry costs a prefill somebody pays again. Across five
+  trims in 70 hours the overshoot was 0.00 to 0.11GB and the response freed 0.53
+  to 1.14GB, up to 53 times more than needed. Eviction notifications are off by
+  default now: measured over the same window they fired 302 times, one every 14
+  minutes, round the clock including 01:30, 03:00 and 06:53. There is nothing to
+  do about another process taking memory and it is not something you caused.
+
+- **Concurrent requests no longer crash quantized KV on Qwen3.6 or any other GQA
+  model.** At batch 2 or more the attention scores go 5-D while the mask stays
+  4-D, and broadcasting aligns from the right, so the mask's batch axis lands on
+  the KV head count. At batch 1 the leading dimension broadcasts against anything,
+  which is why a single user never saw it and the first concurrent bench did.
+  Upstream had fixed this on 2026-07-09 and our pin was 24 commits behind it. A
+  pin freezes the bugs along with the API.
+
+- **Quality is measured now, not just speed.** The bench scores answers rather
+  than clocks, in two tiers: deterministic checks that can fail a build, and
+  judged ones that print with a measured noise floor beside them. The floor is
+  real rather than assumed, from three runs of one build. Six new questions cover
+  bugs that already shipped, because the deterministic half had scored full marks
+  three runs running and stopped telling us anything. Finding all this took fixing
+  the harness first: the judge was writing every verdict into the real
+  conversation database, scoring correct answers zero for facts it could not
+  check, and reporting a clean pass on an injection test whose payload was never
+  served.
+
+- **Documentation now matches the code.** All 45 `mira.yaml` settings are
+  documented with their defaults in `docs/configuration.md`; seven of them,
+  including three that control the shell sandbox and SSRF protection, had never
+  appeared in `mira.yaml.example` at all. The bug report template asks for
+  something useful instead of your iPhone 6's browser, `CONTRIBUTING.md` carries
+  the spec format instead of pointing at a file you cannot see, and roughly 320
+  lines describing retired backends came out.
+
 ## v1.2.0 — August 2026
 
 - **Multi-turn chat can stop re-prefilling itself, if you turn it on.** Plain
