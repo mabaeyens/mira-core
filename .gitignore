@@ -29,6 +29,12 @@ ENV/
 .idea/
 .vscode/
 .obsidian/
+# The vault's own scratch files land at the repo root, outside .obsidian/: `Untitled*`
+# from a new note/canvas/base, and `YYYY-MM-DD.md` daily notes. Ignored by shape rather
+# than by the three names that happened to exist, so tomorrow's daily note doesn't come
+# back as untracked. Root-anchored, so a dated doc under docs/ is still tracked.
+/Untitled*
+/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9].md
 *.swp
 *.swo
 
