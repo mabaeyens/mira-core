@@ -93,9 +93,9 @@ CONTEXT_WINDOW: int = _get("context_window", 65536)
 #
 # 4096 was never enough for a thinking model. Measured reasoning on ordinary
 # questions ran to 19k characters, so thinking alone consumed the whole budget
-# before the answer began. Note that MAX_THINKING_TOKENS below is 8192 --
+# before the answer began. Note that MAX_THINKING_TOKENS was 8192 at the time --
 # double the old total -- which is how long this went unnoticed: a budget that
-# large can never bind, and the backend ignores it anyway.
+# large can never bind, and the backend ignored it entirely until 2026-08-12.
 #
 # Raising it does not make replies longer, it stops them being cut off; a model
 # that is done still emits its stop token. The cost of a higher ceiling is the
@@ -105,7 +105,25 @@ MAX_OUTPUT_TOKENS: int = _get("max_output_tokens", 16384)
 
 # ── Thinking mode ─────────────────────────────────────────────────────────────
 THINKING_MODE: str = _get("thinking_mode", "adaptive")  # adaptive | always | never
-MAX_THINKING_TOKENS: int = _get("max_thinking_tokens", 8192)  # 0 = uncapped; minimum useful value ~512
+# 0 = uncapped; minimum useful value ~512.
+#
+# Enforced since 2026-08-12 (a logits processor that forces `</think>` once the
+# block runs past the budget -- it does NOT stop generation, so the model still
+# gets to answer). Before that the number was sent as a chat-template kwarg that
+# Qwen3.6's template never reads, so it did nothing at any value.
+#
+# 8192 could not bind on anything real: the worst turn measured spent ~5k
+# reasoning tokens, so the budget only ever caught a runaway. Lowered to 2048 on
+# 2026-08-12 to make it an actual budget. The reason it is worth binding: decode
+# is 77-88% of a turn's wall clock and reasoning is 24-44% of everything
+# generated, so tokens not spent thinking come off the clock nearly one for one.
+#
+# This DOES change replies, which is why it wants a corpus run behind it rather
+# than an argument. The risk it runs is the failure this project already fixed
+# once -- an answer cut short because thinking ate the budget -- except that the
+# mechanism is different now: at the cap the closer is forced and the remaining
+# MAX_OUTPUT_TOKENS are still available for the answer.
+MAX_THINKING_TOKENS: int = _get("max_thinking_tokens", 2048)
 
 # ── Sampling ──────────────────────────────────────────────────────────────────
 # Until 2026-08-09 none of these existed and nothing sent them, so every Mira
@@ -134,6 +152,50 @@ MAX_THINKING_TOKENS: int = _get("max_thinking_tokens", 8192)  # 0 = uncapped; mi
 TEMPERATURE: float = _get("temperature", 0.0)
 TOP_P: float = _get("top_p", 0.0)
 TOP_K: int = _get("top_k", 0)
+
+# Seed. Output is byte-identical for the same (prompt, params) even at
+# temperature 1.0 -- two identical requests come back the same, so regenerating
+# a reply hands the user exactly what they just rejected. There is no response
+# cache; mlx-lm's samplers thread mx.random.state through mx.compile, so every
+# request effectively starts from the same RNG state.
+#
+# null (the default) means the engine draws a fresh seed per request, so a
+# regenerate genuinely resamples. An integer pins it, which is what a
+# reproducibility run wants. Either way this is inert at TEMPERATURE 0.0:
+# make_sampler returns argmax and never touches the RNG. It also cannot make
+# output reproducible across concurrent traffic -- continuous batching changes
+# the arithmetic itself (see docs/batch-invariance.md).
+SEED: Optional[int] = _get("seed", None)
+
+# ── Runaway guard: repetition penalties ───────────────────────────────────────
+# mlx-lm has had these all along and mira-mlx called make_logits_processors()
+# with no arguments, so every one of them was off. This wires them; the defaults
+# below keep them off, so output is unchanged until someone sets one.
+#
+# What they are for: a repetition loop is a high-probability region of the
+# model's own distribution (Holtzman et al., ICLR 2020, measured 43% repeated
+# n-grams under greedy decoding against 0.5% for humans), so decoding can make a
+# loop less likely to be entered but cannot remove one. Treat these as a guard
+# that lowers the rate, never as a fix. The measured local case was one line
+# repeated 355 times, filling an 8,192-token budget.
+#
+# Setting them is not free. Clean output in this project's own traffic reached
+# x16 identical lines legitimately -- a JSON config block -- so a penalty strong
+# enough to stop x355 also taxes real code, tables and lists. Start at
+# repetition_penalty ~1.05-1.1 over a large context window rather than the
+# aggressive values found in forum posts, and read a few long code replies
+# before keeping it.
+#
+# repetition_penalty is multiplicative and sign-aware (1.0 = no effect);
+# presence and frequency are additive (0.0 = no effect). None/0 means the
+# processor is never constructed, which is why the defaults are None rather
+# than the neutral numbers.
+REPETITION_PENALTY: Optional[float] = _get("repetition_penalty", None)
+REPETITION_CONTEXT_SIZE: int = _get("repetition_context_size", 20)
+PRESENCE_PENALTY: Optional[float] = _get("presence_penalty", None)
+PRESENCE_CONTEXT_SIZE: int = _get("presence_context_size", 20)
+FREQUENCY_PENALTY: Optional[float] = _get("frequency_penalty", None)
+FREQUENCY_CONTEXT_SIZE: int = _get("frequency_context_size", 20)
 
 # ── Search ────────────────────────────────────────────────────────────────────
 MAX_SEARCH_RESULTS = 5

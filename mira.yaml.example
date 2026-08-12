@@ -81,6 +81,22 @@ context_window: 65536
 # adaptive: enables thinking for complex/reasoning requests, skips for simple ones
 thinking_mode: adaptive
 
+# How many tokens the model may spend inside its reasoning block before the
+# closing tag is forced. It is NOT a stop: generation continues, so the model
+# still gets to answer with whatever remains of max_output_tokens. 0 = uncapped.
+#
+# Enforced since 2026-08-12. Before that it was passed to the chat template as a
+# variable Qwen3.6's template does not read, so it did nothing at any value.
+#
+# Why the default is what it is: decode time is 77-88% of a turn's wall clock and
+# reasoning is a large share of what gets decoded, so a budget that binds cuts
+# elapsed time almost one for one. But it binds by cutting the model off
+# mid-thought, and answers cut short are a failure this project has already had
+# once. 8192 essentially never binds (the worst turn measured spent ~5k); around
+# 2048 it starts to. Change it and re-read a few long answers rather than
+# trusting the clock.
+max_thinking_tokens: 2048
+
 # ── Sampling ─────────────────────────────────────────────────────────────────
 # These defaults reproduce Mira's behaviour before 2026-08-09, when no sampling
 # parameters existed and none were sent: the inference server fell back to 0.0
@@ -117,6 +133,46 @@ thinking_mode: adaptive
 temperature: 0.0
 top_p: 0.0
 top_k: 0
+
+# Seed. Leave unset (null) and the engine draws a fresh one per request, which is
+# what makes regenerating a reply give you a different reply. Before this existed
+# two identical requests came back byte-identical even at temperature 1.0, so
+# "regenerate" returned the answer you had just rejected.
+#
+# Set an integer to pin it, for a run you want to be able to repeat. Two caveats
+# worth knowing before trusting a pinned seed: it does nothing at temperature 0
+# (the sampler is argmax and never draws), and it cannot make output reproducible
+# while other requests are in flight — continuous batching changes the floating
+# point arithmetic itself, so the same prompt can produce different text
+# depending on what else the engine was doing.
+# seed: 1234
+
+# ── Runaway guard: repetition penalties ──────────────────────────────────────
+# All off, which is how mira-mlx has always run — it called mlx-lm's
+# make_logits_processors() with no arguments, so none of these could be turned on
+# at all until 2026-08-12. Defaults below keep replies byte-identical.
+#
+# What they buy: a repetition loop is a high-probability region of the model's
+# own distribution, so a penalty makes one less likely to be entered but cannot
+# remove it. Worth setting if you see runaway repetition; not worth setting
+# preemptively.
+#
+# What they cost: real output repeats too. This project's own traffic has
+# produced 16 identical lines legitimately (a JSON config block) against 355 for
+# the degenerate case, so a penalty aggressive enough to stop the second also
+# taxes code, tables and lists. If you turn one on, start low and read a few long
+# code replies before keeping it.
+#
+# repetition_penalty is multiplicative (1.0 = no effect, ~1.05-1.1 is a gentle
+# start); presence and frequency are additive (0.0 = no effect). Each context
+# size is how many recent tokens that penalty looks at, and only applies when its
+# penalty is set.
+# repetition_penalty: 1.05
+# repetition_context_size: 256
+# presence_penalty: 0.0
+# presence_context_size: 20
+# frequency_penalty: 0.0
+# frequency_context_size: 20
 
 # ── Search ───────────────────────────────────────────────────────────────────
 # Brave Search API key. When set, Brave is the primary web-search provider;

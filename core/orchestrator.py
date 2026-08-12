@@ -22,7 +22,10 @@ from .config import (
     RAG_MAX_CHUNKS, CONTEXT_WINDOW,
     COMPRESS_THRESHOLD, COMPRESS_KEEP_RECENT,
     THINKING_MODE, MAX_THINKING_TOKENS, TEMP_WORKSPACE_MAX_MB,
-    TEMPERATURE, TOP_P, TOP_K,
+    TEMPERATURE, TOP_P, TOP_K, SEED,
+    REPETITION_PENALTY, REPETITION_CONTEXT_SIZE,
+    PRESENCE_PENALTY, PRESENCE_CONTEXT_SIZE,
+    FREQUENCY_PENALTY, FREQUENCY_CONTEXT_SIZE,
 )
 from .tools import TOOLS, GITHUB_TOOLS, _LOCAL_TOOLS, _TEMP_WORKSPACE_TOOLS
 from .prompts import build_system_prompt, current_time_note, SEARCH_RESULT_TEMPLATE, wrap_untrusted
@@ -1265,6 +1268,22 @@ class ChatOrchestrator:
             # in there and clobbering it would silently disable the toggle.
             if TOP_K > 0:
                 extra.setdefault("extra_body", {})["top_k"] = TOP_K
+            # Same treatment for the repetition penalties and the seed, with one
+            # extra reason to send nothing when they are unset: these keys are
+            # not in the OpenAI schema, and mira-mlx is not the only backend
+            # behind this client. An unconfigured install therefore puts exactly
+            # the same body on the wire as before this existed.
+            for name, value, ctx_size in (
+                ("repetition", REPETITION_PENALTY, REPETITION_CONTEXT_SIZE),
+                ("presence", PRESENCE_PENALTY, PRESENCE_CONTEXT_SIZE),
+                ("frequency", FREQUENCY_PENALTY, FREQUENCY_CONTEXT_SIZE),
+            ):
+                if value:
+                    body = extra.setdefault("extra_body", {})
+                    body[f"{name}_penalty"] = value
+                    body[f"{name}_context_size"] = ctx_size
+            if SEED is not None:
+                extra.setdefault("extra_body", {})["seed"] = SEED
             return bc.normalize_oai_stream(
                 self._oai.chat.completions.create(
                     model=self.model,

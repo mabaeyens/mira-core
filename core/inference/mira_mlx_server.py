@@ -22,6 +22,7 @@ import gc
 import json
 import logging
 import queue
+import secrets
 import threading
 import time
 import uuid
@@ -365,12 +366,18 @@ class ThinkingBudget:
 
 
 def _build_logits_processors(thinking_budget, think_start, think_end,
-                             prompt_tokens, enable_thinking):
+                             prompt_tokens, enable_thinking, penalties=None):
     """The per-sequence logits processors for one job. Never returns an empty list.
 
     The budget is attached only when thinking is actually on for this turn: with
     it off the model never opens a block, and a processor watching for a closer
     that will never come could force one into ordinary answer text.
+
+    `penalties` carries the repetition/presence/frequency knobs. mlx-lm builds a
+    processor only for a penalty that is neither None nor 0, so an unset install
+    gets the same empty list it always got. They are per sequence, which matters
+    under continuous batching: each job owns its own penalty state and nothing
+    leaks between two requests sharing a batch.
 
     The list is never empty because mlx-lm's PromptProcessingBatch.extend
     replaces a sequence's processors with None whenever `any()` of the batch's
@@ -379,7 +386,7 @@ def _build_logits_processors(thinking_budget, think_start, think_end,
     `for processor in None` -- which raises inside the engine thread and takes
     the whole engine down. A no-op keeps every sequence's list truthy.
     """
-    processors = list(make_logits_processors())
+    processors = list(make_logits_processors(**(penalties or {})))
     if thinking_budget and think_end and enable_thinking is not False:
         preopened = _think_preopened(prompt_tokens, think_start, think_end)
         processors.append(ThinkingBudget(
@@ -402,6 +409,13 @@ class ChatJob:
     temperature: float
     top_p: float
     top_k: int = 0
+    # None means "draw a fresh one at admission", which is what makes a
+    # regenerate resample instead of returning the previous reply verbatim.
+    seed: Optional[int] = None
+    # Keyword arguments for make_logits_processors: repetition/presence/
+    # frequency penalties and their context sizes. Empty means every penalty
+    # stays off, which is the shipped default.
+    penalties: Optional[dict] = None
     chat_template_kwargs: Optional[dict] = None
     # OpenAI's `stream_options.include_usage`. Streaming responses carry no
     # usage unless the client asks, and then it arrives as one extra chunk with
@@ -1643,6 +1657,19 @@ class GenerationEngine:
                 self._cache_misses += 1
             self._total_prompt_tokens += len(prompt_tokens)
 
+        # Seeding is global to MLX, not per sequence, so this is deliberately
+        # only done when sampling is stochastic: at temperature 0 make_sampler
+        # is argmax and never draws, so seeding would be a no-op that still
+        # perturbed the RNG other in-flight sequences are drawing from. It also
+        # cannot promise reproducibility under load -- continuous batching
+        # changes the arithmetic, so a pinned seed reproduces on an idle engine
+        # only. What it does buy is that two identical requests stop coming back
+        # byte-identical, which is what made "regenerate" useless.
+        if job.temperature > 0:
+            seed = job.seed if job.seed is not None else secrets.randbits(32)
+            mx.random.seed(seed)
+            logger.debug("sampling seed %d (%s)", seed,
+                         "requested" if job.seed is not None else "drawn")
         sampler = make_sampler(temp=job.temperature, top_p=job.top_p, top_k=job.top_k)
         logits_processors = _build_logits_processors(
             thinking_budget=thinking_budget,
@@ -1650,6 +1677,7 @@ class GenerationEngine:
             think_end=tuple(getattr(self.tokenizer, "think_end_tokens", ()) or ()),
             prompt_tokens=prompt_tokens,
             enable_thinking=ckwargs.get("enable_thinking", True),
+            penalties=job.penalties,
         )
 
         # Split prefill at the history boundary so the state there can be
@@ -1977,6 +2005,27 @@ class GenerationEngine:
         }
 
 
+def _penalties_from_body(body: dict) -> dict:
+    """The repetition-penalty keyword arguments a request asked for.
+
+    Absent and 0 are both "off" and produce no key at all, so an ordinary
+    request builds the same empty processor list it always did. A context size
+    is only carried when its penalty is actually set -- mlx-lm defaults each one
+    to 20 and passing a bare size would change nothing while making the request
+    look configured in the log.
+    """
+    penalties: dict = {}
+    for name in ("repetition", "presence", "frequency"):
+        value = body.get(f"{name}_penalty")
+        if not value:
+            continue
+        penalties[f"{name}_penalty"] = float(value)
+        size = body.get(f"{name}_context_size")
+        if size:
+            penalties[f"{name}_context_size"] = int(size)
+    return penalties
+
+
 def create_app(engine: GenerationEngine) -> FastAPI:
     app = FastAPI()
 
@@ -1999,6 +2048,8 @@ def create_app(engine: GenerationEngine) -> FastAPI:
             temperature=body.get("temperature", 0.0) or 0.0,
             top_p=body.get("top_p", 0.0) or 0.0,
             top_k=int(body.get("top_k", 0) or 0),
+            seed=None if body.get("seed") is None else int(body["seed"]),
+            penalties=_penalties_from_body(body),
             chat_template_kwargs=body.get("chat_template_kwargs"),
             include_usage=bool((body.get("stream_options") or {}).get("include_usage")),
         )
