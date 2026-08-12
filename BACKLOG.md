@@ -1,6 +1,43 @@
 # Backlog
 
 ## Done
+- [2026-08-12] **Repetition, presence and frequency penalties are now reachable, and a request can
+  carry its own seed.** Two halves of the same gap: everything mlx-lm's sampler can do was already
+  built and none of it had a route from `mira.yaml`. The penalties go
+  `config.py` → `orchestrator._call_llm` → `extra_body` → `_penalties_from_body` →
+  `make_logits_processors`, and **nothing is sent when nothing is configured** — mira-mlx is not the
+  only backend behind that client, and a foreign `extra_body` key is a 400 on some of them. A
+  penalty of 0 is treated as absent rather than as "penalise by zero", and a context size only
+  travels when its penalty is set, so a stray `repetition_context_size` cannot silently arm
+  anything. All default to off: a penalty is a quality knob with a real cost — legitimate repetition
+  in code and tables is the false-positive case, which is why the example config frames it as x16
+  legitimate against x355 degenerate rather than as a number to raise until loops stop. The seed is
+  the regenerate story: `mx.random.seed()` is process-global and was never set, so the engine's
+  sampling was reproducible only by accident of ordering. `_admit_job` now seeds per job — the
+  request's seed when it has one, `secrets.randbits(32)` when it does not — and skips it entirely at
+  temperature 0, where it would be theatre. `seed: 0` is a seed, not an absence, and there is a test
+  that says so. 17 new tests in `tests/test_generation_guard.py`, behavioural rather than
+  structural: the repetition check asserts that a repeated token's logit actually drops, because
+  mlx-lm's processor mutates the array in place and any test comparing the result to the input is
+  comparing it to itself.
+- [2026-08-12] **The bench asks six new questions, and every one of them is a bug that shipped.**
+  Questions 17-22 in `scripts/bench_questions.yaml`: a tool that returns a bare string (the
+  `list_attachments` crash), reply integrity with thinking on, legitimate repetition that a runaway
+  guard must not flag, the `task_done` refusal path, whether a tool result survives into the next
+  turn, and whether an injection payload still gets obeyed once it is sitting in history rather than
+  arriving fresh. Picking regressions over invented hard questions is the point — a bench that only
+  asks what was always easy cannot tell you the engine changed. `bench_compare.py` now captures the
+  thinking channel (it was discarding it, so nothing could score it) and `run_multi_turn` takes a
+  `prompt_turn1` as an alternative to injecting a file, which is what makes the memory and injection
+  pairs expressible. New tier-1 checks: `answer_contains_all`, `answer_not_thinking` (it reports
+  `partial` rather than passing when no thinking was captured — an uncaptured signal is not a pass),
+  `not_degenerate`, `no_stream_error`, `min_line_repeats`. 38 tests pass in `test_bench_eval.py`.
+- [2026-08-12] **`docs/mlx-lm-pin.md` says when to move the pin instead of leaving it a standing
+  question.** The fork carries 12 commits in four groups; two of them are what actually break on any
+  upgrade — `SequenceStateMachine`, and an undocumented `_embed_tokens` removal that no release note
+  mentions. The doc lists four conditions that each argue for moving, the one condition that forces
+  it, and a five-step how-to. It also corrects this file: "frozen at bbd8496" was stale, the real pin
+  is `291a61a` on `mira-core-pin-vision`.
 - [2026-08-12] **A failed request can no longer take the engine with it, and an engine that does
   die now says so instead of hanging every client that asks.** Follow-up (a) from the entry below.
   `_start_job`'s guard covered the prepare block alone, so everything from `fetch_nearest_cache`
@@ -358,16 +395,69 @@
 
 ## Pending
 
-### `MAX_THINKING_TOKENS` is a runaway guard, not a budget — decide whether that is what it should be
-- **At the current default of 8192 the budget will essentially never bind.** The worst real turn
-  measured so far spent ~5k reasoning tokens, so the enforcement shipped on 2026-08-12 is live but
-  inert in normal use: it catches a runaway and nothing else. **~2048 would make it an actual
-  budget**, and that is the point — it would start changing replies, which is why it was not
-  changed unasked. This is a product decision about how much thinking a turn is worth, not a bug.
-  Follow-up (b) from the `max_thinking_tokens` entry under Done; (a) is done. Anyone lowering it
-  should re-run the corpus rather than reason about it — truncated thinking is a failure this
-  project has already fixed once and 2048 is inside the range where the model was cutting answers
-  short.
+### Batched quantized KV kills the engine on any GQA model — reproduced, one-line fix, not applied
+- **Production configuration crashes as soon as two requests overlap a long one.** Found 2026-08-12
+  by the thinking-budget run, which was not looking for it: the engine thread dies with
+  `ValueError: [broadcast_shapes] Shapes (3,1,1,1629) and (3,2,8,1,1629) cannot be broadcast` inside
+  `quantized_scaled_dot_product_attention`, and every request after that returns 503. The 503 is the
+  new `EngineDead` path working; the death is the bug. **Cause:** with grouped-query attention the
+  scores are reshaped to five dimensions and the keys and values are lifted to match with
+  `expand_dims(..., axis=-3)`, but `BatchRotatingQuantizedKVCache.make_mask` (cache.py:1969) always
+  returns a four-dimensional mask. Four against five broadcasts from the right, so the mask's batch
+  axis lands on `n_kv_heads`: at batch 1 the leading 1 broadcasts against anything and it works, at
+  batch 3 it is 3 against 2 and it does not. **That is why nothing saw it** — a single user is at
+  batch 1 nearly always, and a bench that asks concurrently is not. Needs all four at once: `kv_bits`
+  set (`mira.yaml:28` has 8), past `quantized_kv_start` so the cache has really converted, two or
+  more sequences decoding, and `n_repeats > 1` (Qwen3.6 is 16 heads over 2 KV heads).
+  **Reproduced standalone** in a second with no model and no server —
+  `/tmp/claude_repro_qsdpa_mask.py`, identical error string — and the fix verified in the same run:
+  give the mask the axis the keys already get, `mx.expand_dims(mask, axis=-3)` when `n_repeats > 1`
+  and the mask is a 4-D array. It belongs in `base.py` where the reshape happens, not in one cache
+  class, since every caller quantizing a batched cache needs it. **Not applied**: the code is in the
+  fork, in the same area as PR #1584, and whether it rides in that PR or lands ahead of it as its own
+  commit is Miguel's call. **This blocks the #1584 A/B/C split** — #1584 is the PR that makes batched
+  KV quantization work, this is a crash in exactly that combination on any GQA model, and it is
+  invisible at batch 1. It also settles the running argument in that thread in favour of running the
+  batched path rather than reading it. Meanwhile production is exposed: dropping `mira_mlx_kv_bits`
+  avoids it at the cost of KV compression, leaving it means an occasional engine death that now at
+  least surfaces as a clean 503. No regression test yet; the natural one is the repro as a pytest
+  with `pytest.importorskip("mlx.core")`, parametrised over batch 1 and 3. Full write-up in
+  gitignored `notes/kv-quant-batched-mask-crash-2026-08-12.md`.
+
+### `MAX_THINKING_TOKENS` — measured 2026-08-12, and 2048 does not bind either
+- **The code default is now 2048; the live `mira.yaml` is deliberately still 8192.** Changing a
+  runtime config is Miguel's call, and the measurement below is the argument for it rather than a
+  reason to do it silently.
+- **Two runs, and the first one measured nothing.** Both arms (8192 and 2048), same five rephrased
+  questions on the topics that broke worst in batches 1 and 2, adaptive thinking: 0 broken of 5 at
+  8192, 2 of 5 at 2048 — **and both of those were the engine crash in the entry above, not the
+  budget**. Thinking was 0 characters on 3 of the 5 turns at 8192, so under adaptive mode the model
+  mostly declined to think and the two arms were comparing nothing. n=1 per cell cannot separate a
+  budget effect from ordinary batch-composition variance anyway ([[project_batch_divergence_changes_output]]).
+- **Second run, thinking forced per request** (`thinking_enabled=true`, the three hardest questions,
+  fresh server per arm): **0 broken of 3 in both arms.** Replies were if anything longer at 2048 —
+  median 3,750c against 2,964c — which is variance, not an improvement, and that is the point.
+
+  | arm | set-analysis | data-modelling | kernel-debate | total |
+  |---|---|---|---|---|
+  | 8192 | 1,894c reply / 1,098c thinking | 2,964c / 2,381c | 6,591c / 3,875c | 282.3s |
+  | 2048 | 1,941c / 456c | 3,750c / 3,459c | 6,202c / 2,587c | 265.6s |
+
+- **The finding: `thinking budget HIT` appears zero times in either arm's engine log.** The
+  processor is confirmed active — `thinking budget active: 2048 tokens (preopened=True, ...)` on
+  all six requests — so it is armed and simply never reached. The longest reasoning block was 3,875
+  characters, roughly 1k tokens, on the question written specifically to make the model argue with
+  itself. **So 2048 is still a runaway guard, not a budget.** Lowering it changes nothing about a
+  normal turn and tightens the ceiling on a runaway fourfold, which is what a guard is for.
+- **Go, with the honest caveat.** This run cannot show a quality cost because there was nothing to
+  cut — every turn finished its reasoning well inside both budgets. The case that would bind is the
+  ~5k-token turn seen in the earlier corpus, and it did not reproduce on demand here, so the entire
+  effect of 2048 lands on a tail this measurement never sampled. Anyone wanting a stronger result
+  needs a prompt that reliably produces long reasoning, not more repeats of these.
+- Harness: `notes/thinking_budget_arms.py`, now with `--force-thinking`, `--arms` and `--questions`.
+  Results in `notes/thinking_budget_forced.json` (forced) and `notes/thinking_budget_arms.json`
+  (adaptive, and the run that found the crash). Engine logs kept as
+  `/tmp/claude_budget_arm_<budget>_engine{,_adaptive}.log`.
 
 ### `derive_resident_expert_fraction` is blind to gpt-oss-120b
 - **`gpt-oss-120b-MXFP4-Q8` reports `num_experts=None` in its config, so `_classify_weight_bytes`
@@ -431,12 +521,16 @@
   → `make_sampler`. Defaults are unchanged (0.0/0.0/0), so no reply changed. Verified rather than
   assumed: `top_k=1` is argmax and reproduced greedy byte-for-byte. `tests/test_sampling_config.py`
   covers it, including that `extra_body` is merged so `top_k` cannot clobber the thinking toggle.
-- **Two findings from the sampling work, both open.**
-  1. **Output is deterministic per (prompt, params) even at temperature 1.0** — two identical
-     requests return byte-identical text, so **regenerating a reply gives the user the same answer
-     no matter the temperature**. There is no response cache and the server sets no seed; mlx-lm's
-     samplers thread `mx.random.state` through `mx.compile`, so a per-request RNG reset is the
-     likely cause. The fix is an explicit per-request `seed` — not built.
+- **Two findings from the sampling work; the first is now fixed.**
+  1. ~~**Output is deterministic per (prompt, params) even at temperature 1.0**~~ **FIXED
+     2026-08-12.** Two identical requests returned byte-identical text, so regenerating a reply gave
+     the user the same answer no matter the temperature. The diagnosis held: there is no response
+     cache, the server set no seed, and mlx-lm's samplers thread `mx.random.state` through
+     `mx.compile`. `_admit_job` now seeds per job — the request's `seed` when given, a fresh
+     `secrets.randbits(32)` when not — and skips seeding entirely at temperature 0, where it changes
+     nothing. Setting `seed:` in `mira.yaml` buys back reproducibility on purpose, which is what a
+     bench wants and a regenerate does not. **Note this only holds on an idle server**: consequence
+     2 below still applies, since batch composition moves the arithmetic regardless of the seed.
   2. **Thinking can eat the entire production budget.** In 3 of 5 runs at `--max-tokens 4096`, a
      moderately complex creative prompt hit `finish_reason: length` without ever closing `</think>`,
      meaning the user gets truncated reasoning and no answer. ~~Seen on one prompt only; worth
@@ -557,6 +651,20 @@
      walkthrough it never gave. A corpus conversation can therefore read as a coherent exchange
      while one side is punctuation. Never infer a turn was usable from the fact that the
      conversation continued.
+
+     **A third residue, found 2026-08-12 by checking today's code instead of re-reading old
+     conversations: a retry leaves the failed turn in the database.** `db.save_messages` appends
+     with no dedup, and mira-apps' `resendLast()` (`ChatViewModel.swift:382`) drops two messages
+     from its own local array and re-sends — the server is never told anything was dropped.
+     **Demonstrated live**, not inferred: two identical posts to `/chat` on one conversation id left
+     4 rows, 2 of them the same user message, and the test conversation was deleted afterwards. So
+     every retry of a broken reply permanently doubles the question in history and keeps the
+     corrupted answer next to it, and rebuilt context feeds the model both. That is the mechanism
+     behind the poisoned conversations above surviving a retry. The fix is a mira-core question
+     rather than a client one — the client cannot un-save what it already sent — so either the app
+     names the turn it is replacing or `/chat` grows an idempotency key. **Not built, not specced.**
+     Cheap check on the same run: a fresh 10-turn pass showed **0 reasoning-as-answer and 0
+     degenerate replies**, so the generation-side fixes are still holding.
 - **Nothing is established about which sampling config is safer, and two probe rounds prove why.**
   Same prompt, same parameters, two rounds on 2026-08-09, flatly contradictory:
 
@@ -606,7 +714,12 @@
      bug, but it means "deterministic per (prompt, params)" holds only for an idle server.
   3. **~8% of these prompts ran to the cap without finishing their reasoning** (2-3 of 24 in at
      least one condition) at an 8,192 budget. Production caps at 4,096, so likely worse. A
-     repetition/runaway guard would help where numerics cannot be fixed.
+     repetition/runaway guard would help where numerics cannot be fixed. **The guard is wired as of
+     2026-08-12** — repetition, presence and frequency penalties reach `make_logits_processors` from
+     `mira.yaml` — but it ships **off**, so this consequence is unchanged until someone turns it on.
+     Deliberate: penalising repetition also penalises the legitimate kind, and code and tables are
+     full of it. The example config gives the discriminating number rather than a recommendation
+     (x16 repeats in a healthy reply against x355 in a degenerate one).
 - **HF credentials.** ~~As of 2026-08-09 both were invalid.~~ **Re-verified clear on 2026-08-09:**
   `whoami()` resolves as `mabaeyens` and `dataset_info('Idavidrein/gpqa')` returns 8 files, so the
   gate is accepted too. The underlying hazard stands: `~/.zprofile` line 10 exports an `HF_TOKEN`
@@ -630,6 +743,15 @@
   either way and is much cheaper. Touches whatever in mira-apps consumes `system_memory.advisory`,
   so it is a mira-apps change with a mira-core decision behind it: mira-core owns the advisory field
   and should say which transitions are user-facing.
+  **Specced 2026-08-12** in `mira-apps/specs/memory-notifications-only-when-actionable.md`, and the
+  writing turned up the reason the channel has been silent since 2026-08-11: **mira-core turned
+  notifications off globally**, not selectively. `MEMORY_ADVISORY_NOTIFICATIONS` defaults to False
+  (`core/config.py:324`), `core/memory_watch.py` still records every transition, and the server log
+  shows 12 `model evicted by another process` warnings on 2026-08-12 with
+  `Memory advisory notifications off; still recording transitions` alongside them. So "no
+  notifications since yesterday" is the flag doing what it says, not a bug — and worth knowing that
+  only `evicted` ever notified, there was never a separate pressure notification. The selective rule
+  is still unbuilt; the blunt off-switch is standing in for it.
 - **The question set is now the limiting factor, not the harness.** Tier 1 scored 24/24 three runs
   running, so the deterministic half no longer discriminates between builds — it is a regression
   alarm, not a measure of quality. The judged half carries a ±1 floor, so it cannot be read finely
@@ -637,7 +759,9 @@
   (IFEval, MMLU-Pro, GPQA, BFCL, AgentDojo) are the right instrument for "is Mira accurate"; this
   bench should settle into being a regression alarm for Mira's own plumbing** — orchestrator, tools,
   injection handling — which no public benchmark covers. Adding harder questions buys more than
-  further harness work.
+  further harness work. **Six added 2026-08-12 (17-22), each one a bug that shipped** — see the Done
+  entry. They are written and unit-tested; **they have not been run against a live server yet**, so
+  whether they actually discriminate is unmeasured.
 - ~~**Bench Q10 turn 2 rests on a false premise.**~~ Fixed 2026-08-09 in `5cb4dc8`: the injected
   file is now named by the question (`core/orchestrator.py`). Any Q10 score before that date
   measured a broken question.
@@ -645,6 +769,8 @@
   the guard fired **zero** times while every agentic question exited through `task_done` normally,
   which proves it is inert on legitimate turns and regressed nothing. It does not prove the refusal
   works against a real model, because Qwen3.6 never took the escape hatch. Only unit tests cover it.
+  **Bench question 20 exists to bait it** as of 2026-08-12 — a task the model is likely to want to
+  declare done early — but it has not been run, so this stays open until it has.
 
 ### Upstream — open, and genuinely nothing to do but wait
 - **Three mlx-lm PRs are open with zero reviews**, confirmed 2026-08-08:
@@ -694,21 +820,29 @@
     satisfy the ban by saying nothing — verified against the old copy, the opposite copy and an
     empty one. "your Mac" deliberately kept rather than mirroring the banner's "the Mac running
     Mira": the two agree on the claim, not the wording.
-  - `decode-check-covers-system-memory.md` — `scripts/checks/decode-check.sh` covers
-    `ModelInfo.swift` and `Backend.swift` but not `SystemMemory.swift`, and this is the one whose
-    failure is silent: a renamed key decodes to `.unknown`, which renders as nothing, which looks
-    exactly like a healthy machine.
-  - `memory-advisory-device-verification.md` — decode, wiring and a clean macOS build are all
-    verified; **the banner has never been seen rendering.** `critical` shares the whole path with
-    `evicted` and is far cheaper to trigger.
-- **Device-verify the connection error messages** (uncommitted on mira-apps `main`). Compile-verified
-  and unit-checked in isolation, never exercised on a device. Check: (a) a genuine 403 names
-  `allowed_hosts` instead of blaming the network — comment out `allowed_hosts` in `mira.yaml` and
-  restart to reproduce; (b) a real unreachable case (Tailscale off) still reads sensibly; (c) the
-  longer 403 string does not overflow the error label in the Add Connection sheet. Also decide
-  whether a permanent 403 should stop `autoConnect`/`startReconnect` retrying for 90s — they still
-  use the `Bool` probe deliberately, so today a misconfigured `allowed_hosts` retries a hopeless
-  connection and then goes orange with no explanation. Left alone as out of scope for the reported bug.
+  - ~~`decode-check-covers-system-memory.md`~~ **DONE in `74b2824`** — the decode check now covers
+    `SystemMemory.swift`, which was the one whose failure was silent: a renamed key decodes to
+    `.unknown`, which renders as nothing, which looks exactly like a healthy machine.
+  - ~~`memory-advisory-device-verification.md`~~ **DONE in `3765330`** — the banner has been seen
+    rendering. Both specs are gone from `mira-apps/specs/`; this list was stale until 2026-08-12.
+- **Two specs written 2026-08-12, both in `mira-apps/specs/`, neither built:**
+  - `memory-notifications-only-when-actionable.md` — the selective rule. Note what the
+    investigation turned up first: **the silence is mira-core's, not the app's.**
+    `MEMORY_ADVISORY_NOTIFICATIONS` has defaulted to False since 2026-08-11 (`core/config.py:324`),
+    `core/memory_watch.py` still records every transition, and the server log shows 12
+    `model evicted by another process` warnings on 2026-08-12 alone. Only `evicted` ever notified —
+    there was never a separate pressure notification to miss. The spec is about the distinction the
+    old design lacked: an interrupt has to be actionable or explain something the user caused,
+    everything else belongs in the ambient banner. **Open question recorded in the spec:** whether
+    mira-core adds a `cause`/`user_actionable` field or the client infers it. The lean is mira-core —
+    it is the side that knows which process took the memory.
+  - `connection-errors-device-verification.md` — the three device checks: (a) a genuine 403 names
+    `allowed_hosts` instead of blaming the network, (b) a real unreachable case (Tailscale off) still
+    reads sensibly, (c) the longer 403 string does not overflow the error label in the Add Connection
+    sheet. **Open question recorded in the spec:** whether a permanent 403 should stop the 90s
+    retry — the lean is to keep retrying but surface the reason on the first refusal, since today a
+    misconfigured `allowed_hosts` retries a hopeless connection and then goes orange with no
+    explanation.
 
 ## Notes
 - **A cache whose lookup key differs in kind from its insert key can never hit, and its size tells
