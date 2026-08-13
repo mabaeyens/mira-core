@@ -15,6 +15,7 @@ from core.inference.disk_prompt_cache import DiskBackedPromptCache
 from core.inference.mira_mlx_server import (
     ChatJob,
     DONE,
+    EngineBusy,
     EngineDead,
     GenerationEngine,
     create_app,
@@ -634,6 +635,11 @@ def test_usage_carries_timing_only_when_measured():
 class FakeEngineRaisesValueError:
     model_path = "fake/model"
     max_tokens = 4096
+    # The handler reads these on every wait (specs/engine-wedge-under-fan-in.md);
+    # a stub standing in for the engine has to carry them. Large, so the error
+    # this test is about arrives long before any stall timeout could.
+    request_first_token_timeout = 240.0
+    request_stall_timeout = 90.0
 
     def submit(self, job):
         job.out_queue.put(ValueError("prompt is 200000 tokens, this machine's context ceiling is 65536 tokens"))
@@ -979,3 +985,126 @@ def test_think_preopened_reads_the_last_marker_pair_not_the_first():
     # generation prompt just added.
     tokens = [248068, 5, 248069, 9, 248068, 198]
     assert _think_preopened(tokens, (248068,), (248069,)) is True
+
+
+# -- reliability guards: fan-in cap and stall timeout -------------------------
+# specs/engine-wedge-under-fan-in.md. On 2026-08-02, 32 concurrent requests
+# wedged the engine: the surplus was admitted onto an unbounded inbox and every
+# client blocked forever on an out_queue that a stalled single thread never fed,
+# with nothing in /v1/stats to show it. These bound both edges.
+
+def test_inflight_count_sums_inbox_and_pending():
+    engine = GenerationEngine(model_path="fake/model")
+    assert engine.inflight_count() == 0
+    engine._inbox.put(_job())
+    engine._inbox.put(_job())
+    engine._pending[1] = {"job": _job()}
+    assert engine.inflight_count() == 3
+
+
+def test_admission_cap_refuses_a_flood_but_the_engine_stays_healthy():
+    engine = GenerationEngine(model_path="fake/model", max_inflight_jobs=2)
+    engine.submit(_job())
+    engine.submit(_job())  # at the cap, still accepted
+
+    with pytest.raises(EngineBusy) as excinfo:
+        engine.submit(_job())
+    assert "in flight" in str(excinfo.value)
+    # EngineBusy is not EngineDead: refusing a flood must not mark the engine
+    # broken. Once something drains, work is accepted again.
+    engine._inbox.get_nowait()
+    engine.submit(_job())
+
+
+def test_engine_busy_becomes_a_503_with_retry_after():
+    engine = GenerationEngine(model_path="fake/model", max_inflight_jobs=1)
+    engine._inbox.put(_job())  # fill to the cap without a running engine thread
+    client = TestClient(create_app(engine))
+
+    r = client.post("/v1/chat/completions",
+                    json={"messages": [{"role": "user", "content": "hi"}]})
+
+    assert r.status_code == 503
+    assert r.headers.get("retry-after") == "1"
+    assert engine.stats_snapshot()["rejected_busy"] == 1
+
+
+def test_a_stalled_non_stream_request_becomes_a_504_not_a_hang():
+    # No engine thread is running, so nothing ever feeds out_queue — the exact
+    # shape of a wedge. A tiny first-token timeout makes the guard fire fast.
+    engine = GenerationEngine(model_path="fake/model", request_first_token_timeout=0.05)
+    client = TestClient(create_app(engine))
+
+    r = client.post("/v1/chat/completions",
+                    json={"messages": [{"role": "user", "content": "hi"}]})
+
+    assert r.status_code == 504
+    assert "stall timeout" in r.json()["detail"]
+    assert engine.stats_snapshot()["stalled_requests"] == 1
+
+
+def _stream_text(app, json_body):
+    # Same escape hatch the other streaming test documents: TestClient's threaded
+    # anyio portal and sse_starlette's cached should_exit_event both bind to a
+    # loop that conflicts across tests, so drive the ASGI app on a fresh loop.
+    import sse_starlette.sse as sse_module
+    sse_module.AppStatus.should_exit_event = None
+
+    async def _post():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/v1/chat/completions", json=json_body)
+            return resp.status_code, resp.text
+
+    return asyncio.run(_post())
+
+
+def test_a_stalled_stream_request_yields_an_error_event_then_ends():
+    engine = GenerationEngine(model_path="fake/model", request_first_token_timeout=0.05)
+
+    status, text = _stream_text(create_app(engine),
+                                {"messages": [{"role": "user", "content": "hi"}], "stream": True})
+
+    assert status == 200  # headers were sent before the first token was due
+    assert "EngineStalled" in text
+    assert "[DONE]" not in text  # abandoned, not completed
+    assert engine.stats_snapshot()["stalled_requests"] == 1
+
+
+def test_a_healthy_non_stream_request_survives_the_timeout_wrapper():
+    # The guard must be invisible on the happy path: a job that produces output
+    # promptly returns 200 exactly as before. Stand in for the engine thread by
+    # feeding the job's queue the moment it is submitted.
+    engine = GenerationEngine(model_path="fake/model")
+
+    def fake_submit(job):
+        job.out_queue.put({"id": "resp-1", "ok": True})
+        job.out_queue.put(DONE)
+
+    engine.submit = fake_submit
+    client = TestClient(create_app(engine))
+
+    r = client.post("/v1/chat/completions",
+                    json={"messages": [{"role": "user", "content": "hi"}]})
+
+    assert r.status_code == 200
+    assert r.json() == {"id": "resp-1", "ok": True}
+    assert engine.stats_snapshot()["stalled_requests"] == 0
+
+
+def test_a_healthy_stream_request_survives_the_timeout_wrapper():
+    engine = GenerationEngine(model_path="fake/model")
+
+    def fake_submit(job):
+        job.out_queue.put({"choices": [{"delta": {"content": "hello"}}]})
+        job.out_queue.put(DONE)
+
+    engine.submit = fake_submit
+
+    status, text = _stream_text(create_app(engine),
+                                {"messages": [{"role": "user", "content": "hi"}], "stream": True})
+
+    assert status == 200
+    assert "hello" in text
+    assert "[DONE]" in text
+    assert engine.stats_snapshot()["stalled_requests"] == 0
