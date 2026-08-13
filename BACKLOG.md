@@ -1,6 +1,35 @@
 # Backlog
 
 ## Done
+- [2026-08-13] **"Mira evicted overnight, again" was memory pressure, not idle time, and not a build
+  fault.** A parallel mira-apps session blamed its `xcodebuild` runs for two 10:34/10:36 evictions —
+  correct for those two, but the routine ones (e.g. 21:21 with nobody building) have a different
+  cause. Every `system memory advisory ok -> evicted` line carries its own evidence: `compressor`
+  12–16GB, `available` 5–11GB. The machine is CPU-idle but memory-pressured. "evicted" is the macOS
+  advisory *level*, not the model unloading — the watchdog trims MLX's reuse cache first, then
+  prompt-cache entries (`mira_mlx_server.py:1082-1129`); the weights stay resident, so the cost is a
+  slow re-prefill, not a cold load. **Named the holders by physical footprint** (`top -o mem`, which
+  sees Metal memory; `ps` RSS does not — Qwen shows 20G by footprint, 0.16G by RSS): mira-mlx engine
+  20G + `server.py` RAG/embeddings 1.9G = **Mira floor ~22G**, then lldb-rpc-server **3.5G** (an Xcode
+  debugger left resident from the device-testing session — the killable culprit), browser ~3G. On 32G
+  that leaves ~7G, which Xcode+lldb+browser saturate. **Fix Miguel can act on for free: quit Xcode
+  when not testing — reclaims 3.5G, ≈ what any model downgrade would save, at zero quality cost.**
+- [2026-08-13] **Engine log is now timestamped (commit 715bd4d).** `mira_mlx_server.py:2104`
+  basicConfig gained `%(asctime)s` + datefmt, so every line reads `2026-08-13 21:21:03
+  mira_mlx_server: ...` and correlating an eviction to a wall-clock time is a plain grep instead of
+  guessing from file position. Takes effect on the **next engine restart** (Miguel will do it
+  manually). The log is already self-bounded at 32MB (`backend_manager.py:52`, truncate-at-restart —
+  deliberate, left as-is rather than rewritten to rotate). Also built a local overnight sampler in the
+  gitignored `notes/` (`mem-sampler.sh` via `start-sampler.sh`): every 60s it appends memory pressure
+  + compressor size + footprint ranking, compact-rotates at 2MB keeping 10 gzipped archives (~4-5MB
+  ceiling), running until `pkill -f notes/mem-sampler.sh`.
+- [2026-08-13] **Model stays Qwen3.6 — the quality gap is too wide to trade for headroom.** Weighed
+  two downgrades and declined both. Ministral-3-14B (on disk, 7.9G) would free ~12.5G but is a real
+  quality step down and reverses the deliberate 2026-07-18 switch back to Qwen. Gemma4-26b is worse
+  for *this* problem: it runs on **omlx only** in `mira.yaml`, which lacks mira-mlx's adaptive-budget
+  watchdog — so under the same concurrent-dev pressure it hard-OOMs instead of trimming-and-surviving
+  (it already OOMs at 24K context standalone), and it saves only ~5G. Verdict: the problem is running
+  two RAM-heavy things at once, not the model choice; attack the other side of the ledger.
 - [2026-08-12] **v1.3.0 released — 41 commits, and the changelog leads with what was broken rather
   than what was built.** Tag-driven as always; Miguel asked for a minor rather than the conservative
   patch default, which is also what SemVer wanted given the new sampling knobs, penalties, per-request
@@ -445,6 +474,15 @@
   cited; nothing was recorded only here.
 
 ## Pending
+
+### Confirm the overnight-eviction culprit from the sampler, then decide if any tuning is warranted
+- The `notes/mem-samples.log` sampler is running (started 2026-08-13). After a night or two, read it
+  and check which process's footprint climbs alongside the compressor at the moment of the next
+  eviction. **If external (Xcode/lldb/browser), no model or config change is warranted** — the fix is
+  behavioural (quit Xcode when idle). If it's Mira's *own* cache growth, the lever is the engine's
+  prompt-cache cap (`mira_mlx_server.py:2114`, defaults to 12G) or the context window — trim peak
+  footprint on this box without changing the model or its quality. Do not touch anything until the log
+  says which. Stop the sampler with `pkill -f notes/mem-sampler.sh` once the question is answered.
 
 ### ~~Batched quantized KV kills the engine on any GQA model~~ — FIXED 2026-08-12, kept for the lesson
 - **Production configuration crashes as soon as two requests overlap a long one.** Found 2026-08-12
