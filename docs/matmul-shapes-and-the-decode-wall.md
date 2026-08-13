@@ -222,6 +222,12 @@ cache. Early in a conversation the weights dominate, which is the regime the 58 
 was measured in (a short prompt, 512 to 1024 tokens out). Let the context stretch to
 tens of thousands of tokens and the KV bill catches up, and decode slows down.
 
+Worth being exact about what the KV cache actually buys, because it gets over-credited.
+It saves you from recomputing attention over the whole prefix on every token, which is
+enormous and non-negotiable. It does not make decode compute-efficient: the per-token
+projections are still a narrow GEMV, and only batching changes that shape. The cache
+removes redundant work; it does not move you off the bandwidth ramp.
+
 That is the reason behind a few knobs that otherwise look arbitrary. The engine runs
 the KV cache at 8-bit (`--kv-bits 8`), which halves the bytes read per token and hands
 the speed back; it caps how far the cache can grow (`--max-kv-size 128000`); and it
@@ -269,9 +275,29 @@ it still is.
 
 ---
 
+## Where this goes next
+
+Batching is really one instance of a bigger rule: efficient inference is mostly the art
+of turning the workload into well-fed matrix-matrix work, and keeping it there (that
+framing is Utsab Sapkota's, in the references). Batching does it across users. For a
+single local user there is another way in, speculative decoding: let a cheap draft guess
+a few tokens ahead, then have the big model verify all of them in one GEMM-shaped pass
+instead of a GEMV per token, spending the compute that was sitting idle anyway.
+
+On a dense model that is close to free latency. On an MoE it bites again, because
+verifying several guessed tokens has to load the union of the experts they route to, so
+the reuse leaks straight back out through the same runtime routing that broke prefetch in
+Case 1. Predict that routing a step ahead and you might close both holes at once. That
+part is not solved. It is the thread I want to pull.
+
+---
+
 ## References
 
 - LinkedIn post by Pawel Bulowski, about antirez's `h3-metal`: https://lnkd.in/p/eJJKR7hr
+- Utsab Sapkota, *GEMM and GEMV: the hidden divide that shapes LLM inference
+  performance*, Medium, 2026 (a clean conceptual companion; the "well-fed matrix-matrix"
+  framing is his): https://medium.com/@utsabsapkota4231/gemm-and-gemv-the-hidden-divide-that-shapes-llm-inference-performance-d9e4ba81b871
 - Roofline model: Williams, Waterman, Patterson, *Roofline: an insightful visual
   performance model for multicore architectures*, CACM 2009.
 - FlexGen (batched SSD-offloaded LLM inference, the compute-bound regime): Sheng et
