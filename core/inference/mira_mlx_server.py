@@ -2101,7 +2101,11 @@ def create_app(engine: GenerationEngine) -> FastAPI:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
     parser = argparse.ArgumentParser(description="Mira-owned mlx-lm-based inference server")
     parser.add_argument("--model", required=True)
     parser.add_argument("--host", default="127.0.0.1")
