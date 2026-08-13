@@ -366,12 +366,22 @@ class ThinkingBudget:
 
 
 def _build_logits_processors(thinking_budget, think_start, think_end,
-                             prompt_tokens, enable_thinking, penalties=None):
+                             prompt_tokens, penalties=None):
     """The per-sequence logits processors for one job. Never returns an empty list.
 
-    The budget is attached only when thinking is actually on for this turn: with
-    it off the model never opens a block, and a processor watching for a closer
-    that will never come could force one into ordinary answer text.
+    The budget is attached whenever a budget and a closer token exist, regardless
+    of whether thinking was requested for the turn. Qwen3.6 can open a reasoning
+    block even when the template was rendered with enable_thinking=False (it emits
+    a fresh think_start into the answer), and only the budget bounds it. Attaching
+    it unconditionally is a cheap backstop and is safe because the processor
+    self-arms: it does nothing until it sees a block actually open (preopened in
+    the prompt, or a think_start in the output), so on a turn that truly skips
+    reasoning it never forces a closer into ordinary answer text.
+
+    (Context: the six-minute, 16384-token runaway measured 2026-08-13 was not this
+    path at all — it was the title generation reaching the model with thinking on
+    and no budget. That is fixed in the orchestrator's utility-call path. This
+    unconditional attach hardens the answer path against the rarer re-open case.)
 
     `penalties` carries the repetition/presence/frequency knobs. mlx-lm builds a
     processor only for a penalty that is neither None nor 0, so an unset install
@@ -387,7 +397,7 @@ def _build_logits_processors(thinking_budget, think_start, think_end,
     the whole engine down. A no-op keeps every sequence's list truthy.
     """
     processors = list(make_logits_processors(**(penalties or {})))
-    if thinking_budget and think_end and enable_thinking is not False:
+    if thinking_budget and think_end:
         preopened = _think_preopened(prompt_tokens, think_start, think_end)
         processors.append(ThinkingBudget(
             budget=thinking_budget,
@@ -395,8 +405,8 @@ def _build_logits_processors(thinking_budget, think_start, think_end,
             think_end=think_end,
             preopened=preopened,
         ))
-        logger.info("thinking budget active: %d tokens (preopened=%s, end_ids=%s)",
-                    thinking_budget, preopened, think_end)
+        logger.info("thinking budget active: %d tokens (preopened=%s, start_ids=%s, end_ids=%s)",
+                    thinking_budget, preopened, think_start, think_end)
     return processors or [_passthrough_processor]
 
 
@@ -1676,7 +1686,6 @@ class GenerationEngine:
             think_start=tuple(getattr(self.tokenizer, "think_start_tokens", ()) or ()),
             think_end=tuple(getattr(self.tokenizer, "think_end_tokens", ()) or ()),
             prompt_tokens=prompt_tokens,
-            enable_thinking=ckwargs.get("enable_thinking", True),
             penalties=job.penalties,
         )
 

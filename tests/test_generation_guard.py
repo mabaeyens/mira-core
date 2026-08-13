@@ -75,7 +75,6 @@ def _processors(penalties=None, thinking_budget=0):
         think_start=(151667,),
         think_end=(151668,),
         prompt_tokens=[1, 2, 3],
-        enable_thinking=True,
         penalties=penalties,
     )
 

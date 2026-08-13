@@ -135,3 +135,56 @@ def test_template_predicate_shared_by_request_and_response_sides():
     assert _uses_qwen_thinking_template("mira-mlx", "mlx-community/Qwen3.6-35B-A3B-4bit")
     assert not _uses_qwen_thinking_template("mira-mlx", "gemma-4-26b-it")
     assert not _uses_qwen_thinking_template("unknown-backend", "Qwen3.6-35B-A3B")
+
+
+# -- utility calls (title, summary, forced JSON) bypass _call_llm, so they carry
+# their own thinking suppression. Without it a title turn reasons unbounded -----
+
+def _sync_response(text="{\"title\": \"x\"}"):
+    msg = types.SimpleNamespace(content=text)
+    return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)])
+
+
+def test_utility_call_suppresses_thinking_on_qwen(orchestrator):
+    """Measured 2026-08-13: a title turn on Qwen3.6 reasoned 1651 tokens (~29s)
+    because it went straight to the model with the template's thinking-on
+    default and no budget. _llm_chat_sync must send enable_thinking=False."""
+    orchestrator.backend = "mira-mlx"
+    orchestrator.model = "Qwen3.6-35B-A3B"
+    orchestrator._oai = MagicMock()
+    orchestrator._oai.chat.completions.create.return_value = _sync_response()
+    orchestrator._llm_chat_sync([{"role": "user", "content": "name this"}])
+    kwargs = orchestrator._oai.chat.completions.create.call_args.kwargs
+    assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+
+
+def test_utility_call_carries_budget_backstop_on_qwen(orchestrator):
+    """The budget rides along as a backstop for the turns Qwen opens a block
+    anyway, matching the answer path."""
+    from core.orchestrator import MAX_THINKING_TOKENS
+    orchestrator.backend = "mira-mlx"
+    orchestrator.model = "Qwen3.6-35B-A3B"
+    extra = orchestrator._thinking_off_extra()
+    if MAX_THINKING_TOKENS > 0:
+        assert extra["chat_template_kwargs"]["thinking_budget"] == MAX_THINKING_TOKENS
+    else:
+        assert "thinking_budget" not in extra["chat_template_kwargs"]
+
+
+def test_utility_call_thinking_off_on_non_qwen(orchestrator):
+    orchestrator.backend = "omlx"
+    orchestrator.model = "gemma-4-26b-it"
+    assert orchestrator._thinking_off_extra() == {"enable_thinking": False}
+
+
+def test_generate_title_goes_through_thinking_suppression(orchestrator):
+    orchestrator.backend = "mira-mlx"
+    orchestrator.model = "Qwen3.6-35B-A3B"
+    orchestrator._oai = MagicMock()
+    orchestrator._oai.chat.completions.create.return_value = _sync_response(
+        "{\"title\": \"Quantization Basics\"}"
+    )
+    title = orchestrator.generate_title("Explain 4-bit quantization")
+    kwargs = orchestrator._oai.chat.completions.create.call_args.kwargs
+    assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+    assert title == "Quantization Basics"

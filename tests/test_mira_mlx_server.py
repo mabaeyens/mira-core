@@ -576,15 +576,15 @@ def test_logits_processors_are_never_empty():
     pytest.importorskip("mlx.core")
     from core.inference.mira_mlx_server import _build_logits_processors
 
-    for budget, enable in ((0, True), (512, False), (512, True), (0, False)):
+    for budget in (0, 512):
         processors = _build_logits_processors(
             thinking_budget=budget, think_start=(1,), think_end=(2,),
-            prompt_tokens=[1], enable_thinking=enable,
+            prompt_tokens=[1],
         )
-        assert processors, f"empty for budget={budget} enable_thinking={enable}"
+        assert processors, f"empty for budget={budget}"
 
 
-def test_thinking_budget_is_attached_only_when_thinking_is_on():
+def test_thinking_budget_attaches_whenever_a_budget_and_closer_exist():
     pytest.importorskip("mlx.core")
     from core.inference.mira_mlx_server import (
         ThinkingBudget, _build_logits_processors,
@@ -597,11 +597,14 @@ def test_thinking_budget_is_attached_only_when_thinking_is_on():
         return any(isinstance(p, ThinkingBudget)
                    for p in _build_logits_processors(**kwargs))
 
-    assert has_budget(thinking_budget=512, enable_thinking=True)
-    assert not has_budget(thinking_budget=0, enable_thinking=True)
-    assert not has_budget(thinking_budget=512, enable_thinking=False)
+    # Attached whenever there is a budget and a closer to force -- including a
+    # turn rendered with thinking off, because Qwen3.6 can open a reasoning block
+    # anyway and the guard self-arms only if it does. Enforcing it there is the
+    # fix for the "thinking off" runaway to the full output cap.
+    assert has_budget(thinking_budget=512)
+    assert not has_budget(thinking_budget=0)
     # No closer to force means nothing can be enforced.
-    assert not has_budget(thinking_budget=512, enable_thinking=True, think_end=())
+    assert not has_budget(thinking_budget=512, think_end=())
 
 
 def test_usage_carries_timing_only_when_measured():

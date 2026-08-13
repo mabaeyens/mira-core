@@ -349,6 +349,26 @@ class ChatOrchestrator:
             })
             self.system_prompt_added = True
 
+    def _thinking_off_extra(self) -> dict:
+        """`extra_body` that disables reasoning, for the utility calls that go
+        straight to the model instead of through `_call_llm`.
+
+        Title, history-summary and forced-JSON turns bypass `_call_llm`, so
+        without this they inherit Qwen3.6's thinking-on template default and,
+        having no budget guard either, can reason to the full output cap on a
+        request as trivial as "name this conversation" — measured 2026-08-13, a
+        title turn ran 1651 reasoning tokens (~29s) for a two-sentence chat.
+        `enable_thinking=False` is the primary guard; the budget is a backstop
+        for the turns where the model opens a block anyway. Mirrors the thinking
+        half of `_call_llm` so both paths stay in step.
+        """
+        if _uses_qwen_thinking_template(self.backend, self.model):
+            ckwargs: dict = {"enable_thinking": False}
+            if MAX_THINKING_TOKENS > 0:
+                ckwargs["thinking_budget"] = MAX_THINKING_TOKENS
+            return {"chat_template_kwargs": ckwargs}
+        return {"enable_thinking": False}
+
     def _prefill_system_prompt(self) -> None:
         """Send the current system prompt to the LLM in a background thread to warm the prefix cache."""
         if not self.conversation_history or self.conversation_history[0]["role"] != "system":
@@ -360,6 +380,7 @@ class ChatOrchestrator:
                 messages=[system_msg, {"role": "user", "content": "Hi"}],
                 max_tokens=1,
                 stream=False,
+                extra_body=self._thinking_off_extra(),
             )
             logger.debug("prefix cache warm for new conversation")
         except Exception as exc:
@@ -399,17 +420,24 @@ class ChatOrchestrator:
     # ── Post-turn helpers ────────────────────────────────────────────────────
 
     def _llm_chat_sync(self, messages: List[Dict], format: Optional[dict] = None) -> str:
-        """Non-streaming single-turn LLM call. Returns the text content."""
+        """Non-streaming single-turn LLM call. Returns the text content.
+
+        These are utility turns (titles, summaries, forced JSON), never the
+        user-facing answer, so reasoning is suppressed via extra_body — see
+        `_thinking_off_extra`. Without it a title turn can reason to the full
+        output cap, adding tens of seconds to an otherwise trivial request.
+        """
+        extra = self._thinking_off_extra()
         kwargs = {"response_format": {"type": "json_object"}} if format else {}
         if True:
             try:
                 resp = self._oai.chat.completions.create(
-                    model=self.model, messages=messages, **kwargs
+                    model=self.model, messages=messages, extra_body=extra, **kwargs
                 )
             except Exception:
                 # Backend doesn't support response_format — retry without it
                 resp = self._oai.chat.completions.create(
-                    model=self.model, messages=messages
+                    model=self.model, messages=messages, extra_body=extra
                 )
             return bc.strip_think((resp.choices[0].message.content or "").strip())
 
@@ -1255,7 +1283,13 @@ class ChatOrchestrator:
                 # template default (thinking ON) and "off" never takes effect.
                 # Other models (gemma4, etc.) don't have this variable — skip it.
                 ckwargs: dict = {"enable_thinking": thinking_enabled}
-                if thinking_enabled and MAX_THINKING_TOKENS > 0:
+                # Send the budget even when thinking is "off". Qwen3.6 can open a
+                # reasoning block anyway on some turns, and only the budget bounds
+                # it. The engine arms the guard only if a block actually opens, so
+                # this is inert when thinking is skipped. (The utility calls that
+                # bypass this method get the same treatment via
+                # _thinking_off_extra; that path was the real 2026-08-13 runaway.)
+                if MAX_THINKING_TOKENS > 0:
                     ckwargs["thinking_budget"] = MAX_THINKING_TOKENS
                 extra["extra_body"] = {"chat_template_kwargs": ckwargs}
             elif not thinking_enabled:
