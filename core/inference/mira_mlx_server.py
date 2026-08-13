@@ -113,18 +113,6 @@ class EngineDead(RuntimeError):
     """
 
 
-class EngineBusy(RuntimeError):
-    """Too many requests are already in flight; this one is refused up front.
-
-    A fan-in flood (the 32 concurrent requests that wedged the engine on
-    2026-08-02) used to be admitted without bound onto an inbox a single thread
-    drains serially, so the surplus piled up invisibly. Refusing past a cap turns
-    that into an immediate, retryable 503 the caller can see, instead of a queue
-    that only looks like a hang from outside. See
-    specs/engine-wedge-under-fan-in.md.
-    """
-
-
 def plan_prefill_segments(rest, prompt_cache_count, boundaries):
     """Decide where prefill should stop to leave reusable snapshots behind.
 
@@ -475,20 +463,17 @@ class GenerationEngine:
         vision_tower_idle_timeout: float = 300.0,
         proactive_decompress: bool = False,
         boundary_snapshot: bool = False,
-        # Reliability guards (specs/engine-wedge-under-fan-in.md). A single thread
-        # owns the model, so a stall on it has no way to reach the clients waiting
-        # on it: these bound the two edges of that. max_inflight_jobs caps how many
-        # requests may be admitted at once (real multi-device use is 2-3; the
-        # wedge was 32). The two timeouts bound how long a client waits for output
-        # before giving up — generous enough to clear the worst legitimate cold
-        # prefill, short enough that an actual wedge fails instead of hanging.
-        max_inflight_jobs: int = 16,
+        # Stall-timeout guard (specs/engine-wedge-under-fan-in.md). A single thread
+        # owns the model, so a stall on it has no way to reach the clients blocked
+        # waiting on it — they used to wait on out_queue with no upper bound at
+        # all. These bound how long a client waits for output before giving up:
+        # generous enough to clear the worst legitimate cold prefill, short enough
+        # that an actual stall fails as a request instead of hanging forever.
         request_first_token_timeout: float = 240.0,
         request_stall_timeout: float = 90.0,
     ):
         self.model_path = model_path
         self.max_tokens = max_tokens
-        self.max_inflight_jobs = max_inflight_jobs
         self.request_first_token_timeout = request_first_token_timeout
         self.request_stall_timeout = request_stall_timeout
         self.prefill_step_size = prefill_step_size
@@ -571,13 +556,11 @@ class GenerationEngine:
         self._last_trim: dict | None = None
         self._total_prompt_tokens = 0
         self._total_generated_tokens = 0
-        # Reliability-guard counters (specs/engine-wedge-under-fan-in.md). Both
-        # were invisible during the 2026-08-02 incident: the next wedge should
-        # leave a number in /v1/stats, not just an absence of tokens. A nonzero
-        # _stalled_requests is the wedge signature; a rising _rejected_busy means
-        # fan-in is hitting the admission cap.
+        # Stall counter (specs/engine-wedge-under-fan-in.md). Invisible during the
+        # 2026-08-02 incident: the next stall should leave a number in /v1/stats,
+        # not just an absence of tokens. A nonzero _stalled_requests is the
+        # signature of a request the engine stopped feeding.
         self._stalled_requests = 0
-        self._rejected_busy = 0
         self._recent_latencies_ms: "deque[float]" = deque(maxlen=200)
         # The whole-request latency above answers "was that slow" and nothing
         # else. These four split it, because every throughput argument this
@@ -624,10 +607,8 @@ class GenerationEngine:
         """Approximate number of requests admitted but not yet finished.
 
         Inbox backlog plus jobs the engine thread is decoding. Deliberately
-        lock-free: qsize() and len(dict) are each atomic under the GIL, and an
-        exact count would need the engine thread to take a lock on every token to
-        decrement — new contention on the decode hot path for a number that only
-        has to be approximately right to reject a flood.
+        lock-free: qsize() and len(dict) are each atomic under the GIL. Reported
+        in /v1/stats and named in the stall log; nothing gates on it.
         """
         return self._inbox.qsize() + len(self._pending)
 
@@ -638,20 +619,7 @@ class GenerationEngine:
                     f"mira-mlx engine is not running: "
                     f"{type(self._error).__name__}: {self._error}"
                 )
-            # Refuse a flood before it lands on the inbox. The check and the put
-            # share _admit_lock so two racing submits can't both slip past the cap.
-            inflight = self.inflight_count()
-            if inflight >= self.max_inflight_jobs:
-                raise EngineBusy(
-                    f"mira-mlx engine at capacity: {inflight} request(s) in flight, "
-                    f"limit {self.max_inflight_jobs}. Retry shortly."
-                )
             self._inbox.put(job)
-
-    def note_rejected_busy(self) -> None:
-        """Record an admission refusal (EngineBusy). Runs on the HTTP thread."""
-        with self._stats_lock:
-            self._rejected_busy += 1
 
     def note_stall(self, request_id: str, first: bool) -> float:
         """Record and log a request abandoned on the stall timeout, and return
@@ -1230,7 +1198,6 @@ class GenerationEngine:
             prompt_tokens = self._total_prompt_tokens
             generated_tokens = self._total_generated_tokens
             stalled_requests = self._stalled_requests
-            rejected_busy = self._rejected_busy
             latencies = sorted(self._recent_latencies_ms)
             ttfts = sorted(self._recent_ttft_ms)
             decode_mss = sorted(self._recent_decode_ms)
@@ -1311,13 +1278,11 @@ class GenerationEngine:
             "prompt_cache_by_type": prompt_cache_by_type,
             "total_prompt_tokens": prompt_tokens,
             "total_generated_tokens": generated_tokens,
-            # Reliability guards (specs/engine-wedge-under-fan-in.md). Nonzero
-            # stalled_requests is the wedge signature the 2026-08-02 incident had
-            # no counter for; rejected_busy rising means fan-in hit the cap.
+            # Stall-timeout guard (specs/engine-wedge-under-fan-in.md). Nonzero
+            # stalled_requests is the signature the 2026-08-02 incident had no
+            # counter for: a request the engine accepted and then stopped feeding.
             "inflight_requests": self.inflight_count(),
-            "max_inflight_jobs": self.max_inflight_jobs,
             "stalled_requests": stalled_requests,
-            "rejected_busy": rejected_busy,
             "latency_p50_ms": _percentile(latencies, 0.50),
             "latency_p95_ms": _percentile(latencies, 0.95),
             "latency_sample_size": len(latencies),
@@ -2152,14 +2117,6 @@ def create_app(engine: GenerationEngine) -> FastAPI:
         loop = asyncio.get_event_loop()
         try:
             engine.submit(job)
-        except EngineBusy as exc:
-            # 503 with Retry-After: the engine is healthy, just at capacity, so a
-            # retry after a short back-off is the right response — unlike EngineDead
-            # below, where retrying is pointless. Both beat the old behavior of
-            # admitting the request onto a queue where it looked like a slow hang.
-            engine.note_rejected_busy()
-            raise HTTPException(status_code=503, detail=str(exc),
-                                headers={"Retry-After": "1"}) from exc
         except EngineDead as exc:
             # 503, and with the original cause in the body: the engine thread is
             # gone and no amount of retrying this request brings it back. Same
@@ -2314,10 +2271,9 @@ def main() -> None:
     # (measured 17.60s against a warm 0.45s on a fully evicted model).
     parser.add_argument("--proactive-decompress", action="store_true")
     parser.add_argument("--boundary-snapshot", action="store_true")
-    # Reliability guards (specs/engine-wedge-under-fan-in.md). Defaults match the
+    # Stall-timeout guard (specs/engine-wedge-under-fan-in.md). Defaults match the
     # constructor; exposed so backend_manager or an operator can tighten them per
     # machine without a code change.
-    parser.add_argument("--max-inflight-jobs", type=int, default=16)
     parser.add_argument("--request-first-token-timeout", type=float, default=240.0)
     parser.add_argument("--request-stall-timeout", type=float, default=90.0)
     args = parser.parse_args()
@@ -2344,7 +2300,6 @@ def main() -> None:
         vision_tower_idle_timeout=args.vision_tower_idle_timeout,
         proactive_decompress=args.proactive_decompress,
         boundary_snapshot=args.boundary_snapshot,
-        max_inflight_jobs=args.max_inflight_jobs,
         request_first_token_timeout=args.request_first_token_timeout,
         request_stall_timeout=args.request_stall_timeout,
     )

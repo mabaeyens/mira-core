@@ -15,7 +15,6 @@ from core.inference.disk_prompt_cache import DiskBackedPromptCache
 from core.inference.mira_mlx_server import (
     ChatJob,
     DONE,
-    EngineBusy,
     EngineDead,
     GenerationEngine,
     create_app,
@@ -987,11 +986,11 @@ def test_think_preopened_reads_the_last_marker_pair_not_the_first():
     assert _think_preopened(tokens, (248068,), (248069,)) is True
 
 
-# -- reliability guards: fan-in cap and stall timeout -------------------------
-# specs/engine-wedge-under-fan-in.md. On 2026-08-02, 32 concurrent requests
-# wedged the engine: the surplus was admitted onto an unbounded inbox and every
-# client blocked forever on an out_queue that a stalled single thread never fed,
-# with nothing in /v1/stats to show it. These bound both edges.
+# -- reliability guard: per-request stall timeout -----------------------------
+# specs/engine-wedge-under-fan-in.md. A single thread owns the model, so when it
+# stops feeding a request's out_queue the HTTP handler used to block on that get
+# forever, with nothing in /v1/stats to show it. The timeout bounds that wait so
+# a stall becomes a failed request instead of an unrecoverable hang.
 
 def test_inflight_count_sums_inbox_and_pending():
     engine = GenerationEngine(model_path="fake/model")
@@ -1000,33 +999,6 @@ def test_inflight_count_sums_inbox_and_pending():
     engine._inbox.put(_job())
     engine._pending[1] = {"job": _job()}
     assert engine.inflight_count() == 3
-
-
-def test_admission_cap_refuses_a_flood_but_the_engine_stays_healthy():
-    engine = GenerationEngine(model_path="fake/model", max_inflight_jobs=2)
-    engine.submit(_job())
-    engine.submit(_job())  # at the cap, still accepted
-
-    with pytest.raises(EngineBusy) as excinfo:
-        engine.submit(_job())
-    assert "in flight" in str(excinfo.value)
-    # EngineBusy is not EngineDead: refusing a flood must not mark the engine
-    # broken. Once something drains, work is accepted again.
-    engine._inbox.get_nowait()
-    engine.submit(_job())
-
-
-def test_engine_busy_becomes_a_503_with_retry_after():
-    engine = GenerationEngine(model_path="fake/model", max_inflight_jobs=1)
-    engine._inbox.put(_job())  # fill to the cap without a running engine thread
-    client = TestClient(create_app(engine))
-
-    r = client.post("/v1/chat/completions",
-                    json={"messages": [{"role": "user", "content": "hi"}]})
-
-    assert r.status_code == 503
-    assert r.headers.get("retry-after") == "1"
-    assert engine.stats_snapshot()["rejected_busy"] == 1
 
 
 def test_a_stalled_non_stream_request_becomes_a_504_not_a_hang():
