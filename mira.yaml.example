@@ -288,14 +288,16 @@ mira_mlx_kv_group_size: 64
 # mira_mlx_vision_tower_idle_timeout: 300
 
 # memory_advisory_notifications: post a macOS notification when another app on
-# this Mac pushes Mira's model out of memory. Default FALSE since 2026-08-11.
-# The case for it still holds — the state is otherwise invisible: macOS
-# compresses the model out, your next reply takes about 15s instead of under a
-# second, and that reply is itself what fixes it, so by the time you wonder what
-# happened it is already gone. It ships off because a notification you cannot
-# act on is noise. Fires only on the transition into that state, at most once
-# every 15 minutes.
-# memory_advisory_notifications: true
+# this Mac pushes Mira's model out of memory. Default TRUE since 2026-08-13.
+# The state is otherwise invisible: macOS compresses the model out, your next
+# reply takes about 15s instead of under a second, and that reply is itself what
+# fixes it, so by the time you wonder what happened it is already gone. It was
+# briefly off (2026-08-11) because it could not tell that real shortage from the
+# harmless idle treadmill and fired ~302 times in 70.5h; the cause field now
+# filters the treadmill out, so it interrupts only for a genuine shortage you
+# can act on by freeing memory. Fires only on the transition into that state, at
+# most once every 15 minutes. Set false to silence it entirely.
+# memory_advisory_notifications: false
 
 # ── Opt-in performance flags ─────────────────────────────────────────────────
 # All three ship OFF. Each is measured and working on the maintainer's machine;

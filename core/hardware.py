@@ -399,6 +399,40 @@ EVICTED_SELF_FRACTION = 0.25
 EVICTED_COMPRESSOR_FRACTION = 0.25
 
 
+# Cause of a memory advisory, in the one term the notify decision needs: can the
+# user do anything about it? The advisory word alone cannot say — `evicted`
+# covers both the idle treadmill (macOS compressing an idle model, nothing to
+# act on) and a genuine shortage (other apps taking the memory, close one). See
+# specs/memory-advisory-cause.md.
+CAUSE_EXTERNAL_PRESSURE = "external_pressure"  # actionable: machine short of memory now
+CAUSE_IDLE_RECLAIM = "idle_reclaim"            # not actionable: the compress/decompress treadmill
+CAUSE_NONE = "none"                            # not an interrupt-worthy state, or absent
+
+
+def classify_memory_cause(advisory, pressure_level) -> str:
+    """Derive the advisory's cause from signals already computed — no new probe.
+
+    - ``external_pressure`` (actionable): the machine is genuinely short of
+      memory now. ``critical`` is this by definition; an ``evicted`` that
+      coincides with warn-or-higher OS memory pressure is too.
+    - ``idle_reclaim`` (not actionable): ``evicted`` while the machine is NOT
+      under pressure — macOS opportunistically compressing an idle model. This is
+      the treadmill that produced 302 transitions in 70.5h, none worth a word.
+    - ``none``: ``ok``/``busy``/``unknown``, or no advisory at all.
+
+    A ``None`` pressure level counts as "not under pressure": absence of evidence
+    must never read as actionable (spec edge (e)). So a missing or unreadable
+    pressure signal keeps an eviction on the silent side, which is the safe one.
+    """
+    if advisory == "critical":
+        return CAUSE_EXTERNAL_PRESSURE
+    if advisory == "evicted":
+        if pressure_level is not None and pressure_level >= PRESSURE_WARN:
+            return CAUSE_EXTERNAL_PRESSURE
+        return CAUSE_IDLE_RECLAIM
+    return CAUSE_NONE
+
+
 def derive_dynamic_ceiling_bytes(
     mira_used_bytes: int,
     total_ram_bytes: Optional[int] = None,
@@ -458,6 +492,7 @@ def derive_dynamic_ceiling_bytes(
         # broken probe is visible instead of silently reading as an all-clear.
         diag["source"] = "static (probe unavailable)"
         diag["advisory"] = "unknown"
+        diag["cause"] = classify_memory_cause(diag["advisory"], diag["pressure_level"])
         return static_ceiling, diag
 
     available = state["available_bytes"]
@@ -495,6 +530,7 @@ def derive_dynamic_ceiling_bytes(
         diag["advisory"] = "unknown"
     else:
         diag["advisory"] = "ok"
+    diag["cause"] = classify_memory_cause(diag["advisory"], diag["pressure_level"])
     return ceiling, diag
 
 

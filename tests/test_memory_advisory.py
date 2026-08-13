@@ -115,6 +115,52 @@ def test_pressure_alone_is_busy_not_evicted(healthy_vm, monkeypatch):
     assert diag["advisory"] == "busy"
 
 
+# --- cause: the field that separates the treadmill from a real shortage --------
+
+@pytest.mark.parametrize("advisory,pressure,expected", [
+    ("critical", hardware.PRESSURE_CRITICAL, hardware.CAUSE_EXTERNAL_PRESSURE),
+    ("evicted", hardware.PRESSURE_CRITICAL, hardware.CAUSE_EXTERNAL_PRESSURE),
+    ("evicted", hardware.PRESSURE_WARN, hardware.CAUSE_EXTERNAL_PRESSURE),
+    ("evicted", hardware.PRESSURE_NORMAL, hardware.CAUSE_IDLE_RECLAIM),
+    ("evicted", None, hardware.CAUSE_IDLE_RECLAIM),   # unknown pressure -> silent side
+    ("busy", hardware.PRESSURE_WARN, hardware.CAUSE_NONE),
+    ("ok", hardware.PRESSURE_NORMAL, hardware.CAUSE_NONE),
+    ("unknown", None, hardware.CAUSE_NONE),
+])
+def test_classify_memory_cause(advisory, pressure, expected):
+    assert hardware.classify_memory_cause(advisory, pressure) == expected
+
+
+def test_the_treadmill_eviction_is_idle_reclaim(healthy_vm):
+    """The 302-in-70h case: the model is compressed out but the machine is not
+    under pressure, so the eviction is the idle treadmill and carries no lever."""
+    diag = _advisory(mira_used_bytes=MIRA_FOOTPRINT,
+                     self_compressed_bytes=FULLY_EVICTED_COMPRESSED)
+    assert diag["advisory"] == "evicted"
+    assert diag["cause"] == hardware.CAUSE_IDLE_RECLAIM
+
+
+def test_an_eviction_under_pressure_is_external(healthy_vm, monkeypatch):
+    """Same eviction, but macOS is now reporting real pressure — something else
+    is taking the memory, and closing it helps."""
+    monkeypatch.setattr(hardware, "read_memory_pressure_level",
+                        lambda: hardware.PRESSURE_WARN)
+    diag = _advisory(mira_used_bytes=MIRA_FOOTPRINT,
+                     self_compressed_bytes=FULLY_EVICTED_COMPRESSED)
+    assert diag["advisory"] == "evicted"
+    assert diag["cause"] == hardware.CAUSE_EXTERNAL_PRESSURE
+
+
+def test_every_return_path_carries_a_cause(monkeypatch):
+    """Including the early probe-failed path, so a client never sees advisory
+    without cause."""
+    monkeypatch.setattr(hardware, "read_vm_state", lambda: None)
+    monkeypatch.setattr(hardware, "read_memory_pressure_level", lambda: None)
+    monkeypatch.setattr(hardware, "get_total_ram_bytes", lambda: 32 * GB)
+    diag = _advisory(mira_used_bytes=MIRA_FOOTPRINT)
+    assert diag["cause"] == hardware.CAUSE_NONE
+
+
 def test_ceiling_never_exceeds_the_static_one(healthy_vm):
     ceiling, diag = hardware.derive_dynamic_ceiling_bytes(
         mira_used_bytes=MIRA_FOOTPRINT, available_bytes=64 * GB)

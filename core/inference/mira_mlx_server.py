@@ -1063,9 +1063,9 @@ class GenerationEngine:
             self._peak_memory_bytes = mx.get_peak_memory()
         if diag["advisory"] != previous and diag["advisory"] != "ok":
             logger.warning(
-                "system memory advisory %s -> %s: ceiling %.2fGB (static %.2fGB), "
+                "system memory advisory %s -> %s (cause=%s): ceiling %.2fGB (static %.2fGB), "
                 "available %.2fGB, compressor %.2fGB",
-                previous, diag["advisory"], ceiling / (1024**3),
+                previous, diag["advisory"], diag.get("cause"), ceiling / (1024**3),
                 diag["static_ceiling_bytes"] / (1024**3),
                 (diag.get("available_bytes") or 0) / (1024**3),
                 (diag.get("compressor_bytes") or 0) / (1024**3),
@@ -1264,6 +1264,12 @@ class GenerationEngine:
             # rather than being the boot-time hardware constant it used to be.
             "system_memory": {
                 "advisory": system_state.get("advisory", "unknown"),
+                # Whether the advisory is something the user can act on
+                # (external_pressure) or the idle compress/decompress treadmill
+                # (idle_reclaim). Additive: an older client that reads only
+                # `advisory` is unchanged, and a missing `cause` means "unknown",
+                # never "actionable". See specs/memory-advisory-cause.md.
+                "cause": system_state.get("cause", "none"),
                 "ceiling_bytes": memory_ceiling_bytes,
                 "static_ceiling_bytes": system_state.get("static_ceiling_bytes"),
                 "available_bytes": system_state.get("available_bytes"),

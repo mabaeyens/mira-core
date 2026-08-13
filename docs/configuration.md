@@ -102,7 +102,7 @@ The remaining RAG knobs (`RAG_CHUNK_SIZE`, `RAG_RETRIEVE_K`, `RAG_RERANK_TOP_K`,
 | `mira_mlx_kv_bits` | unset | Quantize the KV cache to this many bits. Only `8` is numerically validated (the fork's own suite, rtol 4e-2), buying roughly 1.6–2× usable context. 4-bit is unproven here. |
 | `mira_mlx_kv_group_size` | `64` | Quantization group size for `mira_mlx_kv_bits`. |
 | `mira_mlx_trust_remote_code` | `false` | Execute a model repo's own Python at load time. With this on, a model id is equivalent to code execution. Enable only for a specific model you trust that genuinely ships a custom tokenizer. |
-| `memory_advisory_notifications` | `false` | Post a macOS notification when another app evicts Mira's model from memory. Off since 2026-08-11. Fires only on the transition into that state, at most once every 15 minutes. |
+| `memory_advisory_notifications` | `true` | Post a macOS notification when another app evicts Mira's model from memory. On since 2026-08-13; the `cause` field filters out the harmless idle-reclaim treadmill so it fires only for a genuine shortage. Fires only on the transition into that state, at most once every 15 minutes. |
 
 ## Vision (mira-mlx)
 

@@ -30,7 +30,7 @@ import threading
 import time
 import urllib.request
 
-from core import scheduler
+from core import hardware, scheduler
 from core.config import BACKEND_HOST, MEMORY_ADVISORY_NOTIFICATIONS
 
 logger = logging.getLogger(__name__)
@@ -54,16 +54,27 @@ _MIN_NOTIFY_INTERVAL_S = 15 * 60
 # Says "your Mac" where the mira-apps banner says "the Mac running Mira": this
 # fires on the machine running the model, while the banner may be read on an
 # iPhone talking to a remote Mac. The two agree on the claim, not the wording.
-_TEXT = ("Something else on your Mac pushed Mira's model out of memory. "
-         "Replies may be slow until it loads back in.")
+# Only sent for actionable states (external_pressure / critical), so it can name
+# the one thing the user can do — free some memory — without the treadmill's
+# false alarms. Deliberately makes no claim about what the next reply will cost:
+# the reclaim decision is made after this fires and depends on conditions this
+# process cannot see.
+_TEXT = ("Your Mac is low on memory — other apps are competing for it, so Mira "
+         "may be slow until some frees up.")
 
 
-def _read_advisory() -> str | None:
-    """Current advisory from the backend, or None if there isn't one.
+def _read_advisory() -> tuple[str | None, str | None]:
+    """Current (advisory, cause) from the backend, or (None, None) if there isn't one.
 
-    None covers every uninteresting case identically: backend down, backend
-    still starting, a backend that is not mira-mlx, or a probe that failed. All
-    of them mean "no information", and none of them mean "everything is fine".
+    (None, None) covers every uninteresting case identically: backend down,
+    backend still starting, a backend that is not mira-mlx, or a probe that
+    failed. All of them mean "no information", and none of them mean "everything
+    is fine".
+
+    `cause` (spec: memory-advisory-cause) is what lets the loop interrupt for a
+    real shortage while staying silent for the idle treadmill. A payload from an
+    older backend without the field yields cause None, which the decision treats
+    as "unknown" — never as actionable.
     """
     try:
         url = f"{BACKEND_HOST.rstrip('/')}/v1/stats"
@@ -71,11 +82,39 @@ def _read_advisory() -> str | None:
             payload = json.load(resp)
     except Exception as exc:  # noqa: BLE001 - advisory only, never fatal
         logger.debug("memory watch: could not read backend stats (%s)", exc)
-        return None
+        return None, None
     system_memory = payload.get("system_memory")
     if not isinstance(system_memory, dict):
-        return None
-    return system_memory.get("advisory")
+        return None, None
+    return system_memory.get("advisory"), system_memory.get("cause")
+
+
+def _should_notify(previous: str | None, current: str | None, cause: str | None) -> bool:
+    """Does this (previous -> current, cause) transition warrant interrupting?
+
+    Pure, so it is the acceptance test: replay a recorded transition sequence
+    through it, count the notifications, no low-memory Mac required (spec §5).
+
+    The single rule (spec §3): never interrupt for a state the user cannot change
+    and did not cause.
+    - Only on a real transition into the state — a persisting advisory must not
+      re-fire, and `previous is None` (the first reading, and the eviction spike
+      a backend restart reports as it reclaims the old process) is a baseline,
+      never an accusation (edge (a)).
+    - `critical` always interrupts: the machine is short of memory now and
+      closing something helps (edge (b)).
+    - `evicted` interrupts only when its cause is external_pressure. The idle
+      treadmill (idle_reclaim), and any eviction whose cause is unknown/missing,
+      stay silent (edges (d), (e)).
+    - `ok`/`busy`/`unknown` never interrupt.
+    """
+    if previous is None or current == previous:
+        return False
+    if current == "critical":
+        return True
+    if current == "evicted":
+        return cause == hardware.CAUSE_EXTERNAL_PRESSURE
+    return False
 
 
 def _poll_loop(stop_event: threading.Event) -> None:
@@ -85,39 +124,35 @@ def _poll_loop(stop_event: threading.Event) -> None:
 
     while not stop_event.wait(_POLL_INTERVAL):
         try:
-            current = _read_advisory()
+            current, cause = _read_advisory()
         except Exception as exc:  # noqa: BLE001 - a watcher must not die
             logger.error("memory watch poll error: %s", exc)
             continue
 
-        # Fire on the TRANSITION into eviction, not while it persists. The
-        # advisory clears itself as soon as any request decompresses the model,
-        # so a level-triggered notification would repeat for as long as the user
-        # is not using Mira, which is exactly when they do not want to hear it.
-        #
-        # `previous is not None` is the load-bearing half: a transition needs a
-        # prior state to be a transition at all. Without it the FIRST reading
-        # always looks like one, and a backend restart reliably reports "evicted"
-        # on that first poll — the outgoing process's memory is being reclaimed
-        # while the new one loads, which spikes the compressor for a few seconds.
-        # Observed live 2026-08-08: notified 30s after start, compressor back to
-        # 0.77GB shortly after, with no other app involved. Restarting Mira must
-        # never accuse another app of evicting it.
-        if current == "evicted" and previous not in (None, "evicted"):
-            # Always record it. Whether to *interrupt* the user is a separate
-            # question, answered below, and the log line must not depend on it:
-            # the record is what made the 302-transitions-in-70-hours finding
-            # possible in the first place.
-            logger.warning("memory advisory: model evicted by another process")
-            # Not `continue` when notifications are off: the loop still has to
-            # advance `previous` below, or the same transition re-fires on every
-            # poll for as long as the state persists.
+        # Record every transition into an advisory state, regardless of whether
+        # we interrupt for it — the log is the record that made the 302-in-70h
+        # finding possible, and suppressing it is a different question (see
+        # specs/idle-decompress-treadmill.md). A transition needs a prior state:
+        # `previous is not None` guards the first reading and the eviction spike
+        # a backend restart reports as it reclaims the old process.
+        is_transition = (
+            current is not None and previous is not None and current != previous
+        )
+        if is_transition and current in ("evicted", "critical"):
+            logger.warning("memory advisory: %s (cause=%s)", current, cause)
+
+        # Interrupt only for the states the user can actually act on. The idle
+        # treadmill (evicted / idle_reclaim) is recorded above but never
+        # surfaced here — that selectivity is the whole point of the cause field.
+        if _should_notify(previous, current, cause):
+            # Not gated by `continue`: the loop still has to advance `previous`
+            # below, or the same transition re-fires on every poll while it lasts.
             if MEMORY_ADVISORY_NOTIFICATIONS:
                 now = time.time()
                 if now - last_notified_at >= _MIN_NOTIFY_INTERVAL_S:
                     if scheduler.notify(_TEXT):
                         last_notified_at = now
-                        logger.info("memory advisory: notified user")
+                        logger.info("memory advisory: notified user (%s)", current)
                 else:
                     logger.info(
                         "memory advisory: notification suppressed (last notice %.0fs ago)",

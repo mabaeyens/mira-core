@@ -306,22 +306,22 @@ MIRA_MLX_EXPERT_PROFILE_PATH: Optional[str] = _get("mira_mlx_expert_profile_path
 MIRA_MLX_TRUST_REMOTE_CODE: bool = _get("mira_mlx_trust_remote_code", False)
 # Post a macOS notification when another app evicts the model from memory.
 #
-# OFF by default since 2026-08-11, reversing the original on-by-default. The
-# reasoning that put it on still holds — the state is otherwise invisible and
-# produces one unexplained slow reply (15.37s against a warm 0.47s) — but it
-# assumed evictions were rare. Measured over 70.5 hours they are not: 302
-# transitions, one every ~14 minutes, round the clock, including three that woke
-# nobody up only because they arrived at 01:30, 03:00 and 06:53.
+# ON by default since 2026-08-13. It was turned OFF on 2026-08-11 for one
+# measured reason: 302 transitions over 70.5 hours, one every ~14 minutes, round
+# the clock. But every one of those was the idle compress/decompress treadmill —
+# macOS reclaiming memory from an idle model on a machine that was not short of
+# it — and the watcher could not tell that apart from a real shortage, so it
+# fired on all of them. The `cause` field (specs/memory-advisory-cause.md) now
+# makes that distinction: `evicted` interrupts only when it coincides with real
+# OS memory pressure (external_pressure), and `critical` always does. Replaying
+# that recorded 70.5h sequence through the new decision yields single digits, not
+# 302 — so what remains is only the shortage the original reasoning was for: an
+# otherwise invisible state that produces one unexplained slow reply (15.37s
+# against a warm 0.47s), and that the user can actually act on by freeing memory.
 #
-# The notification also fails both tests a user-facing alert has to pass: there
-# is nothing the user can do about another process taking memory, and it is not
-# something they caused. `proactive_decompress` makes it worse by clearing the
-# advisory each time, which re-arms the transition and manufactures the next
-# notification.
-#
-# The watcher still runs and still logs every transition — that record is what
-# made the 302 finding possible. Only the interruption is gone.
-MEMORY_ADVISORY_NOTIFICATIONS: bool = _get("memory_advisory_notifications", False)
+# The watcher runs regardless of this flag and logs every transition, including
+# the silent treadmill — that record is what made the 302 finding possible.
+MEMORY_ADVISORY_NOTIFICATIONS: bool = _get("memory_advisory_notifications", True)
 # Fault the model back into RAM on the engine's idle branch when another app has
 # had it compressed out, instead of letting the next reply pay for it. Measured
 # on a real unforced eviction (2026-08-08): all 18.80GB compressed, next turn
