@@ -2,6 +2,17 @@
 
 ## Pending
 
+### Test Qwen3.8-27B when weights unlock, as the one real quality lever left
+- Qwen3.8-27B (released 2026-08-14) is the only candidate that could beat Qwen3.6-35B-A3B in the
+  ~25.6GB envelope. It is a **dense** 27B, not an MoE successor — there is no 3.8 analogue of the
+  35B-A3B, so "wait for a drop-in MoE" was wrong. It uses the same Gated-DeltaNet hybrid + native
+  MTP, which is what could make a dense 27B viable here. Two hard gates before switching the default,
+  both measured on this M5, prod down + fresh engine + RAM watchdog (heavy — run overnight):
+  (1) decode tok/s with MTP speculative enabled clears a usable daily-driver bar (naive dense 27B is
+  ~2–3× slower than a 3B-active MoE, the exact "too slow" failure mode already hit); (2) real
+  SWE-bench-style + conversation-corpus scores actually beat 35B-A3B's 73.4. If either fails,
+  35B-A3B stays — there is no other upgrade to chase. Convert via `/mlx-convert Qwen/Qwen3.8-27B`.
+
 ### Confirm the overnight-eviction culprit from the sampler, then decide if any tuning is warranted
 - The `notes/mem-samples.log` sampler is running (started 2026-08-13). After a night or two, read it
   and check which process's footprint climbs alongside the compressor at the moment of the next
