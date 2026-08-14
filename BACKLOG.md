@@ -130,6 +130,12 @@
     availability floor is too high for this machine.
   - **The eviction notification firing at all.** A week of zero notifications is a real result,
     not a failure: it would mean eviction is rarer than the forced Xcode+Docker test suggested.
+    **2026-08-14: caught the opposite — a false positive.** The cause classifier keyed
+    `external_pressure` on the OS pressure level alone, but compressing Mira's own ~20GB idle model
+    is itself enough to raise pressure to warn, so the treadmill fired the notification seven times
+    in one morning with other apps holding under 1GB. Fixed: the cause now attributes the compressor
+    per-process (`compressor_bytes - self_compressed_bytes`) and stays `idle_reclaim` unless the
+    non-Mira remainder clears `EXTERNAL_COMPRESSED_MIN_BYTES`. Lands on the next engine restart.
   One known limitation, accepted rather than fixed: **a request arriving during a touch waits
   behind it**, because the model thread is the only thread that can serve. Still never worse than
   doing nothing, but the magnitude is larger than the first measurement suggested — `events: 7`,

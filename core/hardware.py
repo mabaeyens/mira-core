@@ -408,29 +408,58 @@ CAUSE_EXTERNAL_PRESSURE = "external_pressure"  # actionable: machine short of me
 CAUSE_IDLE_RECLAIM = "idle_reclaim"            # not actionable: the compress/decompress treadmill
 CAUSE_NONE = "none"                            # not an interrupt-worthy state, or absent
 
+# How much of the compressor must be NON-Mira before an eviction that coincides
+# with OS pressure counts as a real external squeeze rather than Mira compressing
+# its own idle model. Pressure alone cannot tell them apart: compressing Mira's
+# own ~20GB model is itself enough to lift macOS pressure to warn, so keying on
+# the pressure level re-fired the treadmill the cause field was added to silence
+# (observed 2026-08-14, seven false `external_pressure` events in one morning).
+# Attribute the compressor per-process by subtracting Mira's own compressed pages;
+# what remains is what other apps are being squeezed into. Calibrated live on
+# 2026-08-14: at rest non-Mira compressed sat at ~0.67GB, and through every
+# warn-pressure treadmill spike the compressor stayed ~96% Mira's own. Below this,
+# "close an app" recovers nothing, so the advisory stays idle_reclaim.
+EXTERNAL_COMPRESSED_MIN_BYTES = 2 * BYTES_PER_GB
 
-def classify_memory_cause(advisory, pressure_level) -> str:
+
+def classify_memory_cause(advisory, pressure_level,
+                          self_compressed_bytes=None,
+                          compressor_bytes=None) -> str:
     """Derive the advisory's cause from signals already computed — no new probe.
 
     - ``external_pressure`` (actionable): the machine is genuinely short of
       memory now. ``critical`` is this by definition; an ``evicted`` that
-      coincides with warn-or-higher OS memory pressure is too.
-    - ``idle_reclaim`` (not actionable): ``evicted`` while the machine is NOT
-      under pressure — macOS opportunistically compressing an idle model. This is
-      the treadmill that produced 302 transitions in 70.5h, none worth a word.
+      coincides with OS pressure AND a non-Mira share of the compressor is too.
+    - ``idle_reclaim`` (not actionable): ``evicted`` while the machine is not
+      under pressure, OR under pressure that is Mira compressing its own idle
+      model. This is the treadmill that produced 302 transitions in 70.5h.
     - ``none``: ``ok``/``busy``/``unknown``, or no advisory at all.
 
     A ``None`` pressure level counts as "not under pressure": absence of evidence
     must never read as actionable (spec edge (e)). So a missing or unreadable
     pressure signal keeps an eviction on the silent side, which is the safe one.
+
+    Pressure alone cannot separate the two evicted cases, because compressing
+    Mira's own ~20GB model is itself enough to raise OS pressure to warn — that
+    self-inflicted warn is what made the treadmill fire ``external_pressure``
+    (2026-08-14). So when the per-process signals are present, attribute the
+    compressor: subtract Mira's own compressed pages, and only call it external
+    when what remains — the memory other apps are actually being squeezed into —
+    clears ``EXTERNAL_COMPRESSED_MIN_BYTES``. Without those signals, fall back to
+    the pressure level alone (the pre-attribution behaviour).
     """
     if advisory == "critical":
         return CAUSE_EXTERNAL_PRESSURE
-    if advisory == "evicted":
-        if pressure_level is not None and pressure_level >= PRESSURE_WARN:
+    if advisory != "evicted":
+        return CAUSE_NONE
+    if pressure_level is None or pressure_level < PRESSURE_WARN:
+        return CAUSE_IDLE_RECLAIM
+    if self_compressed_bytes is not None and compressor_bytes is not None:
+        non_mira_compressed = compressor_bytes - self_compressed_bytes
+        if non_mira_compressed >= EXTERNAL_COMPRESSED_MIN_BYTES:
             return CAUSE_EXTERNAL_PRESSURE
         return CAUSE_IDLE_RECLAIM
-    return CAUSE_NONE
+    return CAUSE_EXTERNAL_PRESSURE
 
 
 def derive_dynamic_ceiling_bytes(
@@ -530,7 +559,11 @@ def derive_dynamic_ceiling_bytes(
         diag["advisory"] = "unknown"
     else:
         diag["advisory"] = "ok"
-    diag["cause"] = classify_memory_cause(diag["advisory"], diag["pressure_level"])
+    diag["cause"] = classify_memory_cause(
+        diag["advisory"], diag["pressure_level"],
+        self_compressed_bytes=diag["self_compressed_bytes"],
+        compressor_bytes=state["compressor_bytes"],
+    )
     return ceiling, diag
 
 

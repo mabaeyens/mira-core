@@ -141,14 +141,55 @@ def test_the_treadmill_eviction_is_idle_reclaim(healthy_vm):
 
 
 def test_an_eviction_under_pressure_is_external(healthy_vm, monkeypatch):
-    """Same eviction, but macOS is now reporting real pressure — something else
-    is taking the memory, and closing it helps."""
+    """Same eviction, macOS reporting pressure, AND a big chunk of the compressor
+    is not Mira's — other apps are being squeezed too, so closing one helps.
+
+    The compressor (22GB) exceeds Mira's own compressed pages (18.8GB) by 3.2GB:
+    that non-Mira remainder is what makes this actionable, not the pressure alone.
+    """
+    monkeypatch.setattr(hardware, "read_vm_state", lambda: {
+        "available_bytes": 1 * GB,
+        "compressor_bytes": 22 * GB,          # 18.8 Mira + ~3.2 other apps
+        "wired_bytes": 3 * GB,
+    })
     monkeypatch.setattr(hardware, "read_memory_pressure_level",
                         lambda: hardware.PRESSURE_WARN)
     diag = _advisory(mira_used_bytes=MIRA_FOOTPRINT,
                      self_compressed_bytes=FULLY_EVICTED_COMPRESSED)
     assert diag["advisory"] == "evicted"
     assert diag["cause"] == hardware.CAUSE_EXTERNAL_PRESSURE
+
+
+def test_self_caused_pressure_stays_idle_reclaim(healthy_vm, monkeypatch):
+    """2026-08-14 regression: macOS raised pressure to warn purely by compressing
+    Mira's own idle ~20GB model. The compressor is almost entirely Mira's (16.7 of
+    17GB), other apps hold under a GB, so "close an app" recovers nothing. Pressure
+    is present but the cause is the treadmill — this must NOT fire external."""
+    monkeypatch.setattr(hardware, "read_vm_state", lambda: {
+        "available_bytes": 5 * GB,
+        "compressor_bytes": 17 * GB,          # ~all Mira's own model
+        "wired_bytes": 3 * GB,
+    })
+    monkeypatch.setattr(hardware, "read_memory_pressure_level",
+                        lambda: hardware.PRESSURE_WARN)
+    diag = _advisory(mira_used_bytes=MIRA_FOOTPRINT,
+                     self_compressed_bytes=16_700_000_000)  # 16.7GB of the 17GB
+    assert diag["advisory"] == "evicted"
+    assert diag["cause"] == hardware.CAUSE_IDLE_RECLAIM
+
+
+@pytest.mark.parametrize("non_mira_gb,expected", [
+    (0.3, hardware.CAUSE_IDLE_RECLAIM),        # compressor is Mira's own -> treadmill
+    (5.0, hardware.CAUSE_EXTERNAL_PRESSURE),   # other apps squeezed -> actionable
+])
+def test_classify_attributes_the_compressor(non_mira_gb, expected):
+    """Under warn pressure, the cause turns on the NON-Mira share of the
+    compressor, not on the pressure level (which Mira's own model inflates)."""
+    self_c = 16 * GB
+    compressor = int(self_c + non_mira_gb * GB)
+    assert hardware.classify_memory_cause(
+        "evicted", hardware.PRESSURE_WARN,
+        self_compressed_bytes=self_c, compressor_bytes=compressor) == expected
 
 
 def test_every_return_path_carries_a_cause(monkeypatch):

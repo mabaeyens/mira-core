@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **The "your Mac is low on memory" notification was blaming other apps for
+  memory Mira itself was holding.** The advisory splits an eviction into the idle
+  treadmill (macOS compressing an idle model, nothing to act on) and a real
+  shortage (other apps taking the memory, close one), and only the second is
+  supposed to interrupt. But it decided which was which from the OS pressure level
+  alone, and compressing Mira's own ~20GB model is itself enough to push pressure
+  to warn, so the treadmill kept tripping the "real shortage" branch: seven false
+  notifications in one morning while everything other than Mira held under a
+  gigabyte. The cause is now attributed per-process — it subtracts Mira's own
+  compressed pages from the system compressor and only calls it external when the
+  non-Mira remainder is real (`EXTERNAL_COMPRESSED_MIN_BYTES`, 2GB), matching the
+  per-process principle the eviction verdict itself already used. The idle
+  treadmill stays silent even when it briefly lifts OS pressure.
+
 ## v1.3.0 — August 2026
 
 The release that went looking for broken replies and found them. v1.2.0 shipped
