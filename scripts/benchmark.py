@@ -2,13 +2,16 @@
 """
 Backend performance benchmark for mira-core.
 
-Runs a 9-cell test matrix (3 prompts × 3 session positions) across all
-locally installed models on Ollama and mlx-lm. Produces a markdown report
-analysed by Claude Haiku.
+Runs a 9-cell test matrix (3 prompts × 3 session positions) across locally
+installed mlx-lm models. Produces a markdown report analysed by Claude Haiku.
+
+The Ollama comparison arm predates the 2026-08-01 retirement of the ollama
+backend and is now opt-in (`--with-ollama`); it talks to the ollama daemon on
+:11434 directly, not through Mira, so it does nothing unless ollama is installed.
 
 Usage:
     uv run python scripts/benchmark.py
-    uv run python scripts/benchmark.py --skip-ollama
+    uv run python scripts/benchmark.py --with-ollama   # retired backend, off by default
     uv run python scripts/benchmark.py --skip-mlx
     uv run python scripts/benchmark.py --reps 5
 
@@ -379,7 +382,8 @@ def run_analysis(jsonl_path: Path) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="mira-core backend benchmark")
-    parser.add_argument("--skip-ollama", action="store_true", help="Skip Ollama backend")
+    parser.add_argument("--with-ollama", action="store_true",
+                        help="Include the retired Ollama backend (off by default; needs ollama installed)")
     parser.add_argument("--skip-mlx",   action="store_true", help="Skip mlx-lm backend")
     parser.add_argument("--reps", type=int, default=DEFAULT_REPS,
                         help=f"Repetitions per cell (default {DEFAULT_REPS})")
@@ -394,7 +398,7 @@ def main() -> None:
     print(f"Report → {report_path}")
 
     # Discovery
-    ollama_models = [] if args.skip_ollama else discover_ollama_models()
+    ollama_models = discover_ollama_models() if args.with_ollama else []
     mlx_models    = [] if args.skip_mlx   else discover_mlx_models()
     mlx_running   = not args.skip_mlx and mlx_lm_is_running()
 
@@ -403,14 +407,14 @@ def main() -> None:
           + ("" if mlx_running else "  [server not running]"))
 
     if not ollama_models and not mlx_running:
-        print("\nNo backends available. Start Ollama or mlx-lm.server and retry.")
+        print("\nNo backends available. Start mlx-lm.server (or pass --with-ollama) and retry.")
         sys.exit(1)
 
     # Ingest
     run_ingest(
         ollama_models=ollama_models,
         mlx_models=mlx_models,
-        skip_ollama=args.skip_ollama,
+        skip_ollama=not args.with_ollama,
         skip_mlx=args.skip_mlx,
         reps=args.reps,
         jsonl_path=jsonl_path,
