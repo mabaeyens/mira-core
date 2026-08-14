@@ -12,12 +12,12 @@
   sees Metal memory; `ps` RSS does not — Qwen shows 20G by footprint, 0.16G by RSS): mira-mlx engine
   20G + `server.py` RAG/embeddings 1.9G = **Mira floor ~22G**, then lldb-rpc-server **3.5G** (an Xcode
   debugger left resident from the device-testing session — the killable culprit), browser ~3G. On 32G
-  that leaves ~7G, which Xcode+lldb+browser saturate. **Fix Miguel can act on for free: quit Xcode
+  that leaves ~7G, which Xcode+lldb+browser saturate. **Free fix: quit Xcode
   when not testing — reclaims 3.5G, ≈ what any model downgrade would save, at zero quality cost.**
 - [2026-08-13] **Engine log is now timestamped (commit 715bd4d).** `mira_mlx_server.py:2104`
   basicConfig gained `%(asctime)s` + datefmt, so every line reads `2026-08-13 21:21:03
   mira_mlx_server: ...` and correlating an eviction to a wall-clock time is a plain grep instead of
-  guessing from file position. Takes effect on the **next engine restart** (Miguel will do it
+  guessing from file position. Takes effect on the **next engine restart** (I'll do it
   manually). The log is already self-bounded at 32MB (`backend_manager.py:52`, truncate-at-restart —
   deliberate, left as-is rather than rewritten to rotate). Also built a local overnight sampler in the
   gitignored `notes/` (`mem-sampler.sh` via `start-sampler.sh`): every 60s it appends memory pressure
@@ -31,7 +31,7 @@
   (it already OOMs at 24K context standalone), and it saves only ~5G. Verdict: the problem is running
   two RAM-heavy things at once, not the model choice; attack the other side of the ledger.
 - [2026-08-12] **v1.3.0 released — 41 commits, and the changelog leads with what was broken rather
-  than what was built.** Tag-driven as always; Miguel asked for a minor rather than the conservative
+  than what was built.** Tag-driven as always; I asked for a minor rather than the conservative
   patch default, which is also what SemVer wanted given the new sampling knobs, penalties, per-request
   seed and usage fields. No backfill was needed, the changelog's highest version already matched the
   newest tag. Wheel built clean at `mira_core-1.3.0-py3-none-any.whl` (no `.dev`/`.dirty` suffix) and
@@ -61,7 +61,7 @@
 - [2026-08-12] **The bug report template was GitHub's unedited default, in both repos.** It asked a
   macOS-only Python backend's users about their iPhone 6's browser, while `CONTRIBUTING.md` promised
   it would ask for OS, Python version, mira-core version and active backend. mira-apps had the same
-  hole for a subtler reason: Miguel *had* written a good template at `.github/ISSUE_TEMPLATE.md`, but
+  hole for a subtler reason: I *had* written a good template at `.github/ISSUE_TEMPLATE.md`, but
   **GitHub ignores the legacy single-file form the moment a `.github/ISSUE_TEMPLATE/` directory
   exists**, and that directory held the boilerplate. Both now carry real templates (mira-apps commit
   `ef6e20b`). Also published the five-bullet spec format in `CONTRIBUTING.md` with the retry fix as a
@@ -235,7 +235,7 @@
   report. The merge script re-derives each chunk's own score from its samples and refuses to certify
   the run if it cannot reproduce what the harness wrote.
 - [2026-08-11] **IFEval's generation cap decided: 16384, overriding the task's own 1280, and the
-  thing that gates publishing is no longer the cap.** Miguel delegated the number ("raise the limit
+  thing that gates publishing is no longer the cap.** I delegated the number ("raise the limit
   as you see fit"), so the useful part is the reasoning rather than the value. **1280 predates
   reasoning models** — it is sized for an instruction-following answer and nothing else, so a
   thinking model spends the whole budget inside `<think>` and the score measures the cap. **The
@@ -275,7 +275,7 @@
   `_make_new_cache()`, which is the exact lane a caller-supplied cache bypasses; the adversarial
   probe refuted it. Reason about the lane the bug is *in*, and run the control that would refute you.
 - [2026-08-09] **Both of the day's "discoveries" turned out to be published, named and solved —
-  and the lesson is worth more than the measurements.** Miguel's challenge ("I can't be the first
+  and the lesson is worth more than the measurements.** My challenge ("I can't be the first
   finding this out") was correct on both counts. Batch size changing greedy output is **batch
   invariance**, diagnosed in [Defeating Nondeterminism in LLM
   Inference](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/) (Thinking
@@ -306,7 +306,7 @@
   for whoever builds it: **`mira_mlx_server.py:1166` calls `make_logits_processors()` with no
   arguments**, so mlx-lm's repetition/presence/frequency penalties are all off — most of the work
   is wiring, not building. Thresholds must respect the measured gap: clean output reached x7
-  repeated sentences, the degenerate case x355. **Not started; Miguel to review.**
+  repeated sentences, the degenerate case x355. **Not started; I'll review.**
 - [2026-08-09] **The bench now scores answers, and its first three full runs found that the
   instrument was wrong more often than the model.** Three 16-question runs on one build plus two
   targeted injection runs. Tier 1 came out **24/24 over 12 questions with zero variance across all
@@ -368,10 +368,10 @@
   (`evaluate.py:33-38`) calls `min()` on that empty list, so every run dies *after* paying for full
   generation. This killed the stock CLI identically — it was never a driver problem. HF auth and the
   GPQA gate were both re-verified clear on 2026-08-09 (`whoami` resolves, `dataset_info` returns 8
-  files). **The 21:00 reminder was cancelled** (Miguel on holiday; run it whenever). The lesson worth
+  files). **The 21:00 reminder was cancelled** (on holiday; run it whenever). The lesson worth
   keeping: the old smoke test called the CLI on IFEval, so the *guard itself* would have aborted the
   whole run before the model loaded — a preflight that cannot fail is not a preflight.
-- [2026-08-08] **Release decisions for v1.2.0, taken by Miguel:** the three opt-in flags
+- [2026-08-08] **My release decisions for v1.2.0:** the three opt-in flags
   (`boundary_snapshot`, `proactive_decompress`, `disk_prompt_cache`) **ship OFF and are
   documented**; version is **1.2.0**; and the orphaned disk cache gets **a warning, not an
   automatic deletion**. All three now hold in the tree. The flags were invisible to users
@@ -388,8 +388,8 @@
   printed "0.00 GB of dead prompt-cache files" for a 4.5MB probe, which reads as nothing at all
   inside a warning asking someone to act.
 - [2026-08-08] **Benches stopped writing into the real conversation history, and the first fix
-  for it took Mira's backend down.** Miguel saw bench Q2/Q4 ("write a Python …") conversations
-  in his own list. The existing teardown did delete them, but **cleanup is not isolation**:
+  for it took Mira's backend down.** I saw bench Q2/Q4 ("write a Python …") conversations
+  in my own list. The existing teardown did delete them, but **cleanup is not isolation**:
   they are visible in the app for the whole run and permanent if the run is interrupted.
   `MIRA_DATA_DIR` could never have covered this — it configures the process that *owns* the
   database, which is why it fixed `pytest` (in-process) and not the bench, which drives an
@@ -538,7 +538,7 @@
 
 ### `MAX_THINKING_TOKENS` — measured 2026-08-12, and 2048 does not bind either
 - **The code default is now 2048; the live `mira.yaml` is deliberately still 8192.** Changing a
-  runtime config is Miguel's call, and the measurement below is the argument for it rather than a
+  runtime config is my call, and the measurement below is the argument for it rather than a
   reason to do it silently.
 - **Two runs, and the first one measured nothing.** Both arms (8192 and 2048), same five rephrased
   questions on the topics that broke worst in batches 1 and 2, adaptive thinking: 0 broken of 5 at
@@ -619,7 +619,7 @@
   request that pays the cost is itself the fix. **An eviction costs time, not correctness**, so it
   cannot change a generated answer and accuracy evals are unaffected by it.
 
-### Needs Miguel
+### To do
 - ~~**Arm the wake for the GPQA night.**~~ **ARMED 2026-08-11** — `pmset -g sched` shows
   `wakeorpoweron at 08/12/2026 00:25:00 by 'pmset'`, and Arq's four wakes (00:00/01:00/01:30/03:00)
   survived alongside it. **The lid must stay open** — `caffeinate` does not defeat clamshell sleep,
@@ -686,7 +686,7 @@
         dead conversation.
      3. **Then** the stripper fix, which still needs the decision below.
 
-     ~~**Needs a decision before building.**~~ **ALL THREE SHIPPED 2026-08-11**, Miguel approved
+     ~~**Needs a decision before building.**~~ **ALL THREE SHIPPED 2026-08-11**, I approved
      the ranking above.
      1. `max_output_tokens` is a real setting now (`config.py`, `mira.yaml`, both call sites in
         `backend_manager.py`), default **16384**. It was hardcoded to 4096 in three places. Worth
@@ -753,7 +753,7 @@
      **Two residues, both left in place on purpose.** Batch 2's poisoned conversations are still
      in the production database with their 4096-`!` replies saved as assistant messages. The fix
      stops new poisoning at generation time; it does not clean history, so continuing one of those
-     conversations feeds the model five turns of `!`. Miguel read them in the app on 2026-08-11
+     conversations feeds the model five turns of `!`. I read them in the app on 2026-08-11
      and chose to keep them as they are. Untested and uncleaned, deliberately.
 
      And a caution about the corpus as an instrument, found by reading those same conversations:
@@ -879,8 +879,8 @@
   whatever is still true into the case study rather than maintaining both.
 
 ### Small, no decision needed
-- **Memory-state notifications should only fire when Miguel can act, or when they explain something
-  he caused.** Asked for directly on 2026-08-11, after the log showed **302 `advisory → evicted`
+- **Memory-state notifications should only fire when I can act, or when they explain something
+  I caused.** Asked for directly on 2026-08-11, after the log showed **302 `advisory → evicted`
   transitions in 70.5 hours** — one every ~14 minutes, round the clock, including 01:30, 03:00 and
   06:53 while he was asleep. macOS compresses an idle 20 GB process and Mira decompresses it back;
   there is nothing for a user to do about either, so the notification is pure noise and it trains him
@@ -940,7 +940,7 @@
     API when moving off `mira-core-pin`.
   - **#1584 is no longer "wait only" as of 2026-08-11: it is being split into three PRs.** At +1132
     across 4 files it sits in the class that merged **0 of 14**, and the CacheList work owed to
-    @pierre427 would only grow it. Miguel asked @angeloskath about splitting on 2026-07-26 and got
+    @pierre427 would only grow it. I asked @angeloskath about splitting on 2026-07-26 and got
     no answer — consistent with the roster finding below, since angeloskath has not commented
     anywhere since 2026-07-20. **Decision: do not volunteer the split as eagerness-signalling, but
     do act on an unanswered question of one's own.** The three pieces, with ready-to-post bodies in
@@ -1002,7 +1002,7 @@
   backups and analysis sweeps, and a grep for a subsystem name matches its own log lines.
 - **Do not build memory logic on `kern.memorystatus_vm_pressure_level`.** Measured 2026-08-08: when Xcode and Docker had already taken 8.64GB and the derived ceiling had dropped by the full 8.64GB, macOS was still reporting level 1. It only moved to 2 a whole sample later, once the compressor had spiked to 17.03GB. Availability is the leading indicator, compressor occupancy is the confirmation, and Apple's own level is the laggard — which is why all three are reported in `/v1/stats` and the advisory keys on the compressor.
 - **`MLX_ENABLE_TF32` is parsed as an integer, so `MLX_ENABLE_TF32=true` means OFF.** Measured on q4 M=1024: `1` gives 8783 GFLOP/s, unset 8755, `0` gives 3184, and **`true` gives 3185** — identical to `0`. Anything non-numeric reads as disabled. `config.py` keeps a YAML bool and converts to `"1"`/`"0"` at the `Popen` boundary specifically so nobody can hit this by writing the value that looks correct.
-- **An mlx-lm PR merges if and only if a maintainer reviews it.** Measured 2026-08-08 over 400 PRs, external authors only: **31 got a maintainer review and 30 merged (97%); 71 did not and 0 merged**. Community review does not substitute (0 of 3, and the reviewer pool includes pcuenca and Blaizzy). Requesting a reviewer is not an available lever — 6 of 386 external PRs have one pending and it needs write access. Diff size is the other gate: **401+ additions merged 0 of 14**, with 79 more sitting open in that class. The roster changed and the threads never noticed: angeloskath's last merge was 2026-07-09 and neither he nor awni has commented since 2026-07-20; **michalk8 and nastya236 do the merging now**. All three of Miguel's open PRs have `reviewers=[]`. **Decision 2026-08-08: no ping on any of them; do not re-propose it.** Full tables in gitignored `notes/mlxlm-merge-dynamics-2026-08-08.md`.
+- **An mlx-lm PR merges if and only if a maintainer reviews it.** Measured 2026-08-08 over 400 PRs, external authors only: **31 got a maintainer review and 30 merged (97%); 71 did not and 0 merged**. Community review does not substitute (0 of 3, and the reviewer pool includes pcuenca and Blaizzy). Requesting a reviewer is not an available lever — 6 of 386 external PRs have one pending and it needs write access. Diff size is the other gate: **401+ additions merged 0 of 14**, with 79 more sitting open in that class. The roster changed and the threads never noticed: angeloskath's last merge was 2026-07-09 and neither he nor awni has commented since 2026-07-20; **michalk8 and nastya236 do the merging now**. All three of my open PRs have `reviewers=[]`. **Decision 2026-08-08: no ping on any of them; do not re-propose it.** Full tables in gitignored `notes/mlxlm-merge-dynamics-2026-08-08.md`.
 - `uv tool install --force <local-path>` can silently reuse a cached build and NOT pick up new local commits, even though the command reports success — confirmed by checking the installed file's actual content after a "successful" reinstall still showed the pre-fix code. Full fix requires `uv tool uninstall <pkg> && uv cache clean <pkg>` before reinstalling from a local path with uncommitted-upstream changes; `--force` alone is not sufficient.
 - All local backends (mira-mlx/omlx/mlx-lm/vllm-mlx) share port 8080 — only one runs at a time by design. This means a stale/orphaned process from a previous backend can make `is_backend_ready()`'s health check pass spuriously (it just hits `/v1/models` on the shared port), masking a failed switch. See `feedback_backend_switch_self_stop.md` for the specific bug this caused.
 - `pyproject.toml` stays tag-driven via `hatch-vcs` — the git tag IS the version, never hand-edit. `mira.yaml` is gitignored runtime config, not tracked (confirmed 2026-07-06, no leaked secrets — a local `mira.yaml` with a real token exists only on disk, never committed).
