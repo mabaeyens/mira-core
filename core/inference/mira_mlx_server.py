@@ -443,6 +443,16 @@ class GenerationEngine:
         max_tokens: int = 4096,
         prefill_step_size: int = 1024,
         completion_batch_size: int = 1,
+        # Concurrent-decode width, and its prefill counterpart. mlx-lm clamps the
+        # effective decode width to max(completion_batch_size, prefill_batch_size),
+        # so leaving prefill_batch_size at its upstream default of 8 silently raises
+        # decode width to 8 even with completion_batch_size=1. On M5 (mlx#3897)
+        # batched attention diverges from single-sequence, and across a long decode
+        # that divergence can amplify into a repeating/garbage collapse; a primed
+        # long-running process reaches the collapsing path at width 8 too. Pin both
+        # to 1 so decode is genuinely single-sequence (no batch dimension, nothing to
+        # diverge). Raise the two together to trade this safety for decode throughput.
+        prefill_batch_size: int = 1,
         prompt_cache_max_bytes: int = 12 * 1024**3,
         max_kv_size: Optional[int] = None,
         kv_bits: Optional[int] = None,
@@ -478,6 +488,7 @@ class GenerationEngine:
         self.request_stall_timeout = request_stall_timeout
         self.prefill_step_size = prefill_step_size
         self.completion_batch_size = completion_batch_size
+        self.prefill_batch_size = prefill_batch_size
         self.prompt_cache_max_bytes = prompt_cache_max_bytes
         self.max_kv_size = max_kv_size
         self.kv_bits = kv_bits
@@ -690,6 +701,9 @@ class GenerationEngine:
                 self.model,
                 max_tokens=self.max_tokens,
                 completion_batch_size=self.completion_batch_size,
+                # Without this, prefill_batch_size defaults to 8 and the clamp lifts
+                # effective decode width to 8 regardless of completion_batch_size.
+                prefill_batch_size=self.prefill_batch_size,
                 prefill_step_size=self.prefill_step_size,
                 max_kv_size=self.max_kv_size,
                 kv_bits=self.kv_bits,
@@ -2213,6 +2227,10 @@ def main() -> None:
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--prefill-step-size", type=int, default=1024)
     parser.add_argument("--completion-batch-size", type=int, default=1)
+    # Must default to 1 alongside --completion-batch-size: mlx-lm's effective decode
+    # width is max(completion_batch_size, prefill_batch_size), and its own default of
+    # 8 would silently override a completion width of 1. See the constructor comment.
+    parser.add_argument("--prefill-batch-size", type=int, default=1)
     # A single ~21K-token KV cache entry measured ~3.3GB for this model; too low a
     # cap here silently evicts an entry right after inserting it (cache never hits).
     parser.add_argument("--prompt-cache-max-bytes", type=int, default=12 * 1024**3)
@@ -2283,6 +2301,7 @@ def main() -> None:
         max_tokens=args.max_tokens,
         prefill_step_size=args.prefill_step_size,
         completion_batch_size=args.completion_batch_size,
+        prefill_batch_size=args.prefill_batch_size,
         prompt_cache_max_bytes=args.prompt_cache_max_bytes,
         max_kv_size=args.max_kv_size,
         kv_bits=args.kv_bits,
