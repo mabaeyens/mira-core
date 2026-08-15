@@ -71,7 +71,7 @@ is a far narrower target and is exactly where oMLX went.
 **Decode is bandwidth-bound and no kernel moves that wall.** Generating a token
 requires reading the active weights from memory. Fusion helps when making many
 passes over data; it does not help when the single unavoidable pass *is* the
-cost. This is why the 2026-06-27 rejection of DFlash and MTP was right. **See
+cost. This is why the 2026-06-27 rejection of DFlash was right (MTP does not belong in this argument — see §6.5). **See
 §6.2 — this argument is weaker than it looks.**
 
 **Maintenance is the real cost.** A custom kernel pins the project to one model
@@ -85,7 +85,7 @@ an fp16/bf16 NAX gap with no opt-out.
 
 ## 6. Adversarial pass
 
-Four things did not survive review of §1-5.
+Five things did not survive review of §1-5.
 
 **6.1 "oMLX's kernels explain its prefill speed" is unsupported.** Inferred from
 filenames and `.metallib` presence. No benchmark of mlx-lm's GDN path against
@@ -112,6 +112,18 @@ of the time. On 2026-08-11 a cache change took one turn from 48.7s to 5.0s and a
 second one took conversation openers from 10% to 78.7% reuse. No kernel is going
 to approach either. Step 4 of the roadmap already gates kernels behind
 profiling, and that gate is doing real work.
+
+**6.5 MTP does not belong in the bandwidth-wall argument (§5).** The 2026-06-27
+rejection of MTP was practical, not physical: the 4-bit checkpoint had its
+`mtp.*` head stripped and re-converting a ~20 GB checkpoint was not worth it
+then. Baked back and run on omlx (2026-08-15), MTP gives the dense 27B **8.1 →
+19.1 tok/s (2.36×)** and the 35B-A3B MoE 1.34×, with no kernel. It wins
+*because* decode is bandwidth-bound: a verify step amortises one weight-read
+across several speculated tokens, using the ALU that single-token decode leaves
+idle. So a non-kernel technique already moves the effective decode wall — which
+cuts the same way as §6.4, the wins that matter here are not kernels. It does
+**not** settle §6.2 (achievable bandwidth is still unmeasured) and it is not an
+argument for writing one.
 
 ## 7. Position
 
