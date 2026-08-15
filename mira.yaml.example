@@ -79,6 +79,24 @@ backends:
     backend: omlx
     model: Qwen3.6-35B-A3B
     context_window: 131072
+  # Native MTP (multi-token prediction) — omlx runs the model's own MTP head as a
+  # self-speculator (measured on M5: dense 27B 8.1->19.1 t/s / 2.36x; 35B-A3B MoE
+  # 58->77.5 / 1.34x; adaptive depth, max mtp_num_draft_tokens=3 in model_settings.json;
+  # output distribution-preserving, not bit-identical). MTP REQUIRES the omlx backend:
+  # the default mira-mlx and mlx-lm strip the mtp.* head entirely, and vllm-mlx loads it
+  # but caps at effective_draft_tokens=1 for VLM-capable models (Qwen3.x) so it gives no
+  # speedup. The model dirs (~/.omlx/models/<name> with the raw bf16 mtp head baked back
+  # in + mtp_enabled in model_settings.json) must exist first — see docs/omlx-ctl.md.
+  - id: omlx-qwen36-moe-mtp
+    label: "Qwen3.6 35B (MTP)"
+    backend: omlx
+    model: Qwen3.6-35B-A3B-MTP
+    context_window: 131072
+  - id: omlx-qwen38-27b-mtp
+    label: "Qwen3.8 27B (MTP, quality mode)"
+    backend: omlx
+    model: Qwen3.8-27B-MTP
+    context_window: 65536
 
 # ── Embedding model (for RAG) ─────────────────────────────────────────────────
 embed_model: nomic-ai/nomic-embed-text-v1.5   # HuggingFace model; downloaded once and cached locally

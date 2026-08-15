@@ -64,7 +64,9 @@ omlx serves all models from a single `--model-dir`. Each subdirectory = one mode
 ```
 ~/.omlx/models/
 ├── Qwen3.6-35B-A3B/        → model_id: "Qwen3.6-35B-A3B"   (files present)
-└── gemma4-26b/             → model_id: "gemma4-26b"         (symlink to HF cache)
+├── gemma4-26b/             → model_id: "gemma4-26b"         (symlink to HF cache)
+├── Qwen3.8-27B-MTP/        → model_id: "Qwen3.8-27B-MTP"    (base symlinks + baked mtp head)
+└── Qwen3.6-35B-A3B-MTP/    → model_id: "Qwen3.6-35B-A3B-MTP" (base symlinks + baked mtp head)
 ```
 
 ### Adding gemma4 (one-time setup)
@@ -73,6 +75,30 @@ omlx serves all models from a single `--model-dir`. Each subdirectory = one mode
 ln -s ~/.cache/huggingface/hub/models--mlx-community--gemma-4-26b-a4b-it-4bit/snapshots/efbeee6e582ebfd06abc9d65e90839c4b5d2116b \
       ~/.omlx/models/gemma4-26b
 ```
+
+### Adding an MTP model (one-time setup)
+
+MTP (multi-token prediction) speculative decoding **only runs on omlx**. The default
+mira-mlx backend and mlx-lm strip the `mtp.*` head when loading; vllm-mlx loads it but
+caps at `effective_draft_tokens=1` for VLM-capable models (Qwen3.x), so it gives no
+speedup. omlx runs the head for real — measured on M5: dense 27B 8.1→19.1 t/s (2.36×),
+35B-A3B MoE 58→77.5 (1.34×), output distribution-preserving.
+
+A 4-bit checkpoint doesn't ship the head (the quant strips it), so bake it back:
+
+1. Extract the **raw bf16** `mtp.*` tensors from the HF *source* repo (27B: `Qwen/Qwen3.8-27B`
+   shard 18/18; 35B-A3B MoE: `Qwen/Qwen3.6-35B-A3B` shards 25–26, including the MoE experts).
+   Keep them bf16 — omlx's `norm_repair` applies the RMSNorm offset itself.
+2. Build `~/.omlx/models/<name>/`: symlink the 4-bit base's top-level files, then add the raw
+   tensors as a **top-level** `model-mtp.safetensors` (omlx globs `model*.safetensors` and
+   ignores the index; a subdir or non-`model*` name is silently skipped). `config.json` must
+   keep `mtp_num_hidden_layers > 0` and a `model_type` starting `qwen3_5`.
+3. In `~/.omlx/model_settings.json`, key by dir name:
+   `{"mtp_enabled": true, "mtp_num_draft_tokens": 3}` (3 = max draft depth; an adaptive
+   controller picks 1..3 per sequence). Confirm via the `MTP[...] accept=A/D` info log.
+
+Live dirs: `~/.omlx/models/Qwen3.8-27B-MTP`, `~/.omlx/models/Qwen3.6-35B-A3B-MTP`
+(routed by the `omlx-qwen38-27b-mtp` / `omlx-qwen36-moe-mtp` presets in `mira.yaml`).
 
 ## Start server
 

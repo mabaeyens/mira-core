@@ -12,6 +12,20 @@
   ~2–3× slower than a 3B-active MoE, the exact "too slow" failure mode already hit); (2) real
   SWE-bench-style + conversation-corpus scores actually beat 35B-A3B's 73.4. If either fails,
   35B-A3B stays — there is no other upgrade to chase. Convert via `/mlx-convert Qwen/Qwen3.8-27B`.
+- **MTP: shipped via omlx (measured); native mira-mlx MTP deferred** (updated 2026-08-15): 3.8-27B
+  ships the `mtp.*` weights 3.6 lacked — and 3.6-35B-A3B's source ships them too (the 4bit quant
+  stripped them). **omlx runs real multi-token MTP on both: MEASURED 27B 8.1->19.1 t/s (2.36x),
+  35B-A3B 58->77.5 (1.34x), distribution-preserving (not bit-identical — M5 batched-verify numerics).**
+  Now live as mira.yaml presets (`omlx-qwen38-27b-mtp`, `omlx-qwen36-moe-mtp`, depth 3; d4 is an
+  optional free +3.4%). This answers gate (1) above for the 27B: 19.1 t/s is usable but still ~3-4x
+  under the MoE, so MTP alone does not make the dense 27B speed-competitive. **vllm-mlx does NOT**
+  deliver MTP for these models — both are VLM-capable, so it routes them through its MLLM path which
+  hard-caps at `effective_draft_tokens=1` (measured +2% = noise); mlx_lm strips the head, so the
+  *default* mira-mlx path has none. mira-mlx's **own** native MTP would remove the omlx dependency but
+  is no longer urgent. Gates if ever built: (a) buy-in to cross the "never own model definitions" rule
+  for a small head; (b) a Phase-0 spike on whether Gated-DeltaNet state snapshot/restore on reject eats
+  the speedup (omlx solved this via cache_rollback, so tractable). Scope:
+  `notes/mtp_native_miramlx_design.md`; measurements: `notes/qwen38_as_is_bench.md` §6-7.
 
 ### Confirm the overnight-eviction culprit from the sampler, then decide if any tuning is warranted
 - The `notes/mem-samples.log` sampler is running (started 2026-08-13). After a night or two, read it
