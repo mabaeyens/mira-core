@@ -37,7 +37,7 @@ execution hole.
 | `backend` | `mira-mlx` | One of `mira-mlx`, `omlx`, `mlx-lm`, `vllm-mlx`. An unknown name raises rather than silently starting something else. |
 | `model` | `mlx-community/Qwen3.6-35B-A3B-4bit` | An mlx-community repo id for mira-mlx/mlx-lm/vllm-mlx; omlx wants its own model name instead (`Qwen3.6-35B-A3B`). |
 | `host` | `http://localhost:8080` | Where the backend listens. Only one backend runs at a time. |
-| `backends` | built-in preset list | Named backend+model combinations served to the iOS/macOS model picker via `GET /backends`. Adding a combination needs only a config edit, no app update. |
+| `backends` | built-in preset list | Named backend+model combinations served to the iOS/macOS model picker via `GET /backends`. Adding a combination needs only a config edit, no app update. Some presets are backend-locked — e.g. the MTP (multi-token prediction) presets only work on `omlx` (see `docs/omlx-ctl.md`). |
 | `context_window` | `65536` | Token context window. mira-mlx lowers this on its own if the machine's RAM cannot hold it. |
 | `max_output_tokens` | `16384` | Ceiling on a single reply. Raising it does not make replies longer — a finished model still emits its stop token — it stops them being cut off. |
 | `paths` | built-in defaults | Absolute paths to backend binaries: `mlx_lm_cli` and `omlx_cli`. Omit either to use the default. |
