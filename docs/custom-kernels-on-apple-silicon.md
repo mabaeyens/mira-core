@@ -92,14 +92,19 @@ filenames and `.metallib` presence. No benchmark of mlx-lm's GDN path against
 oMLX's kernel has been run. Their existence proves someone believed it was worth
 writing, not that it pays. **Not checked.**
 
-**6.2 "Decode is bandwidth-bound" only holds at the roofline.** The argument
-requires that measured decode throughput sits at the achievable memory
-bandwidth. The **measured ~59 tok/s** on Qwen3.6 is only half of that
-comparison: no achievable-bandwidth figure has ever been established on this M5,
-so there is nothing to compare it against. If 59 tok/s turns out to sit well
-under the ceiling there is headroom a better kernel could capture and the
-reasoning is backwards. **Half checked, and the other half is cheap:** measure
-achievable bandwidth on this machine, in the same sitting, and divide.
+**6.2 "Decode is bandwidth-bound" only holds at the roofline — and now it's
+measured to.** The argument requires that measured decode throughput sits at the
+achievable memory bandwidth. That other half is now established. An MLX
+microbench (2026-08-14, prod down, same runtime as decode: `mx.sum` read-stream,
+copy, and a decode-representative GEMV that streams a big fp16 weight matrix
+once, random inputs so nothing constant-folds) puts this M5's **achievable
+ceiling at ≈ 128 GB/s** — read-stream flat at 128 GB/s from 0.5–4 GB, GEMV
+plateauing at 125 GB/s. Non-MTP 27B decode demand is ≈ 15 GB/token × 8.12 tok/s
+≈ **122 GB/s, or 95% of the ceiling.** Decode really does sit at the roofline, so
+the bandwidth-wall argument holds and the reasoning is *not* backwards: there is
+no idle bandwidth for a better single-token kernel to capture. **Checked.** (This
+is also why MTP pays — §6.5 — it attacks the roofline from the other side, by
+reading the weights fewer times, not faster.)
 
 **6.3 "The barrier is low" conflates two things.** Calling
 `mx.fast.metal_kernel` is easy. Writing a correct *and faster* tiled kernel with
@@ -133,8 +138,10 @@ names the GDN prefill chunk as the hot spot.
 
 Two things would change this:
 
-- **§6.2 resolves against the current position.** If measured decode throughput
-  turns out to sit well under M5's achievable bandwidth, there is headroom and
-  the "bandwidth wall" argument stops applying. Worth measuring on its own.
+- **§6.2 resolves against the current position.** It didn't — measured: decode
+  sits at ≈ 95% of M5's ≈ 128 GB/s achievable bandwidth, so there is no headroom
+  a single-token kernel could reclaim and the "bandwidth wall" holds. This bullet
+  is now closed; it would only reopen if a faster resident-set or weight-format
+  change lifted the ceiling itself.
 - **Reproducible evals need batch invariance.** That is a correctness
   requirement, independent of speed, and no amount of cache work addresses it.
