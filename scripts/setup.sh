@@ -12,9 +12,11 @@
 #   --force                  proceed even if disk space is low
 #   -y, --yes                non-interactive (assume yes)
 #
-# Everything except `uv sync` + config is opt-in. The big oMLX app and its
-# model are GUI-gated, so this script detects them and tells you what to do —
-# it never claims to have installed them for you.
+# Everything except `uv sync` + config is opt-in. The default backend (mira-mlx)
+# is a bundled Python module and needs no separate app; its model downloads into
+# the HF cache on first run. If mira.yaml selects the oMLX backend instead, that
+# app is GUI-gated — this script detects it and tells you what to do, never
+# claiming to have installed it for you.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -81,11 +83,16 @@ uv sync
 ok "Virtualenv ready at .venv"
 
 # ── config ───────────────────────────────────────────────────────────────────
-if [ -f "$REPO_ROOT/mira.yaml" ]; then
-  ok "mira.yaml already present — left untouched"
+# MIRA_CONFIG (if set) redirects the config out of the repo — the Homebrew formula
+# uses it to keep mira.yaml in $HOME instead of the read-only Cellar. Mirrors
+# core/config.py's resolution so setup, doctor and the server agree on one file.
+MIRA_YAML="${MIRA_CONFIG:-$REPO_ROOT/mira.yaml}"
+mkdir -p "$(dirname "$MIRA_YAML")"
+if [ -f "$MIRA_YAML" ]; then
+  ok "mira.yaml already present ($MIRA_YAML) — left untouched"
 else
-  cp "$REPO_ROOT/mira.yaml.example" "$REPO_ROOT/mira.yaml"
-  ok "Created mira.yaml from example"
+  cp "$REPO_ROOT/mira.yaml.example" "$MIRA_YAML"
+  ok "Created mira.yaml from example ($MIRA_YAML)"
 fi
 
 # ── optional: OCR (tesseract) ────────────────────────────────────────────────
@@ -131,27 +138,52 @@ fi
 # connect by name. The Host-header gate rejects any name not in allowed_hosts,
 # answering 403 on a healthy connection — which every client reports as "cannot
 # reach server". Seed it here so the first remote connection just works.
-if [ -n "$TAILSCALE_HOST" ] && [ -f "$REPO_ROOT/mira.yaml" ]; then
-  if grep -q "^[[:space:]]*-[[:space:]]*$TAILSCALE_HOST[[:space:]]*$" "$REPO_ROOT/mira.yaml"; then
+if [ -n "$TAILSCALE_HOST" ] && [ -f "$MIRA_YAML" ]; then
+  if grep -q "^[[:space:]]*-[[:space:]]*$TAILSCALE_HOST[[:space:]]*$" "$MIRA_YAML"; then
     ok "allowed_hosts already lists $TAILSCALE_HOST"
-  elif grep -q "^allowed_hosts:" "$REPO_ROOT/mira.yaml"; then
+  elif grep -q "^allowed_hosts:" "$MIRA_YAML"; then
     warn "mira.yaml has allowed_hosts but not $TAILSCALE_HOST — add it by hand, or remote clients get 403"
   else
     printf '\n# Host header values accepted beyond loopback and the bare tailnet IP.\n# Added by setup.sh --with-tailscale.\nallowed_hosts:\n  - %s\n' \
-      "$TAILSCALE_HOST" >> "$REPO_ROOT/mira.yaml"
+      "$TAILSCALE_HOST" >> "$MIRA_YAML"
     ok "Added $TAILSCALE_HOST to allowed_hosts in mira.yaml"
   fi
 fi
 
-# ── oMLX (detect + instruct) ─────────────────────────────────────────────────
-info "Checking oMLX (default inference backend)"
-if [ -d "/Applications/oMLX.app" ]; then
-  ok "oMLX.app found in /Applications"
+# ── inference backend (detect + instruct) ────────────────────────────────────
+# Only oMLX needs a separate GUI app. Read the configured backend so a default
+# (mira-mlx) install doesn't end on a false "oMLX missing" alarm.
+BACKEND=$(sed -n 's/^backend:[[:space:]]*\([^[:space:]#"'\'']*\).*/\1/p' "$MIRA_YAML" 2>/dev/null | head -1)
+BACKEND=${BACKEND:-mira-mlx}
+info "Inference backend: ${BACKEND}"
+if [ "$BACKEND" = "omlx" ]; then
+  if [ -d "/Applications/oMLX.app" ]; then
+    ok "oMLX.app found in /Applications"
+  else
+    warn "backend is 'omlx' but oMLX.app is not installed — the manual steps:"
+    printf "${D}     1. Download from https://github.com/jundot/omlx/releases\n"
+    printf "     2. Drag oMLX.app to /Applications and open it once (accept prompts)\n"
+    printf "     3. In the oMLX model library, load: Qwen3.6-35B-A3B${N}\n"
+  fi
 else
-  warn "oMLX.app not found. This is the only manual step:"
-  printf "${D}     1. Download from https://github.com/jundot/omlx/releases\n"
-  printf "     2. Drag oMLX.app to /Applications and open it once (accept prompts)\n"
-  printf "     3. In the oMLX model library, load: Qwen3.6-35B-A3B${N}\n"
+  ok "mira-mlx is a bundled Python module — no separate app to install"
+  printf "${D}     The default model downloads into the HF cache on first run (~19 GB).${N}\n"
+  # Offer to pre-fetch now so the first `mira serve` isn't a silent 19 GB wait.
+  # Never force it under -y (respects the preflight disk decision); fetch-model is
+  # idempotent, so a cached model just returns.
+  if [ "$ASSUME_YES" = "1" ]; then
+    printf "${D}     Pre-fetch it now with:  mira fetch-model${N}\n"
+  else
+    printf "\n"
+    if [ -t 0 ] && read -r -p "  Download the default model now (~19 GB)? [y/N] " REPLY_DL; then :; else REPLY_DL=""; fi
+    case "$REPLY_DL" in
+      y|Y|yes|YES)
+        uv run python "$REPO_ROOT/mira_cli.py" fetch-model \
+          || warn "download didn't finish — re-run 'mira fetch-model' any time" ;;
+      *)
+        printf "${D}     Skipped. Pre-fetch later with:  mira fetch-model${N}\n" ;;
+    esac
+  fi
 fi
 
 # ── doctor ───────────────────────────────────────────────────────────────────

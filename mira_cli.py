@@ -7,6 +7,7 @@ Thin dispatcher exposed as the `mira` console script (see pyproject.toml):
     mira serve           start the web server (server.py) — web UI + SSE
     mira chat            start the interactive CLI (main.py)
     mira doctor          health check the install and running backends
+    mira fetch-model     pre-download the default model into the HF cache
     mira preflight       estimate disk + check free space / memory before install
 
 `serve` and `chat` shell out to the existing entry-point files so their
@@ -19,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,24 +35,32 @@ OMLX_APP = Path("/Applications/oMLX.app")
 OMLX_MODEL = "Qwen3.6-35B-A3B"
 OMLX_RELEASES = "https://github.com/jundot/omlx/releases"
 
+# The default backend (core/config.py) and the model it pulls from the HF cache
+# on first run. doctor/preflight read the live values from mira.yaml; these are
+# the fallbacks when mira.yaml is absent or silent.
+DEFAULT_BACKEND = "mira-mlx"
+DEFAULT_MODEL = "mlx-community/Qwen3.6-35B-A3B-4bit"
+
 GREEN, RED, YELLOW, DIM, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[2m", "\033[0m"
 
 GB = 1024 ** 3
 
 # Approximate on-disk sizes (GB) for a full install. Models the installer can't
-# fetch itself (oMLX is GUI-gated; HF models pull on first use) are still counted
-# so the disk budget reflects where the user ends up — not just what setup.sh runs.
+# fetch during setup (the default model pulls from the HF cache on first run;
+# oMLX models download via the GUI app) are still counted so the disk budget
+# reflects where the user ends up — not just what setup.sh runs.
 # id -> (label, approx GB, category)
 COMPONENTS: "dict[str, tuple[str, float, str]]" = {
-    "venv":         (".venv (uv sync)",                  1.5,  "auto"),
-    "rag":          ("embedding + reranker models",      1.0,  "auto"),
-    "omlx-qwen3":   ("Qwen3.6-35B-A3B (oMLX, default)",  19.0, "omlx"),
-    "omlx-gemma4":  ("Gemma 4 26B (oMLX)",               15.0, "omlx"),
+    "venv":         (".venv (uv sync)",                       1.5,  "auto"),
+    "rag":          ("embedding + reranker models",           1.0,  "auto"),
+    "mira-qwen3":   ("Qwen3.6-35B-A3B-4bit (default model)", 19.0, "mira-mlx"),
+    "omlx-qwen3":   ("Qwen3.6-35B-A3B (oMLX backend)",       19.0, "omlx"),
+    "omlx-gemma4":  ("Gemma 4 26B (oMLX)",                    15.0, "omlx"),
 }
 AUTO = ("venv", "rag")            # always installed by setup.sh
-DEFAULT_SELECTION = ("omlx-qwen3",)  # picked under -y / non-interactive
-OPTIONAL = ("omlx-qwen3", "omlx-gemma4")
-LARGE_MODELS = ("omlx-qwen3", "omlx-gemma4")
+DEFAULT_SELECTION = ("mira-qwen3",)  # the default backend's model, picked under -y
+OPTIONAL = ("mira-qwen3", "omlx-qwen3", "omlx-gemma4")
+LARGE_MODELS = ("mira-qwen3", "omlx-qwen3", "omlx-gemma4")
 BREATHING_GB = 15.0               # keep this much free after install
 
 
@@ -142,6 +152,61 @@ def _orphaned_prompt_cache_line() -> None:
     )
 
 
+def _config_path() -> Path:
+    """The active mira.yaml — MIRA_CONFIG if set (benches, Homebrew), else repo root.
+
+    Mirrors core.config._load_yaml_config so doctor/setup report on the same file
+    the server actually loads.
+    """
+    override = os.environ.get("MIRA_CONFIG")
+    return Path(override).expanduser() if override else _repo_root() / "mira.yaml"
+
+
+def _yaml_scalar(key: str, default: str) -> str:
+    """Read a top-level `key: value` scalar from mira.yaml, no YAML dependency.
+
+    doctor/preflight are stdlib-only (they run before .venv exists), so we can't
+    import pyyaml. mira.yaml keeps `backend:` and `model:` as flat top-level lines,
+    which is all this needs to route the health check — not a general parser.
+    """
+    try:
+        for line in _config_path().read_text().splitlines():
+            m = re.match(rf"^{re.escape(key)}:\s*(.+)$", line)
+            if m:
+                val = m.group(1).split("#", 1)[0].strip().strip("\"'")
+                if val:
+                    return val
+    except Exception:
+        pass
+    return default
+
+
+def _configured_backend() -> str:
+    return _yaml_scalar("backend", DEFAULT_BACKEND)
+
+
+def _configured_model() -> str:
+    return _yaml_scalar("model", DEFAULT_MODEL)
+
+
+def _hf_hub_cache() -> Path:
+    """The HuggingFace hub cache dir, honoring HF_HUB_CACHE / HF_HOME overrides."""
+    if os.environ.get("HF_HUB_CACHE"):
+        return Path(os.environ["HF_HUB_CACHE"]).expanduser()
+    home = os.environ.get("HF_HOME")
+    base = Path(home).expanduser() if home else Path.home() / ".cache" / "huggingface"
+    return base / "hub"
+
+
+def _hf_model_cached(repo_id: str) -> bool:
+    """True if `repo_id` has a populated snapshot in the HF hub cache."""
+    snap = _hf_hub_cache() / ("models--" + repo_id.replace("/", "--")) / "snapshots"
+    try:
+        return snap.is_dir() and any(any(d.iterdir()) for d in snap.iterdir() if d.is_dir())
+    except Exception:
+        return False
+
+
 def doctor() -> int:
     root = _repo_root()
     print(f"\n{YELLOW}Mira doctor{RESET}  {DIM}({root}){RESET}\n")
@@ -152,10 +217,26 @@ def doctor() -> int:
                 "curl -LsSf https://astral.sh/uv/install.sh | sh")
     ok &= _line((root / ".venv" / "bin" / "python").exists(),
                 ".venv built", "make install")
-    ok &= _line((root / "mira.yaml").exists(),
-                "mira.yaml present", "cp mira.yaml.example mira.yaml")
-    ok &= _line(OMLX_APP.exists(), "oMLX app installed",
-                f"download from {OMLX_RELEASES}, drag to /Applications")
+    cfg = _config_path()
+    ok &= _line(cfg.exists(),
+                f"mira.yaml present ({cfg})",
+                f"cp mira.yaml.example {cfg}")
+
+    # Backend-specific prerequisites. Only oMLX needs a separate GUI app; the
+    # default (mira-mlx) and the other in-process backends do not, so requiring
+    # oMLX.app on those paths would fail a perfectly good install.
+    backend = _configured_backend()
+    if backend == "omlx":
+        ok &= _line(OMLX_APP.exists(), "oMLX app installed",
+                    f"download from {OMLX_RELEASES}, drag to /Applications")
+    else:
+        _line(True, f"backend: {backend} (no separate app to install)")
+        model = _configured_model()
+        if _hf_model_cached(model):
+            _line(True, f"default model cached ({model})")
+        else:
+            _warn(f"default model not downloaded yet ({model})",
+                  "it pulls into the HF cache on first `mira serve` (~19 GB)")
 
     # Optional dep (informational — not counted toward exit status).
     _line(_which("tesseract"), "tesseract installed (optional — scanned-PDF OCR)",
@@ -163,10 +244,11 @@ def doctor() -> int:
 
     # Runtime checks (informational — not counted toward exit status).
     print(f"\n{DIM}  runtime (start a backend / server to light these up){RESET}")
-    omlx_up = _http_ok(OMLX_HOST + "/v1/models",
-                       {"Authorization": f"Bearer {_omlx_api_key()}"})
-    _line(omlx_up, f"oMLX reachable on :8080 (model: {OMLX_MODEL})",
-          f"open oMLX, load {OMLX_MODEL} in its model library")
+    if backend == "omlx":
+        omlx_up = _http_ok(OMLX_HOST + "/v1/models",
+                           {"Authorization": f"Bearer {_omlx_api_key()}"})
+        _line(omlx_up, f"oMLX reachable on :8080 (model: {OMLX_MODEL})",
+              f"open oMLX, load {OMLX_MODEL} in its model library")
     _line(_http_ok(SERVER_URL + "/"),
           "Mira server reachable on :8000", "mira serve")
 
@@ -233,9 +315,10 @@ def preflight(include: list, assume_yes: bool, force: bool) -> int:
     if assume_yes:
         selected.update(DEFAULT_SELECTION)
     else:
-        print(f"{DIM}  Pick the models to count toward the disk budget. The oMLX models")
-        print(f"  download later via the oMLX app — counted here so you don't run out")
-        print(f"  of space mid-install. Press Enter to accept each default.{RESET}\n")
+        print(f"{DIM}  Pick the models to count toward the disk budget. The default")
+        print(f"  model downloads into the HF cache on first run; oMLX models download")
+        print(f"  via the oMLX app. Counted here so you don't run out of space")
+        print(f"  mid-install. Press Enter to accept each default.{RESET}\n")
         for cid in OPTIONAL:
             label, gb, _ = COMPONENTS[cid]
             default = cid in selected or cid in DEFAULT_SELECTION
@@ -294,6 +377,46 @@ def preflight(include: list, assume_yes: bool, force: bool) -> int:
     return 0
 
 
+# ── fetch-model ───────────────────────────────────────────────────────────────
+
+def fetch_model(model: "str | None") -> int:
+    """Download the configured (or given) mira-mlx model into the HF cache.
+
+    The default backend pulls its ~19 GB model on first `mira serve`, which
+    otherwise looks like a hang. Running this ahead of time makes the download
+    explicit, with progress, and is idempotent (a cached model returns at once).
+    """
+    repo = model or _configured_model()
+    try:
+        from huggingface_hub import snapshot_download
+    except ModuleNotFoundError:
+        # doctor/preflight are stdlib-only, but this needs the venv. Re-exec there.
+        root = _repo_root()
+        py = root / ".venv" / "bin" / "python"
+        if py.exists() and Path(sys.executable).resolve() != py.resolve():
+            return subprocess.run(
+                [str(py), str(root / "mira_cli.py"), "fetch-model", "--model", repo],
+                cwd=root,
+            ).returncode
+        print(f"{RED}huggingface_hub is not available — run `make install` first.{RESET}")
+        return 1
+
+    if _hf_model_cached(repo):
+        print(f"{GREEN}Already cached:{RESET} {repo}")
+        return 0
+
+    print(f"{YELLOW}Downloading{RESET} {repo}")
+    print(f"{DIM}  → {_hf_hub_cache()}   (one-time; progress below){RESET}")
+    try:
+        snapshot_download(repo_id=repo)  # default tqdm bars stream to stderr
+    except Exception as e:  # noqa: BLE001 — surface any HF/network/auth error plainly
+        print(f"{RED}Download failed:{RESET} {e}")
+        print(f"{DIM}  → check your network / disk space and re-run `mira fetch-model`{RESET}")
+        return 1
+    print(f"{GREEN}✅ {repo} is ready.{RESET}")
+    return 0
+
+
 # ── dispatch ─────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -306,6 +429,11 @@ def main() -> None:
     sub.add_parser("serve", help="start the web server (port 8000)")
     sub.add_parser("chat", help="start the interactive CLI")
     sub.add_parser("doctor", help="health check the install")
+
+    p_fetch = sub.add_parser("fetch-model",
+                             help="download the default model into the HF cache")
+    p_fetch.add_argument("--model", default=None,
+                         help="repo id to fetch (default: mira.yaml's model)")
 
     p_pre = sub.add_parser("preflight", help="check disk + memory before install")
     p_pre.add_argument("--include", action="append", default=[], choices=list(COMPONENTS),
@@ -326,6 +454,8 @@ def main() -> None:
         sys.exit(_run_in_repo("main.py", []))
     elif args.cmd == "doctor":
         sys.exit(doctor())
+    elif args.cmd == "fetch-model":
+        sys.exit(fetch_model(args.model))
     elif args.cmd == "preflight":
         sys.exit(preflight(args.include, args.yes, args.force))
     else:

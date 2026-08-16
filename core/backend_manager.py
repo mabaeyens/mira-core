@@ -757,23 +757,46 @@ def pull_mlx_model(model_id: str, progress_cb=None) -> None:
     Raises on network or auth errors.
     """
     from huggingface_hub import snapshot_download
-    import os
 
-    def _tqdm_callback(tqdm_obj):
-        if progress_cb is None:
-            return
-        try:
-            downloaded = tqdm_obj.n / (1024 ** 3)
-            total = (tqdm_obj.total or 0) / (1024 ** 3)
-            pct = int(tqdm_obj.n / tqdm_obj.total * 100) if tqdm_obj.total else 0
-            progress_cb(downloaded, total, pct)
-        except Exception:
-            pass
+    if progress_cb is None:
+        snapshot_download(repo_id=model_id)
+        return
 
-    snapshot_download(
-        repo_id=model_id,
-        tqdm_class=None,
-        local_files_only=False,
-    )
-    if progress_cb:
+    # snapshot_download surfaces progress only through the tqdm class it
+    # instantiates — one bar per file (unit="B"), created on worker threads,
+    # plus an outer "Fetching N files" bar (unit="it"). Accumulate just the byte
+    # bars into shared, lock-guarded totals so progress_cb gets the combined
+    # figure as bytes arrive, instead of nothing until the download finishes.
+    import threading
+
+    try:
+        from tqdm.auto import tqdm as _tqdm_base
+    except Exception:  # tqdm unavailable — download without progress, don't fail
+        snapshot_download(repo_id=model_id)
         progress_cb(0, 0, 100)
+        return
+
+    lock = threading.Lock()
+    totals = {"total": 0, "done": 0}
+
+    class _ProgressTqdm(_tqdm_base):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._bytes = kwargs.get("unit") == "B"
+            if self._bytes:
+                with lock:
+                    totals["total"] += self.total or 0
+
+        def update(self, n=1):
+            ret = super().update(n)
+            if self._bytes and n:
+                with lock:
+                    totals["done"] += n
+                    total, done = totals["total"], totals["done"]
+                if total:
+                    progress_cb(done / (1024 ** 3), total / (1024 ** 3),
+                                min(100, int(done / total * 100)))
+            return ret
+
+    snapshot_download(repo_id=model_id, tqdm_class=_ProgressTqdm)
+    progress_cb(0, 0, 100)
