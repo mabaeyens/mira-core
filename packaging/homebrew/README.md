@@ -40,7 +40,7 @@ The tap is a public GitHub repo, `mabaeyens/homebrew-tap` (the `homebrew-` prefi
 lets `brew tap mabaeyens/tap` resolve it). It's cloned locally at `~/Projects/homebrew-tap`.
 Each tool is a single file under `Formula/`; `mira.rb` is the only one today.
 
-## Adding another project (Vera, etc.)
+## Adding another project
 
 The tap is deliberately generic so it can host every tool:
 
