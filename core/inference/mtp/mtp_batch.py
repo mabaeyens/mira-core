@@ -95,6 +95,123 @@ def truncate_at_stop(
 
 
 # --------------------------------------------------------------------------- #
+# Standalone width-1 generators — the §5.3 cycle, driving the model directly.    #
+# These are the correctness reference and the basis for the CompletionBatch      #
+# integration below. Greedy only (the lossless gate); stochastic acceptance is a #
+# follow-up.                                                                      #
+# --------------------------------------------------------------------------- #
+
+def plain_greedy_generate(model, prompt_ids, max_new_tokens, eos_ids):
+    """Baseline: one backbone forward per token, argmax. The MTP output must match
+    this token-for-token."""
+    import mlx.core as mx
+    from mlx_lm.models.cache import make_prompt_cache
+
+    cache = make_prompt_cache(model)
+    logits = model(mx.array(prompt_ids)[None], cache=cache)
+    tok = int(mx.argmax(logits[0, -1]).item())
+    out = [tok]
+    while len(out) < max_new_tokens and tok not in eos_ids:
+        logits = model(mx.array([[tok]]), cache=cache)
+        tok = int(mx.argmax(logits[0, -1]).item())
+        out.append(tok)
+    return out
+
+
+def mtp_greedy_generate(model, prompt_ids, max_new_tokens, depth, eos_ids):
+    """Native MTP self-speculative greedy decode (spec §5.3).
+
+    Per cycle: fold the last committed run into a head cache to draft d1, chain
+    d2..dk on the head's own hidden, verify ``[next_main, d1..dk]`` in ONE backbone
+    forward (n_confirmed=1 so the linear layers stash rollback state), accept the
+    longest greedy-matching prefix, roll the cache back to the accepted length, and
+    emit ``drafts[:m] + [correction]``. Output is guaranteed identical to
+    ``plain_greedy_generate`` because every emitted token is the backbone's own
+    greedy choice — the head only proposes.
+
+    A FRESH head cache per cycle (no committed-history KV) is used here: it keeps
+    the loop simple and is provably lossless (the backbone verify decides
+    everything); head history is a later accept-rate optimization, not correctness.
+
+    Returns (tokens, stats).
+    """
+    import mlx.core as mx
+    from mlx_lm.models.cache import make_prompt_cache
+
+    U = mx.uint32
+    cache = make_prompt_cache(model)
+
+    # --- prime: full prompt forward, greedy first token ---
+    logits, hidden = model(mx.array(prompt_ids)[None], cache=cache, return_hidden=True)
+    next_main = int(mx.argmax(logits[0, -1]).item())
+    committed = [next_main]                 # tokens confirmed last cycle
+    hidden_rows = hidden[:, -1:, :]         # backbone hidden BEFORE next_main
+    out = [next_main]
+
+    stats = {"cycles": 0, "drafted": 0, "accepted": 0, "rejections": 0,
+             "depth_drafted": [0] * depth, "depth_accepted": [0] * depth}
+
+    while len(out) < max_new_tokens and next_main not in eos_ids:
+        # --- draft: fold committed -> d1, then chain on the head's own hidden ---
+        mtp_cache = model.make_mtp_cache()          # fresh per cycle (see docstring)
+        lg, head_hidden = model.mtp_forward(
+            hidden_rows, mx.array(committed, U)[None], mtp_cache,
+            return_hidden=True, logits_keep=1,
+        )
+        d = int(mx.argmax(lg[0, -1]).item())
+        drafts = [d]
+        h = head_hidden[:, -1:, :]
+        for _ in range(1, depth):
+            lg, head_hidden = model.mtp_forward(
+                h, mx.array([[d]], U), mtp_cache, return_hidden=True, logits_keep=1
+            )
+            d = int(mx.argmax(lg[0, -1]).item())
+            drafts.append(d)
+            h = head_hidden[:, -1:, :]
+
+        # --- verify: ONE backbone forward over [next_main, d1..dk] ---
+        k = len(drafts)
+        inputs = mx.array([next_main, *drafts], U)[None]
+        vlogits, vhidden = model(inputs, cache=cache, return_hidden=True, n_confirmed=1)
+        targets = mx.argmax(vlogits[0], axis=-1)          # (k+1,)
+        target_ids = targets.tolist()
+        m = accept_prefix(drafts, target_ids[:k])
+        correction = int(target_ids[m])                    # backbone token after last accepted
+
+        # --- roll the hybrid cache back to the accepted length ---
+        if m < k:
+            if not model.mtp_partial_rollback(cache, m, k):
+                raise RuntimeError("mtp_partial_rollback refused; cache not rollback-capable")
+
+        # --- emit drafts[:m] + correction, honoring the first EOS ---
+        emitted = drafts[:m] + [correction]
+        stats["cycles"] += 1
+        stats["drafted"] += k
+        stats["accepted"] += m
+        if m < k:
+            stats["rejections"] += 1
+        for j in range(k):
+            stats["depth_drafted"][j] += 1
+            if j < m:
+                stats["depth_accepted"][j] += 1
+        stopped = False
+        for t in emitted:
+            out.append(t)
+            if t in eos_ids or len(out) >= max_new_tokens:
+                stopped = True
+                break
+        if stopped:
+            break
+
+        # --- carry state to the next cycle ---
+        committed = emitted
+        hidden_rows = vhidden[:, : m + 1, :]
+        next_main = correction
+
+    return out, stats
+
+
+# --------------------------------------------------------------------------- #
 # Orchestration — grounded scaffold, NOT yet runnable (see module docstring).   #
 # --------------------------------------------------------------------------- #
 

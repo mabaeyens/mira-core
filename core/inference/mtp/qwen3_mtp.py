@@ -12,10 +12,13 @@ Scope of THIS slice (spec §5.1 head + §5.2 sidecar/sanitize):
   (the silent accept-rate killer if missed), plus MoE-expert unfusing for the
   head layers.
 - ``mtp_forward`` / ``make_mtp_cache`` so a decode loop can drive the head.
-
-Deliberately DEFERRED to the decode-loop slice (§5.3): the ``n_confirmed`` split
-of ``GatedDeltaNet`` and ``mtp_partial_rollback`` (linear-layer KV rollback on a
-rejected draft). Nothing here drives ``n_confirmed > 0`` yet.
+- The ``n_confirmed`` split of ``GatedDeltaNet`` + ``mtp_partial_rollback`` so a
+  rejected draft rolls the hybrid cache back cheaply: full-attention ``KVCache``
+  layers ``trim`` the rejected positions; linear ``GatedDeltaNet`` layers restore
+  the pre-forward ``(conv, ssm)`` state and replay ONLY the recurrence over the
+  accepted slice from the stashed projected inputs — no second backbone forward.
+  With ``n_confirmed == 0`` (every non-MTP forward) ``GatedDeltaNet`` is
+  behaviourally identical to stock, so the default path is untouched.
 
 Attribute names inside the head are fixed by the checkpoint tensor keys
 (``mtp.fc.weight``, ``mtp.layers.N.*``, ``mtp.norm.weight``,
@@ -55,6 +58,8 @@ def apply() -> bool:
 
     _patch_args(q35)
     _register_head_classes(q35)
+    _patch_gated_delta_net(q35)
+    _patch_decoder_layer(q35)
     _patch_inner_text_model(q35)
     _patch_text_model(q35)
     _patch_outer_model(q35)
@@ -155,6 +160,126 @@ def _register_head_classes(q35: Any) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# GatedDeltaNet — n_confirmed-aware forward. On a verify forward (0 < n_confirmed #
+# < S) it stashes the pre-forward (conv, ssm) state + projected (qkv, a, b) on    #
+# the cache so a rejected draft can replay the recurrence over the accepted slice #
+# without a second backbone forward. With n_confirmed == 0 it is behaviourally    #
+# identical to stock, so every non-MTP forward is untouched.                      #
+# --------------------------------------------------------------------------- #
+
+def _patch_gated_delta_net(q35: Any) -> None:
+    cls = q35.GatedDeltaNet
+    if _ours(cls, "__call__"):
+        return
+
+    import mlx.core as mx
+    import mlx.nn as nn
+    from mlx.nn.layers.distributed import sum_gradients
+    from mlx_lm.models.gated_delta import gated_delta_update
+
+    def _process_chunk(self, qkv_chunk, a_chunk, b_chunk, conv_state, ssm_state,
+                       ssm_mask=None, lengths=None):
+        """The GatedDeltaNet recurrence over one token chunk, factored out so the
+        rollback can replay just the accepted prefix. Mirrors stock's conv +
+        gated_delta_update, returning (out, new_conv_state, new_ssm_state)."""
+        B, S_chunk = qkv_chunk.shape[:2]
+        conv_in = mx.concatenate([conv_state, qkv_chunk], axis=1)
+        n_keep = self.conv_kernel_size - 1
+        if lengths is not None:
+            ends = mx.clip(lengths, 0, S_chunk)
+            positions = (ends[:, None] + mx.arange(n_keep))[..., None]
+            new_conv_state = mx.take_along_axis(conv_in, positions, axis=1)
+        else:
+            new_conv_state = mx.contiguous(conv_in[:, -n_keep:])
+        conv_out = nn.silu(self.conv1d(conv_in))
+        q, k, v = [
+            t.reshape(B, S_chunk, h, d)
+            for t, h, d in zip(
+                mx.split(conv_out, [self.key_dim, 2 * self.key_dim], -1),
+                [self.num_k_heads, self.num_k_heads, self.num_v_heads],
+                [self.head_k_dim, self.head_k_dim, self.head_v_dim],
+            )
+        ]
+        inv_scale = k.shape[-1] ** -0.5
+        q = (inv_scale**2) * mx.fast.rms_norm(q, None, 1e-6)
+        k = inv_scale * mx.fast.rms_norm(k, None, 1e-6)
+        out, new_ssm_state = gated_delta_update(
+            q, k, v, a_chunk, b_chunk, self.A_log, self.dt_bias, ssm_state,
+            ssm_mask, use_kernel=not self.training,
+        )
+        return out, new_conv_state, new_ssm_state
+
+    def __call__(self, inputs, mask=None, cache=None, n_confirmed: int = 0):
+        B, S, _ = inputs.shape
+        if self.sharding_group is not None:
+            inputs = sum_gradients(self.sharding_group)(inputs)
+
+        qkv = self.in_proj_qkv(inputs)
+        z = self.in_proj_z(inputs).reshape(B, S, self.num_v_heads, self.head_v_dim)
+        b = self.in_proj_b(inputs)
+        a = self.in_proj_a(inputs)
+
+        if cache is not None and cache[0] is not None:
+            conv_state = cache[0]
+        else:
+            conv_state = mx.zeros(
+                (B, self.conv_kernel_size - 1, self.conv_dim), dtype=inputs.dtype
+            )
+        ssm_state = cache[1] if cache else None
+        if mask is not None:
+            qkv = mx.where(mask[..., None], qkv, 0)
+
+        if n_confirmed > 0 and n_confirmed < S and cache is not None:
+            # MTP verify: process the whole window unsplit, but stash the
+            # pre-forward state + projected inputs so a rejection can replay the
+            # accepted prefix through _process_chunk (see mtp_partial_rollback).
+            out, conv_f, ssm_f = self._process_chunk(qkv, a, b, conv_state, ssm_state, mask)
+            cache.rollback_state = (conv_state, ssm_state)
+            cache._mira_mtp_stash = (qkv, a, b)
+        else:
+            lengths = cache.lengths if cache is not None else None
+            out, conv_f, ssm_f = self._process_chunk(
+                qkv, a, b, conv_state, ssm_state, mask, lengths=lengths
+            )
+
+        if cache is not None:
+            cache[0] = conv_f
+            cache[1] = ssm_f
+            cache.advance(S)
+
+        out = self.norm(out, z)
+        out = self.out_proj(out.reshape(B, S, -1))
+        if self.sharding_group is not None:
+            out = mx.distributed.all_sum(out, group=self.sharding_group)
+        return out
+
+    setattr(__call__, _MARKER, True)
+    cls._process_chunk = _process_chunk
+    cls.__call__ = __call__
+
+
+# --------------------------------------------------------------------------- #
+# DecoderLayer — pass n_confirmed to the linear (GatedDeltaNet) sublayer only.   #
+# --------------------------------------------------------------------------- #
+
+def _patch_decoder_layer(q35: Any) -> None:
+    cls = q35.DecoderLayer
+    if _ours(cls, "__call__"):
+        return
+
+    def __call__(self, x, mask=None, cache=None, n_confirmed: int = 0):
+        if self.is_linear:
+            r = self.linear_attn(self.input_layernorm(x), mask, cache, n_confirmed=n_confirmed)
+        else:
+            r = self.self_attn(self.input_layernorm(x), mask, cache)
+        h = x + r
+        return h + self.mlp(self.post_attention_layernorm(h))
+
+    setattr(__call__, _MARKER, True)
+    cls.__call__ = __call__
+
+
+# --------------------------------------------------------------------------- #
 # Inner Qwen3_5TextModel — return PRE-norm hidden (the head fuses it; the outer  #
 # TextModel applies model.norm to make logits).                                 #
 # --------------------------------------------------------------------------- #
@@ -167,7 +292,7 @@ def _patch_inner_text_model(q35: Any) -> None:
     create_attention_mask = q35.create_attention_mask
     create_ssm_mask = q35.create_ssm_mask
 
-    def __call__(self, inputs, cache=None, input_embeddings=None):
+    def __call__(self, inputs, cache=None, input_embeddings=None, n_confirmed: int = 0):
         if input_embeddings is not None:
             hidden = input_embeddings
         else:
@@ -177,8 +302,10 @@ def _patch_inner_text_model(q35: Any) -> None:
         fa_mask = create_attention_mask(hidden, cache[self.fa_idx])
         ssm_mask = create_ssm_mask(hidden, cache[self.ssm_idx])
         for layer, c in zip(self.layers, cache):
-            mask = ssm_mask if layer.is_linear else fa_mask
-            hidden = layer(hidden, mask=mask, cache=c)
+            if layer.is_linear:
+                hidden = layer(hidden, mask=ssm_mask, cache=c, n_confirmed=n_confirmed)
+            else:
+                hidden = layer(hidden, mask=fa_mask, cache=c)
         return hidden  # pre-norm; caller applies self.norm
 
     setattr(__call__, _MARKER, True)
@@ -214,8 +341,11 @@ def _patch_text_model(q35: Any) -> None:
         cache=None,
         input_embeddings=None,
         return_hidden: bool = False,
+        n_confirmed: int = 0,
     ):
-        hidden = self.model(inputs, cache, input_embeddings=input_embeddings)
+        hidden = self.model(
+            inputs, cache, input_embeddings=input_embeddings, n_confirmed=n_confirmed
+        )
         normed = self.model.norm(hidden)
         if self.args.tie_word_embeddings:
             logits = self.model.embed_tokens.as_linear(normed)
@@ -225,33 +355,79 @@ def _patch_text_model(q35: Any) -> None:
             return logits, hidden  # hidden is pre-norm — what the head fuses
         return logits
 
-    def mtp_forward(self, hidden_states, next_token_ids, mtp_cache, logits_keep: int = 0):
+    def mtp_forward(
+        self, hidden_states, next_token_ids, mtp_cache,
+        return_hidden: bool = False, logits_keep: int = 0,
+    ):
         """Run the MTP head and project to vocab logits. ``logits_keep`` limits the
         lm_head projection to the last N positions (0 = all) — the large vocab
-        makes skipping unused rows worthwhile."""
+        makes skipping unused rows worthwhile. ``return_hidden`` also returns the
+        head's post-norm hidden so depth-k drafting chains on the head's own
+        output."""
         head_out = self.mtp(hidden_states, next_token_ids, self.model.embed_tokens, mtp_cache)
         src = head_out
         if logits_keep and src.shape[1] > logits_keep:
             src = src[:, -logits_keep:, :]
         if self.args.tie_word_embeddings:
-            return self.model.embed_tokens.as_linear(src)
-        return self.lm_head(src)
+            logits = self.model.embed_tokens.as_linear(src)
+        else:
+            logits = self.lm_head(src)
+        if return_hidden:
+            return logits, head_out
+        return logits
 
     def make_mtp_cache(self):
         if hasattr(self, "mtp"):
             return [KVCache() for _ in self.mtp.layers]
         return []
 
-    setattr(__call__, _MARKER, True)
-    setattr(mtp_forward, _MARKER, True)
-    setattr(make_mtp_cache, _MARKER, True)
-    setattr(_sanitize_text_model, _MARKER, True)
+    def mtp_partial_rollback(self, cache, accepted: int, num_drafts: int) -> bool:
+        """Roll the backbone cache back to ``accepted`` drafts after a verify
+        forward over ``[confirmed, d1..dk]`` (num_drafts = k). Full-attention KV
+        layers trim ``k - accepted`` positions; linear layers restore the stashed
+        pre-forward ``(conv, ssm)`` and replay the recurrence over the kept prefix
+        (confirmed + accepted drafts). Returns False if any layer lacks the state
+        to roll back, so the caller can fall back to a plain step."""
+        layers = self.model.layers
+        if len(cache) != len(layers):
+            return False
+        trim_n = num_drafts - accepted
+        if trim_n <= 0:
+            return True  # full accept — nothing rejected to roll back
+        keep = 1 + accepted  # confirmed token + accepted drafts
+        # Preflight: every layer must be rollback-capable before we mutate any.
+        for layer, c in zip(layers, cache):
+            if getattr(layer, "is_linear", False):
+                if getattr(c, "rollback_state", None) is None or getattr(
+                    c, "_mira_mtp_stash", None
+                ) is None:
+                    return False
+            elif not (hasattr(c, "is_trimmable") and c.is_trimmable()):
+                return False
+        for layer, c in zip(layers, cache):
+            if getattr(layer, "is_linear", False):
+                conv_0, ssm_0 = c.rollback_state
+                qkv_s, a_s, b_s = c._mira_mtp_stash
+                _, conv_m, ssm_m = layer.linear_attn._process_chunk(
+                    qkv_s[:, :keep], a_s[:, :keep], b_s[:, :keep], conv_0, ssm_0, None
+                )
+                c[0] = conv_m
+                c[1] = ssm_m
+                c.rollback_state = None
+                c._mira_mtp_stash = None
+            else:
+                c.trim(trim_n)
+        return True
+
+    for fn in (__call__, mtp_forward, make_mtp_cache, mtp_partial_rollback, _sanitize_text_model):
+        setattr(fn, _MARKER, True)
     if not init_wrapped:
         cls.__init__ = __init__
         cls._mira_mtp_init_wrapped = True
     cls.__call__ = __call__
     cls.mtp_forward = mtp_forward
     cls.make_mtp_cache = make_mtp_cache
+    cls.mtp_partial_rollback = mtp_partial_rollback
     cls.sanitize = _sanitize_text_model
 
 
@@ -333,24 +509,36 @@ def _patch_outer_model(q35: Any) -> None:
     if _ours(cls, "__call__"):
         return
 
-    def __call__(self, inputs, cache=None, input_embeddings=None, return_hidden: bool = False):
+    def __call__(
+        self, inputs, cache=None, input_embeddings=None,
+        return_hidden: bool = False, n_confirmed: int = 0,
+    ):
         return self.language_model(
-            inputs, cache=cache, input_embeddings=input_embeddings, return_hidden=return_hidden
+            inputs, cache=cache, input_embeddings=input_embeddings,
+            return_hidden=return_hidden, n_confirmed=n_confirmed,
         )
 
-    def mtp_forward(self, hidden_states, next_token_ids, mtp_cache, logits_keep: int = 0):
+    def mtp_forward(
+        self, hidden_states, next_token_ids, mtp_cache,
+        return_hidden: bool = False, logits_keep: int = 0,
+    ):
         return self.language_model.mtp_forward(
-            hidden_states, next_token_ids, mtp_cache, logits_keep=logits_keep
+            hidden_states, next_token_ids, mtp_cache,
+            return_hidden=return_hidden, logits_keep=logits_keep,
         )
 
     def make_mtp_cache(self):
         return self.language_model.make_mtp_cache()
 
-    for fn in (__call__, mtp_forward, make_mtp_cache):
+    def mtp_partial_rollback(self, cache, accepted: int, num_drafts: int) -> bool:
+        return self.language_model.mtp_partial_rollback(cache, accepted, num_drafts)
+
+    for fn in (__call__, mtp_forward, make_mtp_cache, mtp_partial_rollback):
         setattr(fn, _MARKER, True)
     cls.__call__ = __call__
     cls.mtp_forward = mtp_forward
     cls.make_mtp_cache = make_mtp_cache
+    cls.mtp_partial_rollback = mtp_partial_rollback
 
 
 # --------------------------------------------------------------------------- #
