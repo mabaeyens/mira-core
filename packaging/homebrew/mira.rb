@@ -1,5 +1,5 @@
 # Homebrew formula for Mira. Canonical source lives here in the mira-core repo;
-# copy it into the tap (mabaeyens/homebrew-mira) on release. See README.md in this
+# copy it into the tap (mabaeyens/homebrew-tap) on release. See README.md in this
 # directory for the tap setup, the release-bump step, and the design tradeoffs.
 class Mira < Formula
   desc "Local AI assistant — FastAPI backend, RAG, web UI (Apple Silicon)"

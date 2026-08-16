@@ -66,12 +66,13 @@ mira setup
 
 **Homebrew** (macOS, via the tap):
 ```bash
-brew tap mabaeyens/mira
+brew tap mabaeyens/tap
+brew trust mabaeyens/tap   # Homebrew 6+ only — it declines untrusted third-party taps
 brew install mira
 ```
-This installs the `mira` command; the venv and the model are fetched on first run
-(`mira serve` or `mira fetch-model`), since Homebrew's sandbox has no network at build
-time. Details in `packaging/homebrew/README.md`.
+On Homebrew 5 and earlier there's no trust step. This installs the `mira` command; the
+venv and the model are fetched on first run (`mira serve` or `mira fetch-model`), since
+Homebrew's sandbox has no network at build time. Details in `packaging/homebrew/README.md`.
 
 </details>
 
