@@ -1,0 +1,29 @@
+Mira Core
+Copyright (c) Miguel A. Baeyens
+
+This product includes original code (core/inference/mtp/) implementing
+Multi-Token Prediction (MTP) self-speculative decoding for Qwen3.5/3.6 models.
+That code is Mira's own and is released under Mira's MIT License (see LICENSE).
+
+The MTP mechanism was studied from the following works. No source code from
+them is copied into this repository; they are acknowledged here because ideas
+and conventions were learned from them:
+
+  - oMLX (https://github.com/jundot/omlx)
+    Copyright (c) jundot
+    Licensed under the Apache License, Version 2.0.
+    Its patches/mlx_lm_mtp/ layer is a monkey-patch of mlx-lm that adds MTP
+    support. Reading it clarified how an MTP head attaches to mlx-lm's Qwen3.5
+    model and, in particular, the RMSNorm weight-shift ("+1") convention that
+    the sidecar sanitize step must apply or draft acceptance collapses. A copy
+    of the Apache-2.0 license text is available at:
+    https://www.apache.org/licenses/LICENSE-2.0
+
+  - mlx-lm PR #990 (https://github.com/ml-explore/mlx-lm/pull/990)
+    Copyright (c) Apple Inc.
+    Licensed under the MIT License.
+    Proposes native Qwen3.5/3.6 MTP support in mlx-lm; used as a reference for
+    the head module and sidecar layout.
+
+  - DeepSeek-V3 (https://arxiv.org/abs/2412.19437) and Qwen3, for the MTP head
+    design and the draft/verify decoding scheme.
