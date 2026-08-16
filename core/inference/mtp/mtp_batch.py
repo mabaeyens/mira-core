@@ -129,9 +129,14 @@ def mtp_greedy_generate(model, prompt_ids, max_new_tokens, depth, eos_ids):
     ``plain_greedy_generate`` because every emitted token is the backbone's own
     greedy choice — the head only proposes.
 
-    A FRESH head cache per cycle (no committed-history KV) is used here: it keeps
-    the loop simple and is provably lossless (the backbone verify decides
-    everything); head history is a later accept-rate optimization, not correctness.
+    The head runs on a PERSISTENT committed-history cache: the prompt is folded in
+    at prime (every (hidden[t], token[t+1]) pair, free from the prefill forward) and
+    each accepted run is folded permanently, so drafts attend to the full context.
+    omlx measured this as the dominant accept-rate lever: 0.90 primed vs 0.26
+    unprimed at depth 1. The depth>1 speculative chain runs on the same cache and is
+    trimmed back to the committed length afterwards (KVCache.trim is exact), so
+    committed history stays clean. Losslessness is independent of all this — the
+    backbone verify decides every emitted token; the head only proposes.
 
     Returns (tokens, stats).
     """
@@ -141,19 +146,38 @@ def mtp_greedy_generate(model, prompt_ids, max_new_tokens, depth, eos_ids):
     U = mx.uint32
     cache = make_prompt_cache(model)
 
+    # The MTP head is fed the trunk's POST-norm hidden (omlx HEAD_HIDDEN_POST_NORM),
+    # not the pre-norm hidden the backbone returns. This is load-bearing: with
+    # pre-norm hidden the head's attention over committed history is miscalibrated
+    # and priming *degrades* the depth chain (measured -8.5% vs +0; post-norm turns
+    # that into the +full depth-chain gain d3 4%->16%). The head then chains on its
+    # OWN post-norm output (already normed by the head's self.norm), so only the
+    # backbone hidden is normalized here.
+    _head_norm = model.language_model.model.norm
+
     # --- prime: full prompt forward, greedy first token ---
     logits, hidden = model(mx.array(prompt_ids)[None], cache=cache, return_hidden=True)
+    hidden = _head_norm(hidden)
     next_main = int(mx.argmax(logits[0, -1]).item())
+
+    # Persistent head cache, primed over the prompt: fold (hidden[t], prompt[t+1])
+    # for t in 0..P-2 so the head enters generation with full prompt context. The
+    # final pair (hidden[P-1], next_main) is folded by the first cycle below.
+    mtp_cache = model.make_mtp_cache()
+    if len(prompt_ids) >= 2:
+        model.mtp_forward(
+            hidden[:, :-1, :], mx.array(prompt_ids[1:], U)[None], mtp_cache, logits_keep=1
+        )
+
     committed = [next_main]                 # tokens confirmed last cycle
-    hidden_rows = hidden[:, -1:, :]         # backbone hidden BEFORE next_main
+    hidden_rows = hidden[:, -1:, :]         # backbone POST-norm hidden BEFORE next_main
     out = [next_main]
 
     stats = {"cycles": 0, "drafted": 0, "accepted": 0, "rejections": 0,
              "depth_drafted": [0] * depth, "depth_accepted": [0] * depth}
 
     while len(out) < max_new_tokens and next_main not in eos_ids:
-        # --- draft: fold committed -> d1, then chain on the head's own hidden ---
-        mtp_cache = model.make_mtp_cache()          # fresh per cycle (see docstring)
+        # --- draft: fold committed into the persistent cache -> d1, then chain ---
         lg, head_hidden = model.mtp_forward(
             hidden_rows, mx.array(committed, U)[None], mtp_cache,
             return_hidden=True, logits_keep=1,
@@ -168,6 +192,13 @@ def mtp_greedy_generate(model, prompt_ids, max_new_tokens, depth, eos_ids):
             d = int(mx.argmax(lg[0, -1]).item())
             drafts.append(d)
             h = head_hidden[:, -1:, :]
+
+        # Drop the speculative chain positions from the head cache, keeping only the
+        # committed fold. trim on each head KVCache is exact for standard attention.
+        spec_positions = depth - 1
+        if spec_positions > 0:
+            for kc in mtp_cache:
+                kc.trim(spec_positions)
 
         # --- verify: ONE backbone forward over [next_main, d1..dk] ---
         k = len(drafts)
@@ -205,7 +236,7 @@ def mtp_greedy_generate(model, prompt_ids, max_new_tokens, depth, eos_ids):
 
         # --- carry state to the next cycle ---
         committed = emitted
-        hidden_rows = vhidden[:, : m + 1, :]
+        hidden_rows = _head_norm(vhidden[:, : m + 1, :])  # POST-norm for the head
         next_main = correction
 
     return out, stats
