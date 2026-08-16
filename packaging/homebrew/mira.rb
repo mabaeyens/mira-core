@@ -4,8 +4,8 @@
 class Mira < Formula
   desc "Local AI assistant — FastAPI backend, RAG, web UI (Apple Silicon)"
   homepage "https://github.com/mabaeyens/mira-core"
-  url "https://github.com/mabaeyens/mira-core/archive/refs/tags/v1.3.0.tar.gz"
-  sha256 "933d0f475eef14fc3537f0fd5d0fe1e4cd74fa4a598347bdf0d9037fa9c8b2c3"
+  url "https://github.com/mabaeyens/mira-core/archive/refs/tags/v1.4.0.tar.gz"
+  sha256 "b2167bd1d56482560abac76e33bdb19c45fd34de5393af6c5d48a5256724c9a2"
   license "MIT"
 
   # uv owns the Python side (venv + the large MLX/ML dependency tree). Enumerating
