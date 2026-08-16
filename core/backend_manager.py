@@ -500,11 +500,17 @@ def ensure_backend_running(backend: str, model: Optional[str] = None) -> None:
             logger.info("mlx-lm already running")
         _warmup_model(MLX_LM_MODEL)
     elif backend == "omlx":
-        if not _verify_or_adopt(OMLX_HOST + "/v1/models", OMLX_MODEL, omlx=True):
+        # Honor the configured model (mira.yaml's `model:`), like the mira-mlx
+        # branch below — the omlx branch used to warm/verify the hardcoded
+        # OMLX_MODEL constant regardless, so a fresh process warmed the wrong
+        # model (loading it into omlx) while real /chat requests carried
+        # config.MODEL_NAME, forcing a cold model-swap on the first message.
+        target_model = model or OMLX_MODEL
+        if not _verify_or_adopt(OMLX_HOST + "/v1/models", target_model, omlx=True):
             start_omlx()
         else:
             logger.info("oMLX already running")
-        _warmup_model(OMLX_MODEL, host=OMLX_HOST, api_key=_omlx_api_key())
+        _warmup_model(target_model, host=OMLX_HOST, api_key=_omlx_api_key())
     elif backend == "vllm-mlx":
         if not _verify_or_adopt(VLLM_MLX_HOST + "/v1/models", VLLM_MLX_MODEL):
             start_vllm_mlx()
