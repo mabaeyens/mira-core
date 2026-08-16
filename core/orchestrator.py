@@ -72,6 +72,28 @@ def _degenerate_run(text: str):
     return (char, share) if share > _DEGENERATE_SHARE else None
 
 
+def _sanitize_loaded_history(messages: List[Dict]) -> List[Dict]:
+    """Drop empty or degenerate assistant turns before history re-enters context.
+
+    Generation-time guards stop *new* poison, but history saved before those
+    guards (or by any future edge case) can still hold a blank or `!!!!`-style
+    assistant turn. Feeding one back makes the model condition on garbage, so
+    strip them here. Only the model-facing history is filtered — the DB rows and
+    the app's own view (load_messages) are untouched.
+    """
+    clean, dropped = [], 0
+    for m in messages:
+        if m.get("role") == "assistant":
+            content = m.get("content") or ""
+            if not content.strip() or _degenerate_run(content):
+                dropped += 1
+                continue
+        clean.append(m)
+    if dropped:
+        logger.info("Sanitized loaded history: dropped %d empty/degenerate assistant turn(s)", dropped)
+    return clean
+
+
 def _tool_ui_labels(name: str, args: dict):
     """Return (start_label, done_label_fn) for a tool call."""
     # Not every tool returns a dict. list_attachments and read_attachment hand
@@ -263,6 +285,7 @@ class ChatOrchestrator:
         self.search_engine = SearchEngine()
         self.rag_engine = RagEngine()
         self.conversation_history: List[Dict] = []
+        self.last_finish_reason: Optional[str] = None  # engine's finish_reason for the last answer
         self.system_prompt_added = False
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
@@ -403,7 +426,7 @@ class ChatOrchestrator:
 
     def load_conversation(self, conv_id: str, project: Optional[Dict] = None) -> None:
         from . import db
-        messages = db.load_messages(conv_id)
+        messages = _sanitize_loaded_history(db.load_messages(conv_id))
         self.conv_id = conv_id
         self._is_new_conv = False
         self.project = project
@@ -1148,6 +1171,9 @@ class ChatOrchestrator:
                 "or narrow the question, and I'll get further."
             )
 
+        # Record for persistence — the last LLM call in the turn is the final
+        # answer, so this ends up holding that answer's finish_reason at save time.
+        self.last_finish_reason = final_finish_reason
         yield {
             "type": "llm_done",
             "full_content": full_content,

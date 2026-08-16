@@ -759,7 +759,8 @@ async def chat(
                         db.save_messages(orch.conv_id, [
                             {"role": "user",      "content": message},
                             {"role": "assistant", "content": done_content,
-                             "thinking_content": thinking_content},
+                             "thinking_content": thinking_content,
+                             "finish_reason": getattr(orch, "last_finish_reason", None)},
                         ])
 
                         if was_new_conv:

@@ -12,6 +12,7 @@ ephemeral and re-generated on each turn.  Content is stored as plain text
 (the original user message, not the RAG-augmented version).
 """
 
+import logging
 import shutil
 import sqlite3
 import threading
@@ -21,6 +22,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .config import DB_PATH, MAX_CONVERSATIONS
+
+logger = logging.getLogger(__name__)
 
 _local = threading.local()
 
@@ -95,6 +98,13 @@ def init_db() -> None:
         # Migration: add thinking_content to existing messages tables
         try:
             conn.execute("ALTER TABLE messages ADD COLUMN thinking_content TEXT")
+        except Exception:
+            pass  # column already exists
+        # Migration: add finish_reason to existing messages tables. Diagnostics —
+        # tells a truncated ("length") or empty reply apart from a clean "stop"
+        # after the fact, which the DB could not do before.
+        try:
+            conn.execute("ALTER TABLE messages ADD COLUMN finish_reason TEXT")
         except Exception:
             pass  # column already exists
         # FTS5 index for conversation search
@@ -247,24 +257,36 @@ def update_project(conv_id: str, project_id: Optional[str]) -> None:
 # ── Messages ──────────────────────────────────────────────────────────────────
 
 def save_messages(conv_id: str, messages: List[Dict]) -> None:
-    """Append messages and bump updated_at."""
+    """Append messages and bump updated_at.
+
+    An assistant turn with no content and no thinking is a generation failure,
+    not an answer: persisting it leaves a blank bubble in history and feeds an
+    empty turn back into rebuilt context. Skip it rather than store it. The
+    `finish_reason` (when the caller supplies it) is kept for diagnostics.
+    """
     now = int(time.time())
     with _conn() as conn:
+        wrote = False
         for msg in messages:
             content = str(msg.get("content", ""))
+            thinking = msg.get("thinking_content") or None
+            if msg["role"] == "assistant" and not content.strip() and not thinking:
+                logger.warning("Dropped an empty assistant reply for %s (not persisted)", conv_id)
+                continue
             conn.execute(
-                "INSERT INTO messages (conversation_id, role, content, thinking_content, created_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (conv_id, msg["role"], content,
-                 msg.get("thinking_content") or None, now),
+                "INSERT INTO messages (conversation_id, role, content, thinking_content,"
+                " finish_reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (conv_id, msg["role"], content, thinking, msg.get("finish_reason"), now),
             )
             conn.execute(
                 "INSERT INTO messages_fts (content, conversation_id) VALUES (?, ?)",
                 (content, conv_id),
             )
-        conn.execute(
-            "UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id)
-        )
+            wrote = True
+        if wrote:
+            conn.execute(
+                "UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id)
+            )
 
 
 def load_messages(conv_id: str) -> List[Dict]:
