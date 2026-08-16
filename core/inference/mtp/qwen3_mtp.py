@@ -357,21 +357,38 @@ def _patch_text_model(q35: Any) -> None:
 
     def mtp_forward(
         self, hidden_states, next_token_ids, mtp_cache,
-        return_hidden: bool = False, logits_keep: int = 0,
+        return_hidden: bool = False, logits_keep: int = 0, draft_vocab: int = 0,
     ):
         """Run the MTP head and project to vocab logits. ``logits_keep`` limits the
         lm_head projection to the last N positions (0 = all) — the large vocab
         makes skipping unused rows worthwhile. ``return_hidden`` also returns the
         head's post-norm hidden so depth-k drafting chains on the head's own
-        output."""
+        output.
+
+        ``draft_vocab`` (0 = full) restricts the projection to the first ``draft_vocab``
+        vocab rows. This is a DRAFT-ONLY speedup: the full-vocab backbone verify decides
+        every emitted token, so a reduced-vocab draft cannot change the output — it can
+        only lower the accept rate if a true next token's id lands beyond ``draft_vocab``
+        (measured negligible when it covers the generated-token range). The full-vocab
+        lm_head is ~46% of a draft forward on Qwen3.8-27B; a 32k-row projection cuts that
+        ~6x. Never pass ``draft_vocab`` on the verify forward — only on head drafts."""
+        import mlx.core as mx
+
         head_out = self.mtp(hidden_states, next_token_ids, self.model.embed_tokens, mtp_cache)
         src = head_out
         if logits_keep and src.shape[1] > logits_keep:
             src = src[:, -logits_keep:, :]
-        if self.args.tie_word_embeddings:
-            logits = self.model.embed_tokens.as_linear(src)
+        proj = self.model.embed_tokens if self.args.tie_word_embeddings else self.lm_head
+        if draft_vocab and draft_vocab < self.args.vocab_size:
+            logits = mx.quantized_matmul(
+                src, proj.weight[:draft_vocab], scales=proj.scales[:draft_vocab],
+                biases=proj.biases[:draft_vocab], transpose=True,
+                group_size=proj.group_size, bits=proj.bits,
+            )
+        elif self.args.tie_word_embeddings:
+            logits = proj.as_linear(src)
         else:
-            logits = self.lm_head(src)
+            logits = proj(src)
         if return_hidden:
             return logits, head_out
         return logits
@@ -520,11 +537,11 @@ def _patch_outer_model(q35: Any) -> None:
 
     def mtp_forward(
         self, hidden_states, next_token_ids, mtp_cache,
-        return_hidden: bool = False, logits_keep: int = 0,
+        return_hidden: bool = False, logits_keep: int = 0, draft_vocab: int = 0,
     ):
         return self.language_model.mtp_forward(
             hidden_states, next_token_ids, mtp_cache,
-            return_hidden=return_hidden, logits_keep=logits_keep,
+            return_hidden=return_hidden, logits_keep=logits_keep, draft_vocab=draft_vocab,
         )
 
     def make_mtp_cache(self):
