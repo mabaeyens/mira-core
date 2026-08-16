@@ -92,6 +92,12 @@ you have that **plus ~15 GB breathing room** free — otherwise it stops (overri
 resident at once (Mira loads one at a time), and below 24 GB the default model may OOM at
 large context. Run `mira preflight` standalone any time to see the budget.
 
+The default backend pulls its ~19 GB model on the first `mira serve`, which otherwise
+looks like a hang. Run **`mira fetch-model`** ahead of time to download it explicitly,
+with progress — it's idempotent (a cached model returns at once) and takes an optional
+repo id (`mira fetch-model mlx-community/<repo>`) to pull a model other than the
+configured default.
+
 ### No extra app required
 
 The default backend is **mira-mlx**, Mira's own inference server — it's a bundled

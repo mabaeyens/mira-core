@@ -1,7 +1,22 @@
 # Changelog
 
-## Unreleased
+## v1.4.0 — August 2026
 
+- **Mira is now distributable.** A new `mira fetch-model` command downloads the
+  default backend's ~19 GB model ahead of time, with progress, so the first
+  `mira serve` no longer looks like a hang (idempotent; takes an optional repo id
+  to pull a different model). The installer, `mira doctor` and `mira preflight` are
+  now built around the mira-mlx default rather than assuming the optional oMLX app,
+  and a Homebrew formula ships under `packaging/homebrew/` (tap publish pending).
+- **A failed generation can no longer poison your history.** An assistant reply
+  that comes back empty, or degenerates into a single repeated character
+  (`!!!!…`), is no longer saved and is stripped from loaded history before it
+  re-enters the model's context. A blank reply also used to leave a bubble stuck
+  in the "typing…" state after you reopened the conversation — that's fixed at the
+  source, since the blank turn is never persisted.
+- **Truncated replies are now distinguishable after the fact.** Each stored reply
+  records the engine's `finish_reason`, so a response cut off by the length cap or
+  one that came back empty can be told apart from a clean finish.
 - **The "your Mac is low on memory" notification was blaming other apps for
   memory Mira itself was holding.** The advisory splits an eviction into the idle
   treadmill (macOS compressing an idle model, nothing to act on) and a real
