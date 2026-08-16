@@ -689,6 +689,14 @@ class GenerationEngine:
                 if mtp.apply():
                     mtp.set_depth(self.mtp_max_draft_tokens)
                     mtp.set_active(True)
+                    # Install the MTP decode path: swap mlx-lm's prefill/decode
+                    # batch classes so the BatchGenerator built below serves native
+                    # MTP. Width-1 only (mira-mlx's production config); any other
+                    # batch shape falls back to the stock path. Must run before the
+                    # BatchGenerator is constructed.
+                    from core.inference.mtp import mtp_batch
+
+                    mtp_batch.patch(depth=self.mtp_max_draft_tokens)
                     logger.info(
                         "native MTP armed (max_draft_tokens=%d)", self.mtp_max_draft_tokens
                     )
