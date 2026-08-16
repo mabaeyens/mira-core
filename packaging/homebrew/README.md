@@ -1,11 +1,17 @@
 # Homebrew distribution for Mira
 
-`mira.rb` here is the **canonical** formula. It is not live until it's published in
-a tap. This directory is the source of truth; the tap holds a copy.
+`mira.rb` here is the **canonical** formula; the tap repo `mabaeyens/homebrew-mira`
+holds a copy under `Formula/`. This directory is the source of truth. The tap is
+**published** — install with:
+
+```bash
+brew tap mabaeyens/mira
+brew install mira
+```
 
 ## What `brew install` gives you (and what it doesn't)
 
-`brew install mabaeyens/tap/mira` installs the `mira` command and the source tree
+`brew install mabaeyens/mira/mira` installs the `mira` command and the source tree
 into the Homebrew Cellar. It does **not** download the ~19 GB model or build the
 Python venv at install time — Homebrew's build sandbox has no network. Instead:
 
@@ -18,45 +24,49 @@ Mutable state stays out of the Cellar: config at `~/.config/mira/mira.yaml`
 (via `MIRA_CONFIG`), data at `~/.local/share/mira` (the default). Both survive
 `brew upgrade`; only the bundled venv is rebuilt after an upgrade.
 
-## Publishing the tap (one-time)
+## The tap repo
 
-The tap is a separate GitHub repo named `homebrew-tap`. Creating and pushing it is
-a manual step (it needs your GitHub account — not automated from here):
+The tap is a separate public GitHub repo, `mabaeyens/homebrew-mira` (the `homebrew-`
+prefix is what lets `brew tap mabaeyens/mira` resolve it). It's cloned locally at
+`~/Projects/homebrew-mira`, and holds a single file: `Formula/mira.rb`, a copy of the
+canonical formula in this directory.
 
-```bash
-gh repo create mabaeyens/homebrew-tap --public --clone
-mkdir -p homebrew-tap/Formula
-cp packaging/homebrew/mira.rb homebrew-tap/Formula/mira.rb
-cd homebrew-tap && git add Formula/mira.rb && git commit -m "mira 1.3.0" && git push
-```
-
-Then anyone installs with:
+It was created once with:
 
 ```bash
-brew install mabaeyens/tap/mira
-# or:  brew tap mabaeyens/tap && brew install mira
+gh repo create mabaeyens/homebrew-mira --public --clone
 ```
 
-## Bumping on each release
+You should not need to recreate it. Anyone installs with:
 
-`url` + `sha256` pin one tagged source tarball. After tagging a new release
-(`/core-release`), update both:
+```bash
+brew tap mabaeyens/mira && brew install mira
+```
+
+## Bumping on each release — use `/mira-brew-release`
+
+`url` + `sha256` pin one tagged source tarball, so after `/core-release` tags a new
+version the formula must be re-pinned. **Run `/mira-brew-release`** — it finds the
+latest mira-core tag, computes the tarball sha256, updates both this canonical copy
+and the tap's `Formula/mira.rb`, pushes both, and confirms `brew info` sees the new
+version. It's a mechanical job, run by a Haiku agent.
+
+The manual equivalent, if you ever need it:
 
 ```bash
 VER=1.4.0
 URL="https://github.com/mabaeyens/mira-core/archive/refs/tags/v${VER}.tar.gz"
-SHA=$(curl -LsS "$URL" | shasum -a 256 | awk '{print $1}')
-# edit mira.rb: set url to $URL and sha256 to $SHA, then copy into the tap and push
+# curl/wget are intercepted here on redirect — use python for the sha:
+SHA=$(python3 -c "import urllib.request,hashlib; print(hashlib.sha256(urllib.request.urlopen('$URL').read()).hexdigest())")
+# edit url + sha256 in mira.rb, copy into ~/Projects/homebrew-mira/Formula/mira.rb, push both
 ```
 
-(Worth folding into `/core-release` later so the formula bump is automatic.)
-
-## Validate before publishing
+## Validate
 
 ```bash
-ruby -c packaging/homebrew/mira.rb          # syntax
-brew audit --formula --strict packaging/homebrew/mira.rb   # if you have the tap tapped
-brew install --build-from-source mabaeyens/tap/mira        # end-to-end, on a clean machine
+ruby -c packaging/homebrew/mira.rb                          # syntax
+brew info mabaeyens/mira/mira                               # taps + parses, no install
+brew install --build-from-source mabaeyens/mira/mira        # end-to-end, on a clean machine
 ```
 
 ## Design notes / tradeoffs (why it's shaped this way)
@@ -74,7 +84,4 @@ brew install --build-from-source mabaeyens/tap/mira        # end-to-end, on a cl
   keep `brew install` fast and honest.
 - **Honest verdict.** For a 19 GB-model, stateful, Apple-Silicon-only local server,
   the `curl | bash` installer remains the primary channel; Homebrew adds
-  discoverability and `brew upgrade`, at the cost of this maintenance. Ship the tap
-  if that discoverability is worth the per-release bump; otherwise the one-liner is
-  already complete.
-```
+  discoverability and `brew upgrade`, at the cost of the per-release bump.

@@ -64,6 +64,15 @@ uv tool install --editable .   # run from inside the checkout
 mira setup
 ```
 
+**Homebrew** (macOS, via the tap):
+```bash
+brew tap mabaeyens/mira
+brew install mira
+```
+This installs the `mira` command; the venv and the model are fetched on first run
+(`mira serve` or `mira fetch-model`), since Homebrew's sandbox has no network at build
+time. Details in `packaging/homebrew/README.md`.
+
 </details>
 
 The installer checks/installs `uv`, runs `uv sync`, and creates `mira.yaml`. Opt into
