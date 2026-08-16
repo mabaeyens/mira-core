@@ -299,6 +299,15 @@ MIRA_MLX_VISION_TOWER_IDLE_TIMEOUT: float = _get(
 # only enable for a deliberate profiling window.
 MIRA_MLX_PROFILE_EXPERTS: bool = _get("mira_mlx_profile_experts", False)
 MIRA_MLX_EXPERT_PROFILE_PATH: Optional[str] = _get("mira_mlx_expert_profile_path", None)
+# Native MTP (multi-token prediction) self-speculative decoding — mira-mlx's own,
+# no external app (core/inference/mtp/). Off by default and only meaningful on a
+# Qwen3.5/3.6 model that carries the bf16 model-mtp.safetensors sidecar; on any
+# other model the flag is a no-op (no head is built). When on, sanitize KEEPS the
+# mtp.* tensors and RAISES at load if the sidecar is absent, so do not enable it
+# until the sidecar is in place. mtp_max_draft_tokens is the draft depth per verify
+# cycle (clamped to [1, 8]).
+MIRA_MLX_MTP_ENABLED: bool = _get("mira_mlx_mtp_enabled", False)
+MIRA_MLX_MTP_MAX_DRAFT_TOKENS: int = _get("mira_mlx_mtp_max_draft_tokens", 3)
 # Executing a model repo's own Python at load time. Default off: with this on,
 # loading any repo runs that repo's tokenizer code in-process, so a model id is
 # equivalent to code execution. Enable only for a specific model you trust that

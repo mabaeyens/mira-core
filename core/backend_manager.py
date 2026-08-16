@@ -23,6 +23,8 @@ from core.config import (
 from core.config import (
     MIRA_MLX_PROFILE_EXPERTS,
     MIRA_MLX_EXPERT_PROFILE_PATH,
+    MIRA_MLX_MTP_ENABLED,
+    MIRA_MLX_MTP_MAX_DRAFT_TOKENS,
     MIRA_MLX_TRUST_REMOTE_CODE,
     MIRA_MLX_ENABLE_TF32,
     BOUNDARY_SNAPSHOT,
@@ -215,6 +217,8 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
             args += ["--expert-profile-path", MIRA_MLX_EXPERT_PROFILE_PATH]
     if resident_expert_fraction is not None:
         args += ["--resident-expert-fraction", str(resident_expert_fraction)]
+    if MIRA_MLX_MTP_ENABLED:
+        args += ["--mtp-enabled", "--mtp-max-draft-tokens", str(MIRA_MLX_MTP_MAX_DRAFT_TOKENS)]
     if MIRA_MLX_TRUST_REMOTE_CODE:
         args += ["--trust-remote-code"]
     if PROACTIVE_DECOMPRESS:

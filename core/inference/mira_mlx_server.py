@@ -468,6 +468,12 @@ class GenerationEngine:
         profile_experts: bool = False,
         expert_profile_path: Optional[str] = None,
         resident_expert_fraction: Optional[float] = None,
+        # Native MTP self-speculative decoding (core/inference/mtp/). Off by
+        # default; a no-op on any model without an MTP head. When on, the head is
+        # attached before load and sanitize keeps the mtp.* sidecar tensors — it
+        # RAISES if the sidecar is missing, so only enable it once it is in place.
+        mtp_enabled: bool = False,
+        mtp_max_draft_tokens: int = 3,
         vision: bool = False,
         vision_max_pixels: Optional[int] = None,
         vision_tower_idle_timeout: float = 300.0,
@@ -501,6 +507,8 @@ class GenerationEngine:
         self.profile_experts = profile_experts
         self.expert_profile_path = expert_profile_path
         self.resident_expert_fraction = resident_expert_fraction
+        self.mtp_enabled = mtp_enabled
+        self.mtp_max_draft_tokens = mtp_max_draft_tokens
         self.vision = vision
         self.vision_max_pixels = vision_max_pixels
         self.vision_tower_idle_timeout = vision_tower_idle_timeout
@@ -668,6 +676,24 @@ class GenerationEngine:
             # 0.3; peak now scales with the resident fraction, not table size).
             # Without offload there is no stand-in swap to drop a deferred table,
             # so keep the eager default (lazy=False) — unchanged behavior.
+            # Native MTP: install the head patch and arm it BEFORE load, because
+            # mlx_lm.load builds the model class from mlx-lm's model_type registry
+            # (so a subclass would never be constructed) and the patched
+            # TextModel.__init__ reads the "active" flag at construction time. With
+            # the flag off, apply() is not called and the build is byte-identical
+            # to stock. set_active only builds a head when the model config carries
+            # mtp_num_hidden_layers > 0, so this is a no-op on non-MTP models.
+            if self.mtp_enabled:
+                from core.inference import mtp
+
+                if mtp.apply():
+                    mtp.set_depth(self.mtp_max_draft_tokens)
+                    mtp.set_active(True)
+                    logger.info(
+                        "native MTP armed (max_draft_tokens=%d)", self.mtp_max_draft_tokens
+                    )
+                else:
+                    logger.warning("mtp_enabled but the MTP patch could not install; running without MTP")
             lazy_load = self.resident_expert_fraction is not None
             self.model, self.tokenizer = load(
                 self.model_path, tokenizer_config=tokenizer_config, lazy=lazy_load
@@ -2267,6 +2293,10 @@ def main() -> None:
     # None (default) = every expert resident, today's behavior. No-op on dense
     # models. See core/inference/expert_offload.py.
     parser.add_argument("--resident-expert-fraction", type=float, default=None)
+    # Native MTP self-speculative decoding (core/inference/mtp/). Off by default;
+    # a no-op on any model without an MTP head. See config MIRA_MLX_MTP_ENABLED.
+    parser.add_argument("--mtp-enabled", action="store_true")
+    parser.add_argument("--mtp-max-draft-tokens", type=int, default=3)
     # Off by default. On, this loads the checkpoint's own vision tower (about
     # 0.89 GB for Qwen3.6-35B-A3B) so screenshots are read as images rather than
     # run through OCR. Costs nothing when off: the tower is never imported.
@@ -2314,6 +2344,8 @@ def main() -> None:
         profile_experts=args.profile_experts,
         expert_profile_path=args.expert_profile_path,
         resident_expert_fraction=args.resident_expert_fraction,
+        mtp_enabled=args.mtp_enabled,
+        mtp_max_draft_tokens=args.mtp_max_draft_tokens,
         vision=args.vision,
         vision_max_pixels=args.vision_max_pixels,
         vision_tower_idle_timeout=args.vision_tower_idle_timeout,
