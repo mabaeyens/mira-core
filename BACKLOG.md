@@ -571,6 +571,14 @@
     explanation.
 
 ## Notes
+- **Mixed-precision quant is NOT a speed-free quality lever on this MoE — NULL 2026-08-17.** Tried
+  `Qwen3.6-35B-A3B-4bit-DWQ` as the one remaining speed-free quality lever (uniform 4-bit baseline
+  = GPQA-diamond 70.7% flex). Despite the "4bit" name it is mixed 4/8-bit (`config.json` top-level
+  `bits:8` + 512 per-layer overrides), and decoded **~28% slower resident on the M5** (58.6/56.7 →
+  42.0/40.4 t/s), prefill unchanged — the same decode-bandwidth ceiling the 2026-05-30 OptiQ audit
+  found. A speed gate killed it before any quality run. Every quality-recovery quant on mlx-community
+  raises average bits, so none is speed-free; uniform 4-bit stays. Reopen only for a genuinely
+  ≤4-bit-average build (sub-4-bit / block-sparse). Build deleted. Don't re-download.
 - **A cache whose lookup key differs in kind from its insert key can never hit, and its size tells
   you nothing about that.** The disk prompt cache inserted on prompt+generated tokens and looked up
   on the prompt alone, hashed whole, so it filled 39.75GB over three weeks at a 100% miss rate and
