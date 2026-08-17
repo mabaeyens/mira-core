@@ -14,8 +14,11 @@
   35B-A3B stays — there is no other upgrade to chase. Convert via `/mlx-convert Qwen/Qwen3.8-27B`.
 - **MTP: native mira-mlx MTP BUILT + SHIPPED** (updated 2026-08-17; supersedes the 08-15 "deferred"
   note): self-authored MTP now runs in mira-mlx's real `BatchGenerator` — no omlx dependency for the
-  fast path. Served **dense Qwen3.8-27B = 1.70×** (8.3->14 t/s), lossless by teacher-forcing (byte-vs-
-  stock is the wrong oracle on M5). An adaptive `_DepthController` (420dd24) picks draft depth per
+  fast path. Served **dense Qwen3.8-27B = 1.91×** (8.3->15.6 t/s) after the 2026-08-17 norm-shift
+  weight-loading fix (`4d13845`) — a per-key `mean<0.5` heuristic left q_norm/k_norm/mtp.norm −1 off,
+  collapsing the deep draft chain; the fix was most of the win (d3 accept 29->56, 1.67->1.91×). Lossless
+  by teacher-forcing (byte-vs-stock is the wrong oracle on M5). An adaptive `_DepthController` (420dd24)
+  picks draft depth per
   cycle and parks when speculation loses; a v2 global hand-back (60694ef) drops a net-losing sequence
   to stock decode, detected by realized throughput vs park rate. **On the compute-bound MoE, MTP is
   net-neutral-at-best** — resident MoE decode is already ~59 t/s, so per-cycle overhead can't win;
@@ -23,9 +26,14 @@
   0.87->0.92×, lossless). **Verdict: MTP is a DENSE-ONLY win; MoE stays off by default
   (`MIRA_MLX_MTP_ENABLED=False`).** The omlx presets (`omlx-qwen38-27b-mtp` 2.36×, `omlx-qwen36-moe-mtp`
   1.34×) remain the MoE-MTP path if ever wanted. vllm-mlx does NOT deliver MTP for these (VLM-capable ->
-  MLLM path hard-caps `effective_draft_tokens=1`, +2% = noise). No open native-MTP lever worth chasing
-  now (MoE compute-bound floor; dense already at ~1.7×). Full history: memory
-  `project_native_mtp_workstream.md`; benches in gitignored `notes/mtp/`.
+  MLLM path hard-caps `effective_draft_tokens=1`, +2% = noise). **The gap to omlx's dense 2.36× is now
+  measured-closed on all three fronts** (2026-08-17): the Metal verify kernel is dead (MLX 0.32.0's
+  `qmv_wide` already amortizes skinny-M verify at M≤4); an async draft/verify overlap engine is RED (head
+  chain ∥ verify on two GPU streams = 178ms vs 177ms sequential — both saturate the one memory bus); and
+  training the head hit its capacity ceiling (first-ever repo training run; single-step +1pt, multi-step
+  FastMTP chain loss +2pt d3, plateau). Reaching 2.36× would need a genuinely bigger drafter, not tuning
+  this head/engine. **Dense native MTP is DONE at 1.91×.** Full write-up: `docs/multi-token-prediction.md`
+  (illustrated); history in memory `project_native_mtp_workstream.md`; benches in gitignored `notes/mtp/`.
 
 ### Confirm the overnight-eviction culprit from the sampler, then decide if any tuning is warranted
 - The `notes/mem-samples.log` sampler is running (started 2026-08-13). After a night or two, read it
