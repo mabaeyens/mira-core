@@ -1,0 +1,954 @@
+<title>Chasing 80 tok/s</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    /* light — cool silicon */
+    --ground:#f4f6f9; --surface:#ffffff; --surface-2:#eaeef3; --line:#d3dae3;
+    --ink:#141a22; --ink-2:#4a5566; --ink-3:#78838f;
+    --draft:#b56a06;   /* draft head — amber */
+    --verify:#2560d0;  /* backbone verify — blue */
+    --good:#127a4f; --bad:#c0392b; --untested:#6b7684;
+    --draft-wash:#f6ecdb; --verify-wash:#e5edfb; --good-wash:#e0f0e8; --bad-wash:#f6e4e1;
+    --shadow:0 1px 2px rgba(20,26,34,.06),0 8px 24px rgba(20,26,34,.06);
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+    --ground:#0c1015; --surface:#141a22; --surface-2:#1b232e; --line:#2a3542;
+    --ink:#e7ecf2; --ink-2:#a2adbb; --ink-3:#6f7c8b;
+    --draft:#e6a545; --verify:#5f9dff;
+    --good:#43c088; --bad:#ff6f5c; --untested:#94a0af;
+    --draft-wash:#2a2113; --verify-wash:#12203a; --good-wash:#0f2a1f; --bad-wash:#2c1613;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 12px 30px rgba(0,0,0,.35);
+  }}
+  :root[data-theme="dark"]{
+    --ground:#0c1015; --surface:#141a22; --surface-2:#1b232e; --line:#2a3542;
+    --ink:#e7ecf2; --ink-2:#a2adbb; --ink-3:#6f7c8b;
+    --draft:#e6a545; --verify:#5f9dff;
+    --good:#43c088; --bad:#ff6f5c; --untested:#94a0af;
+    --draft-wash:#2a2113; --verify-wash:#12203a; --good-wash:#0f2a1f; --bad-wash:#2c1613;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 12px 30px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+    font-size:17px;line-height:1.62;-webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+  .spine{max-width:660px}
+  h1,h2,h3{font-family:var(--mono);font-weight:600;line-height:1.12;text-wrap:balance;letter-spacing:-.01em}
+  p{margin:0 0 1.05em}
+  a{color:var(--verify);text-decoration:none;border-bottom:1px solid color-mix(in oklab,var(--verify) 35%,transparent)}
+  a:hover{border-bottom-color:var(--verify)}
+  code,.mono{font-family:var(--mono);font-size:.9em}
+  code{background:var(--surface-2);padding:.08em .34em;border-radius:4px;border:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3)}
+  figure{margin:0}
+  figcaption{font-size:14px;line-height:1.5;color:var(--ink-2);margin-top:12px;font-family:var(--sans)}
+  figcaption b{color:var(--ink);font-weight:600}
+  svg{max-width:100%;height:auto;display:block}
+  :focus-visible{outline:2px solid var(--verify);outline-offset:3px;border-radius:3px}
+
+  /* ---- hero ---- */
+  header.hero{padding:88px 0 40px;border-bottom:1px solid var(--line)}
+  .kicker{display:inline-flex;gap:10px;align-items:center;font-family:var(--mono);font-size:12px;
+    letter-spacing:.14em;text-transform:uppercase;color:var(--ink-2);
+    border:1px solid var(--line);border-radius:100px;padding:6px 14px;background:var(--surface)}
+  .kicker .dot{width:7px;height:7px;border-radius:50%;background:var(--good)}
+  h1{font-size:clamp(2.5rem,7vw,4.6rem);margin:26px 0 0}
+  h1 .u{color:var(--verify)}
+  .dek{font-size:clamp(1.05rem,2.4vw,1.32rem);color:var(--ink-2);max-width:34ch;margin:20px 0 0;line-height:1.45}
+  .scoreline{display:flex;flex-wrap:wrap;gap:0;margin-top:40px;border:1px solid var(--line);
+    border-radius:14px;overflow:hidden;background:var(--surface);box-shadow:var(--shadow)}
+  .scoreline .cell{flex:1 1 130px;padding:18px 20px;border-right:1px solid var(--line)}
+  .scoreline .cell:last-child{border-right:0}
+  .scoreline .lab{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+  .scoreline .val{font-family:var(--mono);font-size:2rem;font-weight:600;margin-top:6px;font-variant-numeric:tabular-nums}
+  .scoreline .val small{font-size:.9rem;color:var(--ink-3);font-weight:400}
+  .scoreline .c-base .val{color:var(--ink)}
+  .scoreline .c-now .val{color:var(--good)}
+  .scoreline .c-omlx .val{color:var(--verify)}
+  .scoreline .c-goal .val{color:var(--draft)}
+
+  /* ---- rhythm ---- */
+  section{padding:64px 0;border-bottom:1px solid var(--line)}
+  .sec-head{margin-bottom:34px}
+  .sec-head .eyebrow{display:block;margin-bottom:12px}
+  h2{font-size:clamp(1.7rem,3.6vw,2.4rem);margin:0}
+  h3{font-size:1.16rem;margin:0 0 .5em}
+  .lead{font-size:1.16rem;color:var(--ink);max-width:60ch}
+
+  /* ---- three-band concept ---- */
+  .triad{margin:30px 0;border:1px solid var(--line);border-radius:14px;background:var(--surface);
+    overflow:hidden;box-shadow:var(--shadow)}
+  .triad .band{padding:18px 22px;border-top:1px solid var(--line)}
+  .triad .band:first-child{border-top:0}
+  .triad .btag{font-family:var(--mono);font-size:11px;letter-spacing:.13em;text-transform:uppercase;
+    color:var(--ink-3);margin-bottom:7px}
+  .triad .core{background:var(--surface-2)}
+  .triad .core .txt{font-size:1.14rem;line-height:1.45;color:var(--ink);font-weight:500}
+  .triad .mech .txt{font-size:.98rem;color:var(--ink-2);line-height:1.55}
+  .triad .meas{background:linear-gradient(180deg,transparent,color-mix(in oklab,var(--good-wash) 55%,transparent))}
+  .triad .meas .readout{font-family:var(--mono);font-size:1rem;color:var(--ink);font-variant-numeric:tabular-nums}
+  .triad .meas .readout b{color:var(--good)}
+
+  /* ---- readout chips ---- */
+  .chip{font-family:var(--mono);font-size:.82em;font-variant-numeric:tabular-nums;
+    padding:2px 8px;border-radius:6px;border:1px solid var(--line);background:var(--surface-2);white-space:nowrap}
+  .chip.draft{color:var(--draft);border-color:color-mix(in oklab,var(--draft) 40%,var(--line));background:var(--draft-wash)}
+  .chip.verify{color:var(--verify);border-color:color-mix(in oklab,var(--verify) 40%,var(--line));background:var(--verify-wash)}
+  .chip.good{color:var(--good);border-color:color-mix(in oklab,var(--good) 40%,var(--line));background:var(--good-wash)}
+  .chip.bad{color:var(--bad);border-color:color-mix(in oklab,var(--bad) 40%,var(--line));background:var(--bad-wash)}
+
+  .fig{margin:34px 0;padding:26px;background:var(--surface);border:1px solid var(--line);
+    border-radius:14px;box-shadow:var(--shadow)}
+  .fig.wide{max-width:1080px}
+  .scroll{overflow-x:auto}
+
+  /* ---- data table ---- */
+  table{border-collapse:collapse;width:100%;font-size:14px;font-variant-numeric:tabular-nums}
+  th,td{padding:10px 12px;text-align:right;border-bottom:1px solid var(--line);font-family:var(--mono)}
+  th:first-child,td:first-child{text-align:left}
+  thead th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);border-bottom:1.5px solid var(--line)}
+  tbody tr:hover{background:var(--surface-2)}
+  td .tag{font-size:11px;padding:2px 7px;border-radius:5px}
+  .row-star td{background:color-mix(in oklab,var(--good-wash) 40%,transparent)}
+
+  /* ---- verdict pills ---- */
+  .pill{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;
+    letter-spacing:.05em;text-transform:uppercase;padding:3px 9px;border-radius:100px;border:1px solid}
+  .pill.banked{color:var(--good);border-color:var(--good);background:var(--good-wash)}
+  .pill.rej{color:var(--bad);border-color:var(--bad);background:var(--bad-wash)}
+  .pill.unt{color:var(--untested);border-color:var(--untested);background:var(--surface-2)}
+  .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+
+  /* ---- ledger cards ---- */
+  .ledger{display:grid;grid-template-columns:repeat(auto-fill,minmax(255px,1fr));gap:14px;margin-top:26px}
+  .lev{border:1px solid var(--line);border-radius:12px;padding:16px 17px;background:var(--surface);
+    display:flex;flex-direction:column;gap:10px;box-shadow:var(--shadow)}
+  .lev.rej{opacity:.9}
+  .lev h4{margin:0;font-family:var(--mono);font-size:.98rem;font-weight:600;letter-spacing:-.01em}
+  .lev .why{font-size:13.5px;color:var(--ink-2);line-height:1.5;margin:0}
+  .lev .meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:auto}
+  .lev .meta .chip{font-size:11px}
+
+  /* ---- wrong/reversal thread ---- */
+  .reversal{border-left:3px solid var(--bad);background:var(--bad-wash);border-radius:0 10px 10px 0;
+    padding:14px 18px;margin:16px 0;font-size:.97rem}
+  .reversal .claim{font-family:var(--mono);color:var(--bad);font-size:.85rem;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px}
+  .reversal .fix{color:var(--ink)}
+  .reversal .fix b{color:var(--good)}
+
+  /* ---- legend ---- */
+  .legend{display:flex;flex-wrap:wrap;gap:16px;font-family:var(--mono);font-size:12px;color:var(--ink-2);margin-top:14px}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .swatch{width:13px;height:13px;border-radius:3px;display:inline-block}
+
+  /* ---- refs ---- */
+  .refs{display:grid;gap:2px;font-size:14px}
+  .ref{display:grid;grid-template-columns:118px 1fr;gap:16px;padding:12px 0;border-bottom:1px solid var(--line)}
+  .ref .id{font-family:var(--mono);color:var(--verify);font-size:13px}
+  .ref .what{color:var(--ink-2)}
+  .ref .what b{color:var(--ink);font-weight:600}
+
+  footer{padding:48px 0 80px;color:var(--ink-3);font-size:13px;font-family:var(--mono)}
+
+  /* svg semantic classes */
+  .s-draft{fill:var(--draft)} .st-draft{stroke:var(--draft)}
+  .s-verify{fill:var(--verify)} .st-verify{stroke:var(--verify)}
+  .s-good{fill:var(--good)} .s-bad{fill:var(--bad)} .s-unt{fill:var(--untested)}
+  .s-ink{fill:var(--ink)} .st-ink{stroke:var(--ink)}
+  .s-line{stroke:var(--line)} .s-surf{fill:var(--surface-2)}
+  .glyph{font-family:var(--mono);fill:var(--ink)}
+  .glyph-m{font-family:var(--mono);fill:var(--ink-2)}
+  .glyph-lab{font-family:var(--mono);fill:var(--ink-3);letter-spacing:.04em}
+
+  @media (max-width:640px){
+    body{font-size:16px}
+    header.hero{padding:56px 0 32px}
+    section{padding:48px 0}
+    .fig{padding:16px}
+    .ref{grid-template-columns:1fr;gap:2px}
+    .ref .id{font-size:12px}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="wrap">
+
+<!-- ================= HERO ================= -->
+<header class="hero">
+  <span class="kicker"><span class="dot"></span>mira-mlx &middot; Qwen3.6-35B-A3B MoE &middot; Apple&nbsp;M5 / 32GB</span>
+  <h1>Chasing <span class="u">80&nbsp;tok/s</span></h1>
+  <p class="dek">A field guide to native multi-token prediction on a mixture-of-experts model, and an honest ledger of where the speed is still hiding.</p>
+
+  <div class="scoreline" role="group" aria-label="Throughput scoreboard, decode tokens per second">
+    <div class="cell c-base"><div class="lab">Stock MoE decode</div><div class="val">59.5<small> t/s</small></div></div>
+    <div class="cell c-base"><div class="lab">Native MTP, before</div><div class="val">71.2<small> t/s</small></div></div>
+    <div class="cell c-now"><div class="lab">Native MTP, now</div><div class="val">76.0<small> t/s</small></div></div>
+    <div class="cell c-omlx"><div class="lab">omlx reference</div><div class="val">77.5<small> t/s</small></div></div>
+    <div class="cell c-goal"><div class="lab">The goal</div><div class="val">80<small> t/s</small></div></div>
+  </div>
+</header>
+
+<!-- ================= 1. THE CYCLE ================= -->
+<section id="cycle">
+  <div class="sec-head spine">
+    <span class="eyebrow">01 &middot; The mechanism</span>
+    <h2>One draft, one verify, keep the prefix</h2>
+  </div>
+  <div class="spine">
+    <p class="lead">Speculative decoding buys speed by guessing several tokens cheaply, then checking them all in a single expensive pass. The trick only works because on this hardware, checking four tokens costs almost exactly what checking one does.</p>
+    <p>The classic setup (Leviathan et al., <span class="mono">2211.17192</span>) uses a small draft model beside a big one. <b>Self-speculative</b> decoding drops the second model: a lightweight <b>MTP head</b> bolted onto the backbone does the drafting, in the DeepSeek-V3 style. The head predicts token <span class="mono">t+1</span> from the backbone's own hidden state, then chains: each draft feeds the next.</p>
+  </div>
+
+  <figure class="fig wide">
+    <div class="scroll">
+    <svg viewBox="0 0 940 340" role="img" aria-label="One speculative cycle: the draft head chains three tokens, one backbone forward verifies all four positions in parallel, and the accepted prefix plus one correction is emitted.">
+      <!-- lane labels -->
+      <text x="8" y="46" class="glyph-lab" font-size="12">DRAFT</text>
+      <text x="8" y="176" class="glyph-lab" font-size="12">VERIFY</text>
+      <text x="8" y="300" class="glyph-lab" font-size="12">EMIT</text>
+
+      <!-- draft chain -->
+      <g font-size="13">
+        <rect x="70" y="20" width="150" height="48" rx="8" class="s-surf st-ink" style="stroke-width:1.5" fill-opacity="1"/>
+        <text x="145" y="41" text-anchor="middle" class="glyph">MTP head</text>
+        <text x="145" y="58" text-anchor="middle" class="glyph-m" font-size="11">reads backbone h</text>
+
+        <!-- d1 d2 d3 -->
+        <g>
+          <rect x="300" y="24" width="70" height="40" rx="7" class="st-draft" style="stroke-width:2" fill="var(--draft-wash)"/>
+          <text x="335" y="49" text-anchor="middle" class="glyph" font-weight="600">d1</text>
+          <rect x="430" y="24" width="70" height="40" rx="7" class="st-draft" style="stroke-width:2" fill="var(--draft-wash)"/>
+          <text x="465" y="49" text-anchor="middle" class="glyph" font-weight="600">d2</text>
+          <rect x="560" y="24" width="70" height="40" rx="7" class="st-draft" style="stroke-width:2" fill="var(--draft-wash)"/>
+          <text x="595" y="49" text-anchor="middle" class="glyph" font-weight="600">d3</text>
+        </g>
+        <!-- chain arrows -->
+        <g class="st-draft" style="stroke-width:2" fill="none" marker-end="url(#ad)">
+          <path d="M220 44 H298"/>
+          <path d="M370 44 H428"/>
+          <path d="M500 44 H558"/>
+        </g>
+        <text x="400" y="14" text-anchor="middle" class="glyph-lab" font-size="10.5">each draft conditions the next (argmax)</text>
+      </g>
+
+      <!-- drop arrows into verify -->
+      <g class="s-line" style="stroke:var(--ink-3);stroke-width:1.3;stroke-dasharray:3 3" fill="none" marker-end="url(#ai)">
+        <path d="M195 78 V120"/>
+        <path d="M335 74 V120"/>
+        <path d="M465 74 V120"/>
+        <path d="M595 74 V120"/>
+      </g>
+
+      <!-- verify row: [next_main, d1, d2, d3] -->
+      <g font-size="13">
+        <rect x="150" y="126" width="510" height="60" rx="10" class="st-verify" style="stroke-width:2" fill="var(--verify-wash)"/>
+        <text x="405" y="116" text-anchor="middle" class="glyph-lab" font-size="10.5">ONE backbone forward &middot; width M = 4 &middot; n_confirmed = 1</text>
+        <g class="glyph" font-weight="600" text-anchor="middle">
+          <text x="195" y="162">next</text>
+          <text x="335" y="162">d1?</text>
+          <text x="465" y="162">d2?</text>
+          <text x="595" y="162">d3?</text>
+        </g>
+        <g class="glyph-m" font-size="10" text-anchor="middle">
+          <text x="195" y="177">anchor</text>
+          <text x="335" y="177">check</text>
+          <text x="465" y="177">check</text>
+          <text x="595" y="177">check</text>
+        </g>
+      </g>
+
+      <!-- accept bracket -->
+      <g fill="none" style="stroke-width:2">
+        <path class="st-good" d="M160 196 V206 H470 V196" style="stroke:var(--good)"/>
+        <path class="st-bad" d="M530 196 V206 H630 V196" style="stroke:var(--bad)"/>
+      </g>
+      <text x="315" y="224" text-anchor="middle" class="glyph" font-size="11" style="fill:var(--good)">accepted prefix: next, d1, d2</text>
+      <text x="580" y="224" text-anchor="middle" class="glyph" font-size="11" style="fill:var(--bad)">d3 wrong &rarr; corrected</text>
+
+      <!-- emit row -->
+      <g class="s-line" style="stroke:var(--ink-3);stroke-width:1.3" fill="none" marker-end="url(#ai)">
+        <path d="M315 230 V262"/>
+      </g>
+      <g font-size="13">
+        <rect x="150" y="268" width="470" height="46" rx="9" class="s-good" fill-opacity=".13" style="stroke:var(--good);stroke-width:1.5"/>
+        <text x="385" y="296" text-anchor="middle" class="glyph" font-weight="600" style="fill:var(--good)">4 tokens emitted from 1 verify &nbsp;&middot;&nbsp; cache rolled back to accepted length</text>
+      </g>
+
+      <defs>
+        <marker id="ad" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><polygon points="0 0, 7 3, 0 6" fill="var(--draft)"/></marker>
+        <marker id="ai" markerWidth="8" markerHeight="8" refX="5" refY="3" orient="auto"><polygon points="0 0, 6 3, 0 6" fill="var(--ink-3)"/></marker>
+      </defs>
+    </svg>
+    </div>
+    <figcaption><b>The spec cycle.</b> The head drafts a linear chain <span class="mono">d1&rarr;d2&rarr;d3</span>. A single backbone forward scores all four positions <span class="mono">[next, d1, d2, d3]</span> at once; we accept the longest run where each draft matches the backbone's greedy pick, take the backbone's own token at the first miss as a free correction, and roll the hybrid cache back to the accepted length. A cycle emits between 1 and 4 tokens.</figcaption>
+  </figure>
+
+  <div class="spine">
+    <div class="triad">
+      <div class="band core"><div class="btag">Core idea</div><div class="txt">A cycle is only worth running if the backbone forward over 4 tokens costs about the same as over 1. That flatness is the entire economy of speculative decoding.</div></div>
+      <div class="band mech"><div class="btag">Mechanism</div><div class="txt">The backbone runs once per cycle in <b>verify</b> mode with <code>n_confirmed=1</code>. Correctness never depends on the draft being right: every emitted token is <code>argmax(full-vocab&nbsp;verify)</code>, so a bad guess costs throughput, never quality.</div></div>
+      <div class="band meas"><div class="btag">Measured</div><div class="readout">baseline cycle emits <b>2.459 tok</b> per <b>33.75 ms</b> &rarr; depth split <span class="chip">d0:5</span> <span class="chip draft">d1:180</span> <span class="chip draft">d2:282</span> <span class="chip draft">d3:38</span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 2. WHY IT PAYS + THE TAX ================= -->
+<section id="freem">
+  <div class="sec-head spine">
+    <span class="eyebrow">02 &middot; The free lunch and its price</span>
+    <h2>Free-M verify, and the MoE tax on it</h2>
+  </div>
+  <div class="spine">
+    <p class="lead">The dense matmuls that dominate a forward pass are memory-bandwidth bound at decode. Widening the batch from 1 to 4 tokens rides the same weight read, so it is nearly free. The mixture-of-experts routing is the one part that is not.</p>
+  </div>
+
+  <div class="fig">
+    <figure>
+      <div class="scroll">
+      <svg viewBox="0 0 640 260" role="img" aria-label="Bar chart: the lm_head quantized matmul cost is flat from batch width M=1 to M=4, and only 1.94 times at M=8.">
+        <g class="glyph-lab" font-size="11">
+          <text x="40" y="24">lm_head qmm cost &middot; 2048&rarr;248320 &middot; MLX 0.32.0 / M5</text>
+        </g>
+        <!-- baseline gridline at 1x -->
+        <line x1="70" y1="170" x2="600" y2="170" class="s-line" style="stroke-dasharray:4 4"/>
+        <text x="605" y="174" class="glyph-lab" font-size="10">1&times;</text>
+        <line x1="70" y1="90" x2="600" y2="90" class="s-line" style="stroke-dasharray:4 4"/>
+        <text x="605" y="94" class="glyph-lab" font-size="10">2&times;</text>
+        <!-- bars: flat M1..M4 at 170, M8 at ~92 -->
+        <g class="s-verify">
+          <rect x="90"  y="170" width="70" height="40" rx="4"/>
+          <rect x="200" y="169" width="70" height="41" rx="4"/>
+          <rect x="310" y="168" width="70" height="42" rx="4"/>
+          <rect x="420" y="167" width="70" height="43" rx="4"/>
+          <rect x="530" y="92"  width="70" height="118" rx="4" fill-opacity=".55"/>
+        </g>
+        <g class="glyph" font-size="12" text-anchor="middle" font-weight="600">
+          <text x="125" y="228">M=1</text><text x="235" y="228">M=2</text>
+          <text x="345" y="228">M=3</text><text x="455" y="228">M=4</text><text x="565" y="228">M=8</text>
+        </g>
+        <g class="glyph-m" font-size="11" text-anchor="middle">
+          <text x="125" y="162">1.00&times;</text><text x="235" y="161">~1&times;</text>
+          <text x="345" y="160">~1&times;</text><text x="455" y="159">~1&times;</text><text x="565" y="84">1.94&times;</text>
+        </g>
+        <text x="290" y="250" text-anchor="middle" class="glyph-lab" font-size="11">verify width M &rarr; the draft chain lives entirely inside the flat zone</text>
+      </svg>
+      </div>
+      <figcaption><b>Why one verify checks four tokens almost for free.</b> The big output projection is flat from <span class="mono">M=1</span> to <span class="mono">M=4</span> and only <span class="mono">1.94&times;</span> at <span class="mono">M=8</span>. Our chains never exceed depth 3, so verify stays in the flat zone. This is the measured basis for the whole approach, not an assumption.</figcaption>
+    </figure>
+  </div>
+
+  <div class="fig">
+    <figure>
+      <div class="scroll">
+      <svg viewBox="0 0 660 300" role="img" aria-label="Diagram: as verify width M grows, the union of distinct experts each token activates grows too, so the MoE gather cost rises with M even though the dense matmuls stay flat.">
+        <text x="20" y="24" class="glyph-lab" font-size="11">256 experts &middot; 8 active per token &middot; distinct-expert UNION grows with M</text>
+        <!-- three scenarios -->
+        <g font-size="12">
+          <!-- M=1 -->
+          <text x="60" y="70" class="glyph" font-weight="600">M=1</text>
+          <g class="s-draft">
+            <circle cx="120" cy="66" r="7"/><circle cx="142" cy="66" r="7"/><circle cx="164" cy="66" r="7"/><circle cx="186" cy="66" r="7"/>
+            <circle cx="208" cy="66" r="7"/><circle cx="230" cy="66" r="7"/><circle cx="252" cy="66" r="7"/><circle cx="274" cy="66" r="7"/>
+          </g>
+          <text x="330" y="70" class="glyph-m" font-size="11">8 experts read</text>
+
+          <!-- M=2 -->
+          <text x="60" y="150" class="glyph" font-weight="600">M=2</text>
+          <g class="s-draft">
+            <circle cx="120" cy="146" r="7"/><circle cx="142" cy="146" r="7"/><circle cx="164" cy="146" r="7"/><circle cx="186" cy="146" r="7"/>
+            <circle cx="208" cy="146" r="7"/><circle cx="230" cy="146" r="7"/><circle cx="252" cy="146" r="7"/><circle cx="274" cy="146" r="7"/>
+          </g>
+          <g class="s-verify">
+            <circle cx="296" cy="146" r="7"/><circle cx="318" cy="146" r="7"/><circle cx="340" cy="146" r="7"/>
+          </g>
+          <text x="380" y="150" class="glyph-m" font-size="11">~11 experts (1.25&ndash;1.42&times;)</text>
+
+          <!-- M=4 -->
+          <text x="60" y="230" class="glyph" font-weight="600">M=4</text>
+          <g class="s-draft">
+            <circle cx="120" cy="226" r="7"/><circle cx="142" cy="226" r="7"/><circle cx="164" cy="226" r="7"/><circle cx="186" cy="226" r="7"/>
+            <circle cx="208" cy="226" r="7"/><circle cx="230" cy="226" r="7"/><circle cx="252" cy="226" r="7"/><circle cx="274" cy="226" r="7"/>
+          </g>
+          <g class="s-verify">
+            <circle cx="296" cy="226" r="7"/><circle cx="318" cy="226" r="7"/><circle cx="340" cy="226" r="7"/>
+            <circle cx="362" cy="226" r="7"/><circle cx="384" cy="226" r="7"/><circle cx="406" cy="226" r="7"/>
+          </g>
+          <text x="446" y="230" class="glyph-m" font-size="11">~14 experts &middot; +3ms / extra tok</text>
+        </g>
+        <line x1="20" y1="262" x2="640" y2="262" class="s-line"/>
+        <text x="20" y="284" class="glyph-lab" font-size="11">dense matmuls: flat &middot; expert gather: the one cost that scales with the chain</text>
+      </svg>
+      </div>
+      <figcaption><b>The MoE tax.</b> Each verified token routes to its own 8 of 256 experts. The distinct experts across the whole verify batch (the <span class="chip draft">union</span>) grows with <span class="mono">M</span>, so the expert gather is the one term that scales with chain length. MoESD (<span class="mono">2505.19645</span>) measures this union at <span class="mono">1.25&ndash;1.42&times;</span> the single-token set for batch-1 speculation. That ratio is the honest ceiling on how much a MoE can gain here.</figcaption>
+    </figure>
+  </div>
+
+  <div class="spine">
+    <figure style="margin-top:8px">
+      <div class="scroll">
+      <svg viewBox="0 0 620 92" role="img" aria-label="Stacked bar of one cycle's wall clock: verify 77 percent, draft 21 percent, resolve 2 percent.">
+        <rect x="0"    y="22" width="130" height="44" rx="6" class="s-draft"/>
+        <rect x="132"  y="22" width="454" height="44" rx="0" class="s-verify"/>
+        <rect x="588"  y="22" width="12"  height="44" rx="6" class="s-unt"/>
+        <text x="65"  y="49" text-anchor="middle" fill="#fff" class="mono" font-size="12" font-weight="600">draft 21%</text>
+        <text x="359" y="49" text-anchor="middle" fill="#fff" class="mono" font-size="12" font-weight="600">verify 77%</text>
+        <text x="10"  y="16" class="glyph-lab" font-size="10">7.0 ms</text>
+        <text x="330" y="16" class="glyph-lab" font-size="10">26.1 ms</text>
+        <text x="560" y="16" class="glyph-lab" font-size="10">resolve 0.6 ms</text>
+        <text x="0"   y="86" class="glyph-lab" font-size="10.5">one cycle = 33.75 ms</text>
+      </svg>
+      </div>
+      <figcaption><b>Where a cycle's time goes.</b> Verify dominates at <span class="mono">77%</span>. The draft chain is <span class="mono">21%</span>, and that draft slice is the surface the winning lever attacks. The host-side resolve (penalty replay, argmax) is a rounding error at <span class="mono">2%</span>.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ================= 3. THE MACHINE ================= -->
+<section id="machine">
+  <div class="sec-head spine">
+    <span class="eyebrow">03 &middot; The substrate</span>
+    <h2>A hybrid, mixture-of-experts backbone</h2>
+  </div>
+  <div class="spine">
+    <p class="lead">The model shapes every decision below. It is a mixture-of-experts <em>and</em> a hybrid-attention stack, and both facts are why the usual speculative-decoding playbook does not transfer wholesale.</p>
+  </div>
+
+  <div class="fig">
+    <figure>
+      <div class="scroll">
+      <svg viewBox="0 0 680 220" role="img" aria-label="The 40-layer stack: every fourth layer is a full-attention layer with a trimmable KV cache; the other thirty are GatedDeltaNet linear layers carrying non-trimmable recurrent state.">
+        <text x="12" y="22" class="glyph-lab" font-size="11">40 layers &middot; full_attention_interval = 4</text>
+        <g>
+          <!-- 40 ticks; every 4th (index 3,7,...) is full attention -->
+          <!-- generate rows visually: we draw 40 bars -->
+        </g>
+        <!-- 40 bars, hand-placed: every 4th is full-attention (blue) -->
+
+        <g class="s-surf" >
+          <rect x="20"  y="60" width="12" height="70" rx="2"/><rect x="36" y="60" width="12" height="70" rx="2"/><rect x="52" y="60" width="12" height="70" rx="2"/>
+        </g>
+        <rect x="68" y="46" width="12" height="98" rx="2" class="s-verify"/>
+        <g class="s-surf"><rect x="84" y="60" width="12" height="70" rx="2"/><rect x="100" y="60" width="12" height="70" rx="2"/><rect x="116" y="60" width="12" height="70" rx="2"/></g>
+        <rect x="132" y="46" width="12" height="98" rx="2" class="s-verify"/>
+        <g class="s-surf"><rect x="148" y="60" width="12" height="70" rx="2"/><rect x="164" y="60" width="12" height="70" rx="2"/><rect x="180" y="60" width="12" height="70" rx="2"/></g>
+        <rect x="196" y="46" width="12" height="98" rx="2" class="s-verify"/>
+        <g class="s-surf"><rect x="212" y="60" width="12" height="70" rx="2"/><rect x="228" y="60" width="12" height="70" rx="2"/><rect x="244" y="60" width="12" height="70" rx="2"/></g>
+        <rect x="260" y="46" width="12" height="98" rx="2" class="s-verify"/>
+        <g class="s-surf"><rect x="276" y="60" width="12" height="70" rx="2"/><rect x="292" y="60" width="12" height="70" rx="2"/><rect x="308" y="60" width="12" height="70" rx="2"/></g>
+        <rect x="324" y="46" width="12" height="98" rx="2" class="s-verify"/>
+        <g class="s-surf"><rect x="340" y="60" width="12" height="70" rx="2"/><rect x="356" y="60" width="12" height="70" rx="2"/><rect x="372" y="60" width="12" height="70" rx="2"/></g>
+        <rect x="388" y="46" width="12" height="98" rx="2" class="s-verify"/>
+        <g class="s-surf"><rect x="404" y="60" width="12" height="70" rx="2"/><rect x="420" y="60" width="12" height="70" rx="2"/><rect x="436" y="60" width="12" height="70" rx="2"/></g>
+        <rect x="452" y="46" width="12" height="98" rx="2" class="s-verify"/>
+        <g class="s-surf"><rect x="468" y="60" width="12" height="70" rx="2"/><rect x="484" y="60" width="12" height="70" rx="2"/><rect x="500" y="60" width="12" height="70" rx="2"/></g>
+        <rect x="516" y="46" width="12" height="98" rx="2" class="s-verify"/>
+        <g class="s-surf"><rect x="532" y="60" width="12" height="70" rx="2"/><rect x="548" y="60" width="12" height="70" rx="2"/><rect x="564" y="60" width="12" height="70" rx="2"/></g>
+        <rect x="580" y="46" width="12" height="98" rx="2" class="s-verify"/>
+        <g class="s-surf"><rect x="596" y="60" width="12" height="70" rx="2"/><rect x="612" y="60" width="12" height="70" rx="2"/><rect x="628" y="60" width="12" height="70" rx="2"/></g>
+        <rect x="644" y="46" width="12" height="98" rx="2" class="s-verify"/>
+
+        <g class="glyph-m" font-size="11">
+          <text x="20" y="170"><tspan class="s-verify" style="fill:var(--verify)">&#9632;</tspan> 10 full-attention &middot; trimmable KV cache &middot; rolls back cleanly</text>
+          <text x="20" y="190"><tspan style="fill:var(--ink-3)">&#9632;</tspan> 30 GatedDeltaNet linear &middot; recurrent state &middot; does NOT fork like a KV cache</text>
+        </g>
+      </svg>
+      </div>
+      <figcaption><b>The hybrid stack.</b> Only every fourth layer keeps a trimmable KV cache. The other thirty carry recurrent linear-attention state that cannot be forked or trimmed cheaply. Rolling back after a partial accept has to stash and restore that state, and, crucially, a branching draft <em>tree</em> would need to fork it, which it cannot do for free. Hold that thought for section 06.</figcaption>
+    </figure>
+  </div>
+
+  <div class="spine">
+    <div class="triad">
+      <div class="band core"><div class="btag">Core idea</div><div class="txt">Everything downstream is shaped by two facts: routing cost scales with the chain (section 02), and linear-layer state does not branch (section 06).</div></div>
+      <div class="band mech"><div class="btag">The numbers that matter</div><div class="txt">256 experts, 8 active per token. Hidden <code>2048</code>, vocab <code>248320</code>, head_dim <code>256</code>. 4-bit weights at group size 64. The <code>248320</code> vocab is the specific number the winning lever exploits.</div></div>
+      <div class="band meas"><div class="btag">Measured</div><div class="readout">stock MoE decode <b>59.5 t/s</b> &rarr; native dense MTP reaches <b>1.70&ndash;1.91&times;</b>; MoE MTP is the hard case this page is about</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 4. THE CONTROLLER ================= -->
+<section id="controller">
+  <div class="sec-head spine">
+    <span class="eyebrow">04 &middot; How deep to draft</span>
+    <h2>A controller that prices each depth</h2>
+  </div>
+  <div class="spine">
+    <p class="lead">Drafting deeper wins more tokens per cycle only until the added draft cost and falling accept rate stop paying. A per-sequence controller finds that peak instead of guessing it.</p>
+    <p>It maximizes <code>score(d) = E[tokens](d) / time(d)</code>, using an EMA of the conditional accept rate at each depth and the measured per-depth cost. Depth 0 is a <b>park</b> (decode normally, no speculation); a global <b>hand-back</b> drops the whole sequence to stock decode when MTP is a net loss. This objective subsumes the published heuristics (SpecDec++, DISCO, llama.cpp's <span class="mono">p_min</span>): they all approximate the same expected-tokens-per-unit-time argmax.</p>
+  </div>
+
+  <div class="fig">
+    <figure>
+      <div class="scroll">
+      <svg viewBox="0 0 620 280" role="img" aria-label="Score versus draft depth is a hump: it rises to a peak near depth 2 to 3 then falls, because deeper drafts add cost and lose accept faster than they add tokens.">
+        <!-- axes -->
+        <line x1="60" y1="230" x2="580" y2="230" class="st-ink" style="stroke-width:1.2"/>
+        <line x1="60" y1="30"  x2="60"  y2="230" class="st-ink" style="stroke-width:1.2"/>
+        <text x="320" y="266" text-anchor="middle" class="glyph-lab" font-size="11">draft depth d</text>
+        <text x="20" y="130" class="glyph-lab" font-size="11" transform="rotate(-90 20 130)">score(d) = E[tok]/time</text>
+        <!-- hump curve -->
+        <path d="M60 210 C 150 120, 210 70, 280 66 C 360 62, 430 120, 560 205" fill="none" class="st-verify" style="stroke-width:2.5"/>
+        <!-- peak marker -->
+        <circle cx="280" cy="66" r="5" class="s-good"/>
+        <line x1="280" y1="66" x2="280" y2="230" class="s-line" style="stroke-dasharray:4 4"/>
+        <text x="280" y="52" text-anchor="middle" class="glyph" font-size="11" style="fill:var(--good)">peak &middot; the controller picks here</text>
+        <!-- x ticks -->
+        <g class="glyph-m" font-size="11" text-anchor="middle">
+          <text x="110" y="248">0 park</text><text x="195" y="248">1</text>
+          <text x="280" y="248">2&ndash;3</text><text x="430" y="248">4</text><text x="540" y="248">5</text>
+        </g>
+        <!-- annotations -->
+        <text x="470" y="150" class="glyph-m" font-size="10.5">deeper: +cost, &minus;accept</text>
+      </svg>
+      </div>
+      <figcaption><b>The score hump.</b> The controller measures rather than assumes the peak. On this MoE it lands at depth 2&ndash;3; section 05 shows a measured attempt to push it to 4 that <em>lowered</em> throughput, exactly the falling right shoulder of this curve.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ================= 5. THE LEVERS ================= -->
+<section id="levers">
+  <div class="sec-head spine">
+    <span class="eyebrow">05 &middot; The winning lever</span>
+    <h2>Draft a narrower vocabulary</h2>
+  </div>
+  <div class="spine">
+    <p class="lead">The draft head spends most of its time projecting a hidden state onto all 248,320 vocabulary rows, only to take one argmax. Project onto the first N rows instead and the draft gets cheaper with no change to what gets emitted.</p>
+    <p>This is safe <b>by construction</b>. The full-vocab backbone verify still decides every token, so a narrower draft vocabulary can only ever cost <em>accept rate</em>, if a true next token's id happens to land beyond N. It can never change the output. Qwen3's byte-level merges put common tokens at low ids, so a generous N covers essentially everything the model generates.</p>
+  </div>
+
+  <div class="fig">
+    <figure>
+      <div class="scroll">
+      <svg viewBox="0 0 660 250" role="img" aria-label="The lm_head projection matrix sliced from 248320 rows down to N rows; only the top slice is computed for drafts, cutting the projection cost, while verify still uses the full matrix.">
+        <!-- full matrix -->
+        <text x="70" y="30" class="glyph-lab" font-size="11">draft projection: use rows [0 : N]</text>
+        <rect x="70" y="40" width="120" height="180" rx="4" class="s-surf st-ink" style="stroke-width:1.3"/>
+        <!-- used slice -->
+        <rect x="70" y="40" width="120" height="78" rx="4" class="s-draft" fill-opacity=".85"/>
+        <text x="130" y="84" text-anchor="middle" fill="#fff" class="mono" font-size="12" font-weight="600">rows 0..N</text>
+        <text x="130" y="150" text-anchor="middle" class="glyph-m" font-size="11">skipped for</text>
+        <text x="130" y="166" text-anchor="middle" class="glyph-m" font-size="11">the draft</text>
+        <text x="70" y="238" class="glyph-lab" font-size="10">2048 &rarr; N</text>
+        <!-- arrow -->
+        <text x="250" y="120" class="glyph-m" font-size="26">&rarr;</text>
+        <text x="248" y="146" class="glyph-lab" font-size="10">~6&times; cheaper</text>
+        <text x="248" y="160" class="glyph-lab" font-size="10">projection</text>
+
+        <!-- verify full -->
+        <text x="340" y="30" class="glyph-lab" font-size="11">verify projection: full matrix, always</text>
+        <rect x="340" y="40" width="120" height="180" rx="4" class="s-verify" fill-opacity=".85"/>
+        <text x="400" y="135" text-anchor="middle" fill="#fff" class="mono" font-size="12" font-weight="600">all 248320</text>
+        <text x="340" y="238" class="glyph-lab" font-size="10">2048 &rarr; 248320</text>
+
+        <!-- invariant callout -->
+        <rect x="500" y="60" width="150" height="140" rx="10" class="s-good" fill-opacity=".12" style="stroke:var(--good);stroke-width:1.4"/>
+        <text x="575" y="92" text-anchor="middle" class="glyph" font-size="12" font-weight="600" style="fill:var(--good)">invariant</text>
+        <text x="575" y="120" text-anchor="middle" class="glyph-m" font-size="11">emit =</text>
+        <text x="575" y="138" text-anchor="middle" class="glyph-m" font-size="11">argmax(</text>
+        <text x="575" y="156" text-anchor="middle" class="glyph-m" font-size="11">full verify)</text>
+        <text x="575" y="182" text-anchor="middle" class="glyph-lab" font-size="9.5">draft width</text>
+        <text x="575" y="194" text-anchor="middle" class="glyph-lab" font-size="9.5">cannot change it</text>
+      </svg>
+      </div>
+      <figcaption><b>The projection slice.</b> Drafts project onto <span class="mono">rows [0:N]</span>; verify always uses the full matrix. Because emit is fixed to <code>argmax(full&nbsp;verify)</code>, the slice is a pure cost cut. The one hazard is the repetition-penalty processor, which gathers and scatters at token-id columns: an id beyond N would corrupt the reduced row on the GPU (no bounds check), so we filter the penalty context to ids <span class="mono">&lt; N</span> once per cycle.</figcaption>
+    </figure>
+  </div>
+
+  <div class="fig">
+    <figure>
+      <div class="scroll">
+      <svg viewBox="0 0 660 300" role="img" aria-label="Sweep over draft vocabulary size: decode tokens per second rises as N falls from full to 65536 then regresses at 32768, while accept rate falls monotonically. 131072 gives speed with zero accept loss; 65536 is the peak; 32768 is past the knee.">
+        <!-- axes -->
+        <line x1="64" y1="240" x2="600" y2="240" class="st-ink" style="stroke-width:1.2"/>
+        <line x1="64" y1="30"  x2="64"  y2="240" class="st-ink" style="stroke-width:1.2"/>
+        <text x="330" y="278" text-anchor="middle" class="glyph-lab" font-size="11">draft vocab N (full &rarr; narrower)</text>
+
+        <!-- x positions: full=110, 131072=250, 65536=390, 32768=530 -->
+        <!-- p50 line (verify blue) : 71.2, 76.0, 77.0, 73.2  scaled 68..80 -> y = 240 - (v-68)*(210/12) -->
+        <!-- 71.2->184.0 ; 76.0->100.0 ; 77.0->82.5 ; 73.2->149.0 -->
+        <polyline points="110,184 250,100 390,82 530,149" fill="none" class="st-verify" style="stroke-width:2.5" marker-start="url(#d)"/>
+        <g class="s-verify">
+          <circle cx="110" cy="184" r="5"/><circle cx="250" cy="100" r="5"/><circle cx="390" cy="82" r="5"/><circle cx="530" cy="149" r="5"/>
+        </g>
+        <!-- accept line (draft amber), scaled .78..0.87 -> use same box top area -->
+        <!-- 0.857->? map .78..0.87 to y 235..120 : y=235-(a-.78)*(115/.09) -->
+        <!-- .857->137.6 ; .857->137.6 ; .832->169.5 ; .787->227.0 -->
+        <polyline points="110,138 250,138 390,170 530,227" fill="none" class="st-draft" style="stroke-width:2;stroke-dasharray:6 4"/>
+        <g class="s-draft">
+          <circle cx="110" cy="138" r="4"/><circle cx="250" cy="138" r="4"/><circle cx="390" cy="170" r="4"/><circle cx="530" cy="227" r="4"/>
+        </g>
+
+        <!-- omlx parity line at 77.5 -> y=240-(77.5-68)*17.5=240-166.25=73.75 -->
+        <line x1="64" y1="74" x2="600" y2="74" style="stroke:var(--ink-3);stroke-width:1;stroke-dasharray:2 4"/>
+        <text x="600" y="70" text-anchor="end" class="glyph-lab" font-size="10">omlx 77.5</text>
+
+        <!-- value labels -->
+        <g class="glyph" font-size="11" text-anchor="middle" style="fill:var(--verify)" font-weight="600">
+          <text x="110" y="176">71.2</text><text x="250" y="92">76.0</text><text x="390" y="74">77.0</text><text x="530" y="141">73.2</text>
+        </g>
+        <g class="glyph" font-size="10" text-anchor="middle" style="fill:var(--draft)">
+          <text x="132" y="132">.857</text><text x="250" y="128">.857</text><text x="412" y="166">.832</text><text x="530" y="221">.787</text>
+        </g>
+        <!-- x labels -->
+        <g class="glyph-m" font-size="11" text-anchor="middle">
+          <text x="110" y="258">full</text><text x="250" y="258">131072</text><text x="390" y="258">65536</text><text x="530" y="258">32768</text>
+        </g>
+        <!-- knee marker -->
+        <text x="250" y="52" text-anchor="middle" class="glyph" font-size="10.5" style="fill:var(--good)">free knee &middot; 0 accept loss</text>
+        <text x="530" y="250" text-anchor="middle" class="glyph" font-size="10" style="fill:var(--bad)">past the knee</text>
+        <defs><marker id="d" markerWidth="2" markerHeight="2"></marker></defs>
+        <!-- legend -->
+        <g class="glyph-m" font-size="11">
+          <rect x="80" y="20" width="12" height="4" class="s-verify"/><text x="98" y="24">decode p50 (t/s)</text>
+          <rect x="230" y="20" width="12" height="4" class="s-draft"/><text x="248" y="24">accept rate</text>
+        </g>
+      </svg>
+      </div>
+      <figcaption><b>The sweep (2 passes, hard prompts).</b> Speed climbs as the vocabulary narrows, accept falls monotonically. <span class="chip good">131072</span> is the free knee: it halves the projection width yet never clips a true token, so accept holds at <span class="mono">0.857</span> for pure speed. <span class="chip">65536</span> squeezes a touch more p50 by trading <span class="mono">2.5</span> accept points. <span class="chip bad">32768</span> is past the knee: accept collapses, the controller starts parking, throughput regresses.</figcaption>
+    </figure>
+  </div>
+
+  <div class="spine">
+    <div class="triad">
+      <div class="band core"><div class="btag">Core idea</div><div class="txt">Make the draft cheaper without making it dumber. Cost lever, not an accept lever, so it sidesteps the wall in section 07 entirely.</div></div>
+      <div class="band mech"><div class="btag">Mechanism</div><div class="txt">A one-line change at the two draft call sites: <code>mtp_forward(&hellip;, draft_vocab=N)</code>, plus the penalty-context filter. Verify untouched. Off by default (<code>draft_vocab=0</code>) reproduces the old path byte-for-byte.</div></div>
+      <div class="band meas"><div class="btag">Measured</div><div class="readout">at N=131072: <b>71.2 &rarr; 76.0 t/s</b> (+6.7%), accept <b>0.857 &rarr; 0.857</b> (zero loss) &rarr; omlx parity reached</div></div>
+    </div>
+  </div>
+
+  <!-- depth-4 reject -->
+  <div class="spine" style="margin-top:40px">
+    <h3>The increment that did not stack: depth 4</h3>
+    <p>Cheaper drafts should make deeper chains affordable, so raising <code>max_draft</code> to 4 looked like a free stack on top. It is not. Measured, it <em>lowers</em> throughput: the controller only picks depth 4 for 125 of 1458 cycles and depth 5 for 15, and the added draft cost plus the extra expert union (section 02) outweigh the rare deep hit. This is the falling right shoulder of the score hump, measured rather than argued.</p>
+    <div class="scroll">
+    <table>
+      <thead><tr><th>config</th><th>decode p50</th><th>accept</th><th>tok/cycle</th><th>verdict</th></tr></thead>
+      <tbody>
+        <tr><td>131072 &middot; depth 3</td><td>73.6</td><td>0.813</td><td>2.348</td><td><span class="pill banked">keep</span></td></tr>
+        <tr><td>131072 &middot; depth 4</td><td>71.0</td><td>0.823</td><td>2.316</td><td><span class="pill rej">diminishes</span></td></tr>
+        <tr><td>65536 &middot; depth 4</td><td>73.3</td><td>0.788</td><td>2.410</td><td><span class="pill rej">diminishes</span></td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p style="font-size:14px;color:var(--ink-2);margin-top:14px">Note the run-to-run spread from thermals: <span class="mono">131072</span> gave <span class="mono">[76.5, 70.7]</span> in one session and <span class="mono">[76.8, 75.2]</span> in another. The honest read of the whole lever is <span class="mono">+4 to +7%</span>, landing native MTP at <span class="mono">~74&ndash;76 t/s</span>, which is omlx parity, not yet 80.</p>
+  </div>
+</section>
+
+<!-- ================= 6. CHAIN VS TREE ================= -->
+<section id="tree">
+  <div class="sec-head spine">
+    <span class="eyebrow">06 &middot; The road not taken</span>
+    <h2>Why not a draft tree?</h2>
+  </div>
+  <div class="spine">
+    <p class="lead">EAGLE-2/3 win by drafting a branching tree of candidates instead of a single chain. On this model that move is rejected, for two structural reasons the diagram makes concrete.</p>
+  </div>
+
+  <div class="fig">
+    <figure>
+      <div class="scroll">
+      <svg viewBox="0 0 680 300" role="img" aria-label="Left: a linear draft chain of three tokens. Right: a branching draft tree. The tree is annotated with the two reasons it is rejected: the 30 linear layers cannot fork their recurrent state, and the wider token set inflates the MoE expert union.">
+        <!-- CHAIN -->
+        <text x="40" y="34" class="glyph-lab" font-size="11">CHAIN (what we run)</text>
+        <g>
+          <rect x="40" y="60" width="56" height="36" rx="7" class="st-draft" fill="var(--draft-wash)" style="stroke-width:2"/>
+          <rect x="130" y="60" width="56" height="36" rx="7" class="st-draft" fill="var(--draft-wash)" style="stroke-width:2"/>
+          <rect x="220" y="60" width="56" height="36" rx="7" class="st-draft" fill="var(--draft-wash)" style="stroke-width:2"/>
+          <g class="glyph" font-size="12" text-anchor="middle" font-weight="600"><text x="68" y="83">d1</text><text x="158" y="83">d2</text><text x="248" y="83">d3</text></g>
+          <g class="st-draft" style="stroke-width:2" fill="none" marker-end="url(#at)"><path d="M96 78 H128"/><path d="M186 78 H218"/></g>
+        </g>
+        <text x="40" y="140" class="glyph-m" font-size="11">M = 4 at verify &middot; one linear-state rollback</text>
+        <text x="40" y="158" class="glyph" font-size="11" style="fill:var(--good)">&#10003; expert union stays tight</text>
+
+        <!-- divider -->
+        <line x1="330" y1="40" x2="330" y2="270" class="s-line"/>
+
+        <!-- TREE -->
+        <text x="370" y="34" class="glyph-lab" font-size="11">TREE (rejected)</text>
+        <g>
+          <rect x="370" y="60" width="56" height="36" rx="7" class="s-unt" fill-opacity=".25" style="stroke:var(--untested);stroke-width:2"/>
+          <text x="398" y="83" text-anchor="middle" class="glyph" font-size="12" font-weight="600">d1</text>
+          <!-- branches -->
+          <rect x="470" y="30" width="52" height="32" rx="6" class="s-unt" fill-opacity=".2" style="stroke:var(--untested);stroke-width:1.6"/>
+          <rect x="470" y="76" width="52" height="32" rx="6" class="s-unt" fill-opacity=".2" style="stroke:var(--untested);stroke-width:1.6"/>
+          <rect x="470" y="122" width="52" height="32" rx="6" class="s-unt" fill-opacity=".2" style="stroke:var(--untested);stroke-width:1.6"/>
+          <rect x="560" y="12" width="52" height="30" rx="6" class="s-unt" fill-opacity=".2" style="stroke:var(--untested);stroke-width:1.4"/>
+          <rect x="560" y="52" width="52" height="30" rx="6" class="s-unt" fill-opacity=".2" style="stroke:var(--untested);stroke-width:1.4"/>
+          <g style="stroke:var(--untested);stroke-width:1.6" fill="none" marker-end="url(#at2)">
+            <path d="M426 74 C 450 60, 455 46, 468 46"/>
+            <path d="M426 78 H468"/>
+            <path d="M426 82 C 450 96, 455 138, 468 138"/>
+            <path d="M522 40 C 540 30, 545 27, 558 27"/>
+            <path d="M522 50 C 540 60, 545 67, 558 67"/>
+          </g>
+        </g>
+        <!-- annotations -->
+        <g class="glyph" font-size="11" style="fill:var(--bad)">
+          <text x="370" y="196">&#10007; 30 linear layers must FORK recurrent state</text>
+          <text x="370" y="216">&nbsp;&nbsp;&nbsp;per branch &mdash; no cheap copy like a KV cache</text>
+          <text x="370" y="242">&#10007; more distinct tokens &rarr; wider expert union</text>
+          <text x="370" y="262">&nbsp;&nbsp;&nbsp;&rarr; MoE verify cost climbs faster than a chain</text>
+        </g>
+        <defs>
+          <marker id="at" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><polygon points="0 0,7 3,0 6" fill="var(--draft)"/></marker>
+          <marker id="at2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><polygon points="0 0,6 3,0 6" fill="var(--untested)"/></marker>
+        </defs>
+      </svg>
+      </div>
+      <figcaption><b>Chain versus tree.</b> A tree multiplies candidates, but here each branch would have to fork the recurrent state of 30 GatedDeltaNet layers (no cheap copy, unlike a KV cache), and the wider distinct-token set inflates the very expert union that already caps MoE gains (section 02). The chain keeps <span class="mono">M</span> small and rolls back one linear state. EAGLE's tree is the right tool for a dense KV-only model, the wrong tool for this one.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ================= 7. THE ACCEPT WALL ================= -->
+<section id="wall">
+  <div class="sec-head spine">
+    <span class="eyebrow">07 &middot; The lever that is spent</span>
+    <h2>The accept wall</h2>
+  </div>
+  <div class="spine">
+    <p class="lead">The other way to go faster is to make the head guess better, so more drafts survive. We already ran that experiment to its end, and it hit a capacity ceiling.</p>
+    <p>We built the FastMTP recipe (<span class="mono">2509.18362</span>) twice: a single-step self-distilled head fine-tune, and a multi-step recursive version that carries the head's own hidden state forward, which is the HASS exposure-bias fix (<span class="mono">2408.15766</span>). On the fixed dense head the ceiling was hard: <span class="mono">+2</span> points at depth 3 only, with depth 1 and 2 immovable. A stronger head plateauing is what makes retraining the weaker MoE head low expected value. So we pivoted from the accept lever to the cost lever in section 05, and it worked.</p>
+    <p>The MoE-specific accept ideas in the literature do not rescue it either, for reasons specific to a resident 32GB deployment:</p>
+  </div>
+  <div class="fig spine" style="padding:6px 0;border:0;box-shadow:none;background:transparent">
+    <div class="ledger" style="margin-top:6px">
+      <div class="lev rej">
+        <h4>AcceptMoE <span class="mono" style="color:var(--ink-3);font-size:.8em">2608.02989</span></h4>
+        <p class="why">Shrinks the verifier's expert set for a <span class="mono">1.29&times;</span>. But approximating which experts run risks the losslessness invariant, which we will not trade on a resident model.</p>
+        <div class="meta"><span class="pill rej">rejected</span></div>
+      </div>
+      <div class="lev rej">
+        <h4>DraftExpert <span class="mono" style="color:var(--ink-3);font-size:.8em">2607.24434</span></h4>
+        <p class="why"><span class="mono">1.45&times;</span>, but the win comes from hiding expert-offload latency. Our experts are resident in 32GB, so there is no offload latency to hide.</p>
+        <div class="meta"><span class="pill unt">not applicable</span></div>
+      </div>
+      <div class="lev rej">
+        <h4>EVICT <span class="mono" style="color:var(--ink-3);font-size:.8em">2605.00342</span></h4>
+        <p class="why">MoE-specific expert eviction on Qwen3-30B-A3B. Same story: a memory-pressure tool, and this deployment is not expert-memory bound.</p>
+        <div class="meta"><span class="pill unt">not applicable</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 8. LOSSLESS ================= -->
+<section id="lossless">
+  <div class="sec-head spine">
+    <span class="eyebrow">08 &middot; A subtle claim, stated precisely</span>
+    <h2>Lossless is not byte-identical</h2>
+  </div>
+  <div class="spine">
+    <p class="lead">Every emitted token is the backbone's own greedy pick, yet the text is not bit-for-bit identical across draft settings. Both statements are true, and the gap between them is where a careless claim gets made.</p>
+    <p>The invariant <code>emit = argmax(full-vocab&nbsp;verify)</code> holds by construction. But changing the draft changes which batch <em>widths</em> the verify runs at, and on M5 the batched attention numerics (<span class="mono">mlx#3897</span>, <span class="mono">mlx#3860</span>, both closed won't-fix, so we always run <code>MLX_ENABLE_TF32=0</code>) resolve argmax ties slightly differently at different widths. That is the same non-determinism that already makes batch-1 and batch-4 diverge in production. We verified by reading divergent outputs side by side that they are equal quality, not regressions.</p>
+  </div>
+
+  <div class="fig">
+    <figure>
+      <div class="scroll">
+      <svg viewBox="0 0 680 210" role="img" aria-label="Two outputs from the same prompt under full vocab and reduced vocab: the text differs in wording but both are correct, illustrating equal-quality non-determinism rather than a regression.">
+        <text x="20" y="24" class="glyph-lab" font-size="11">prompt: derivative of x^3 &middot; ln(x) &mdash; both runs, product rule</text>
+        <!-- left -->
+        <rect x="20" y="40" width="300" height="130" rx="10" class="st-verify" fill="var(--verify-wash)" style="stroke-width:1.4"/>
+        <text x="34" y="62" class="glyph" font-size="11" font-weight="600" style="fill:var(--verify)">FULL VOCAB</text>
+        <text x="34" y="88" class="glyph-m" font-size="11">f'(x) = u'v + uv'</text>
+        <text x="34" y="108" class="glyph-m" font-size="11">= (3x&#178;)(ln x) + (x&#179;)(1/x)</text>
+        <text x="34" y="146" class="glyph" font-size="10.5" style="fill:var(--good)">&#10003; correct, shorthand</text>
+        <!-- right -->
+        <rect x="360" y="40" width="300" height="130" rx="10" class="st-draft" fill="var(--draft-wash)" style="stroke-width:1.4"/>
+        <text x="374" y="62" class="glyph" font-size="11" font-weight="600" style="fill:var(--draft)">draft_vocab = 65536</text>
+        <text x="374" y="88" class="glyph-m" font-size="11">f'(x) = u'(x)v(x) + u(x)v'(x)</text>
+        <text x="374" y="108" class="glyph-m" font-size="11">= (3x&#178;)(ln x) + (x&#179;)(1/x)</text>
+        <text x="374" y="146" class="glyph" font-size="10.5" style="fill:var(--good)">&#10003; correct, written out</text>
+        <!-- equal sign -->
+        <text x="340" y="112" text-anchor="middle" class="glyph" font-size="22" style="fill:var(--ink-3)">&#8776;</text>
+        <text x="340" y="190" text-anchor="middle" class="glyph-lab" font-size="10">different bytes</text>
+        <text x="340" y="204" text-anchor="middle" class="glyph-lab" font-size="10">equal quality</text>
+      </svg>
+      </div>
+      <figcaption><b>Same invariant, different-but-equivalent text.</b> Across code, prose, and math prompts the divergent outputs were all correct, just paraphrased. The honest claim is <em>quality-neutral, same class as existing batch-width non-determinism</em>, not <em>byte-identical</em>. That correction is section 09.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ================= 9. THE LEDGERS ================= -->
+<section id="ledgers">
+  <div class="sec-head spine">
+    <span class="eyebrow">09 &middot; Where the number stands</span>
+    <h2>The stacking ledger toward 80</h2>
+  </div>
+  <div class="spine">
+    <p class="lead">3% can be one 3% lever or three 1% increments, as long as they add without eating each other. This is the running total, honest about what composes and what does not.</p>
+  </div>
+
+  <div class="fig wide">
+    <figure>
+      <div class="scroll">
+      <svg viewBox="0 0 900 360" role="img" aria-label="Waterfall from baseline 71.2 tokens per second. Reduced-vocab adds about 4.8 to reach 76, which composes. Depth-4 would subtract 5, so it is rejected and does not stack. omlx parity sits at 77.5. The gap from 76 to the 80 goal remains open and not yet demonstrated.">
+        <!-- value axis 68..82 ; y = 320 - (v-68)*(280/14) = 320 - (v-68)*20 -->
+        <!-- gridlines -->
+        <g class="s-line">
+          <line x1="120" y1="320" x2="860" y2="320" style="stroke-dasharray:0"/>
+          <line x1="120" y1="240" x2="860" y2="240" style="stroke-dasharray:3 4"/>
+          <line x1="120" y1="160" x2="860" y2="160" style="stroke-dasharray:3 4"/>
+          <line x1="120" y1="80"  x2="860" y2="80"  style="stroke-dasharray:3 4"/>
+        </g>
+        <g class="glyph-lab" font-size="10" text-anchor="end">
+          <text x="112" y="324">68</text><text x="112" y="244">72</text><text x="112" y="164">76</text><text x="112" y="84">80</text>
+        </g>
+        <text x="40" y="180" class="glyph-lab" font-size="11" transform="rotate(-90 40 180)">decode tok/s (p50)</text>
+
+        <!-- baseline bar: 68..71.2 -> y 320..256 -->
+        <rect x="150" y="256" width="120" height="64" rx="4" class="s-ink" fill-opacity=".28" style="stroke:var(--ink-3);stroke-width:1.2"/>
+        <text x="210" y="248" text-anchor="middle" class="glyph" font-size="12" font-weight="600">71.2</text>
+        <text x="210" y="342" text-anchor="middle" class="glyph-m" font-size="11">baseline</text>
+        <text x="210" y="356" text-anchor="middle" class="glyph-lab" font-size="9.5">native MTP</text>
+
+        <!-- connector -->
+        <line x1="270" y1="256" x2="330" y2="256" class="s-line" style="stroke-dasharray:3 3"/>
+
+        <!-- increment reduced-vocab: from 71.2(256) up to 76.0(160) -> floating green bar 160..256 -->
+        <rect x="330" y="160" width="120" height="96" rx="4" class="s-good" fill-opacity=".85"/>
+        <text x="390" y="150" text-anchor="middle" class="glyph" font-size="12" font-weight="600" style="fill:var(--good)">+4.8</text>
+        <text x="390" y="342" text-anchor="middle" class="glyph-m" font-size="11">reduced-vocab</text>
+        <text x="390" y="356" text-anchor="middle" class="glyph-lab" font-size="9.5" style="fill:var(--good)">COMPOSES &middot; 0 accept loss</text>
+
+        <!-- running total marker at 76 -->
+        <line x1="450" y1="160" x2="510" y2="160" class="s-line" style="stroke-dasharray:3 3"/>
+        <rect x="510" y="160" width="120" height="160" rx="4" class="s-verify" fill-opacity=".22" style="stroke:var(--verify);stroke-width:1.4"/>
+        <text x="570" y="150" text-anchor="middle" class="glyph" font-size="12" font-weight="600" style="fill:var(--verify)">76.0</text>
+        <text x="570" y="342" text-anchor="middle" class="glyph-m" font-size="11">running total</text>
+        <text x="570" y="356" text-anchor="middle" class="glyph-lab" font-size="9.5">= omlx parity</text>
+
+        <!-- omlx parity dashed line at 77.5 -> y=320-(77.5-68)*20=320-190=130 -->
+        <line x1="120" y1="130" x2="860" y2="130" style="stroke:var(--verify);stroke-width:1;stroke-dasharray:2 5"/>
+        <text x="856" y="124" text-anchor="end" class="glyph-lab" font-size="10" style="fill:var(--verify)">omlx 77.5</text>
+
+        <!-- depth-4 rejected: would drop from 76 to 71 -> red down bar 160..256, crossed -->
+        <rect x="660" y="160" width="110" height="96" rx="4" class="s-bad" fill-opacity=".18" style="stroke:var(--bad);stroke-width:1.4;stroke-dasharray:5 4"/>
+        <line x1="660" y1="160" x2="770" y2="256" style="stroke:var(--bad);stroke-width:1.6"/>
+        <text x="715" y="150" text-anchor="middle" class="glyph" font-size="12" font-weight="600" style="fill:var(--bad)">&minus;5.0</text>
+        <text x="715" y="342" text-anchor="middle" class="glyph-m" font-size="11">depth 4</text>
+        <text x="715" y="356" text-anchor="middle" class="glyph-lab" font-size="9.5" style="fill:var(--bad)">DIMINISHES &middot; rejected</text>
+
+        <!-- goal gap: open segment 76(160) -> 80(80) at far right -->
+        <rect x="800" y="80" width="46" height="80" rx="4" fill="none" style="stroke:var(--draft);stroke-width:1.6;stroke-dasharray:6 5"/>
+        <text x="823" y="72" text-anchor="middle" class="glyph" font-size="12" font-weight="600" style="fill:var(--draft)">+4.0</text>
+        <text x="823" y="342" text-anchor="middle" class="glyph-m" font-size="10">to 80</text>
+        <text x="823" y="356" text-anchor="middle" class="glyph-lab" font-size="9.5" style="fill:var(--draft)">NOT YET SHOWN</text>
+        <!-- goal line -->
+        <line x1="120" y1="80" x2="860" y2="80" style="stroke:var(--draft);stroke-width:1.2;stroke-dasharray:2 4"/>
+      </svg>
+      </div>
+      <figcaption><b>The waterfall.</b> Reduced-vocab is the one banked increment: <span class="mono">+4.8</span> to omlx parity, composing cleanly because it costs no accept. Depth 4 is drawn as what it measured, a loss that does not stack. The last <span class="mono">+4</span> to 80 is an open, honest gap. The next section says what is still in the tank to close it.</figcaption>
+    </figure>
+  </div>
+
+  <h3 class="spine" style="margin-top:20px">What is left in the tank</h3>
+  <div class="ledger">
+    <div class="lev">
+      <h4>Reduced-vocab draft</h4>
+      <p class="why">The banked win. Cost lever, lossless by construction, zero accept loss at N=131072.</p>
+      <div class="meta"><span class="pill banked">banked +6%</span><span class="chip good">composes</span></div>
+    </div>
+    <div class="lev">
+      <h4>Penalty-aware drafts</h4>
+      <p class="why">Draft through the same penalty processors verify will apply, so the head predicts the penalized target. Already shipped, small and free.</p>
+      <div class="meta"><span class="pill banked">banked</span><span class="chip good">composes</span></div>
+    </div>
+    <div class="lev">
+      <h4>Frequency-remapped vocab</h4>
+      <p class="why">The one lever worth trying next. Remap the draft vocabulary to the actual generated-token id distribution, aiming for 65536's projection cost at 131072's accept. A clean additive cost increment that erodes nothing already banked.</p>
+      <div class="meta"><span class="pill unt">untested</span><span class="chip good">should compose</span></div>
+    </div>
+    <div class="lev rej">
+      <h4>Depth 4</h4>
+      <p class="why">Measured to lower throughput. The controller rarely picks it and the MoE union tax outweighs the rare deep hit.</p>
+      <div class="meta"><span class="pill rej">rejected</span><span class="chip bad">diminishes</span></div>
+    </div>
+    <div class="lev rej">
+      <h4>Accept via head retrain</h4>
+      <p class="why">Exhausted. FastMTP + HASS both plateaued at a capacity ceiling on the stronger dense head. Low expected value on the weaker MoE head.</p>
+      <div class="meta"><span class="pill rej">exhausted</span></div>
+    </div>
+    <div class="lev rej">
+      <h4>Draft trees</h4>
+      <p class="why">Rejected structurally: 30 linear layers cannot fork recurrent state cheaply, and a tree inflates the MoE expert union faster than a chain.</p>
+      <div class="meta"><span class="pill rej">rejected</span><span class="chip bad">conflicts</span></div>
+    </div>
+    <div class="lev rej">
+      <h4>Verifier expert-shrink</h4>
+      <p class="why">AcceptMoE-style. Risks the losslessness invariant on a resident model. Not worth trading.</p>
+      <div class="meta"><span class="pill rej">rejected</span></div>
+    </div>
+    <div class="lev rej">
+      <h4>Expert offload tricks</h4>
+      <p class="why">DraftExpert and friends. Their gain is hiding offload latency; our experts are resident in 32GB, so there is nothing to hide.</p>
+      <div class="meta"><span class="pill unt">not applicable</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 10. HOW WE WERE WRONG ================= -->
+<section id="wrong">
+  <div class="sec-head spine">
+    <span class="eyebrow">10 &middot; The instructive part</span>
+    <h2>How we were wrong, and how measurement fixed it</h2>
+  </div>
+  <div class="spine">
+    <p class="lead">This work moved forward mostly by overturning things I had asserted. The reversals are the most useful thing here, because each one marks a place where a plausible claim survived until a measurement killed it.</p>
+
+    <div class="reversal">
+      <div class="claim">asserted &middot; &ldquo;the metal kernel is the gap&rdquo;</div>
+      <div class="fix">Measured the stock <code>quantized_matmul</code> scaling: flat to M=4. The verify matmul was already amortized, <b>zero headroom there</b>. The gap was never the kernel.</div>
+    </div>
+    <div class="reversal">
+      <div class="claim">asserted &middot; &ldquo;MTP on MoE is a net loss&rdquo;</div>
+      <div class="fix">Never actually measured when first claimed. When measured, the norm fix had lifted MoE accept to <span class="mono">0.83</span>, and native MoE MTP is <b>net positive</b>.</div>
+    </div>
+    <div class="reversal">
+      <div class="claim">asserted &middot; &ldquo;reduced-vocab output is byte-identical&rdquo;</div>
+      <div class="fix">True only on one easy prompt. Harder prompts diverged on most outputs. The correct claim is <b>quality-neutral, not byte-identical</b> (section 08).</div>
+    </div>
+    <div class="reversal">
+      <div class="claim">hoped &middot; &ldquo;this lever reaches 80&rdquo;</div>
+      <div class="fix">The confirm run said <span class="mono">~76&ndash;77</span>, omlx parity, not 80. Reported the real number, kept the <b>+4 gap open and honest</b>.</div>
+    </div>
+    <p style="margin-top:22px">The discipline that came out of it: if a mechanism can settle a question, run it before asserting, and label every claim as measured, assumed, or not yet checked. Every number on this page is from a bench run with production down and <code>MLX_ENABLE_TF32=0</code>, or it is cited.</p>
+  </div>
+</section>
+
+<!-- ================= REFERENCES ================= -->
+<section id="refs">
+  <div class="sec-head spine">
+    <span class="eyebrow">Sources</span>
+    <h2>What each reference decided</h2>
+  </div>
+  <div class="refs">
+    <div class="ref"><span class="id">2211.17192</span><span class="what"><b>Leviathan et&nbsp;al.</b> &mdash; speculative decoding foundations: draft, verify, accept the matching prefix. The frame for the whole cycle.</span></div>
+    <div class="ref"><span class="id">DeepSeek-V3</span><span class="what"><b>MTP head</b> &mdash; the single-head, linear-chain self-speculative design we implement, rather than a separate draft model.</span></div>
+    <div class="ref"><span class="id">2509.18362</span><span class="what"><b>FastMTP</b> &mdash; self-distilled head fine-tune and draft-vocab compression. We built the fine-tune (it plateaued) and shipped the vocab idea (it won).</span></div>
+    <div class="ref"><span class="id">2408.15766</span><span class="what"><b>HASS</b> &mdash; carry the head's own hidden forward to fix exposure bias. Built into the multi-step retrain; still hit the ceiling.</span></div>
+    <div class="ref"><span class="id">2406.16858</span><span class="what"><b>EAGLE-2</b> &mdash; dynamic draft trees. The technique we deliberately rejected for this hybrid MoE (section 06).</span></div>
+    <div class="ref"><span class="id">2503.01840</span><span class="what"><b>EAGLE-3</b> &mdash; training-time test and richer trees. Same rejection reasoning: linear state does not fork cheaply.</span></div>
+    <div class="ref"><span class="id">2505.19645</span><span class="what"><b>MoESD</b> &mdash; measured the batch-1 expert-union ratio at 1.25&ndash;1.42&times;. This is the honest ceiling on MoE speculative gains.</span></div>
+    <div class="ref"><span class="id">2608.02989</span><span class="what"><b>AcceptMoE</b> &mdash; verifier expert-set shrink for 1.29&times;. Rejected: risks the losslessness invariant on a resident model.</span></div>
+    <div class="ref"><span class="id">2607.24434</span><span class="what"><b>DraftExpert</b> &mdash; 1.45&times; by hiding expert-offload latency. Not applicable: our experts are resident.</span></div>
+    <div class="ref"><span class="id">2605.00342</span><span class="what"><b>EVICT</b> &mdash; MoE expert eviction on Qwen3-30B-A3B. A memory-pressure tool; this deployment is not expert-memory bound.</span></div>
+    <div class="ref"><span class="id">SpecDec++ / DISCO</span><span class="what"><b>Controller objectives</b> &mdash; adaptive draft-length heuristics our <code>score(d)</code> subsumes as approximations of expected tokens per unit time.</span></div>
+    <div class="ref"><span class="id">llama.cpp #25198</span><span class="what"><b>p_min</b> &mdash; a confidence-gated stop rule, another special case of the same argmax the controller solves directly.</span></div>
+    <div class="ref"><span class="id">mlx#3897 / #3860</span><span class="what"><b>M5 batched attention</b> &mdash; batched-verify numerics differ by width (closed won't-fix). The reason we run <code>MLX_ENABLE_TF32=0</code> and why losslessness is not byte-identity.</span></div>
+  </div>
+</section>
+
+<footer class="spine">
+  <div>mira-core &middot; native MTP on Qwen3.6-35B-A3B &middot; all figures measured on Apple M5 / 32GB, production down, MLX_ENABLE_TF32=0, or cited above.</div>
+</footer>
+
+</div>
