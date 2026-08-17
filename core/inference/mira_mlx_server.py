@@ -535,6 +535,7 @@ class GenerationEngine:
         # RAISES if the sidecar is missing, so only enable it once it is in place.
         mtp_enabled: bool = False,
         mtp_max_draft_tokens: int = 3,
+        mtp_draft_vocab: int = 0,
         vision: bool = False,
         vision_max_pixels: Optional[int] = None,
         vision_tower_idle_timeout: float = 300.0,
@@ -570,6 +571,7 @@ class GenerationEngine:
         self.resident_expert_fraction = resident_expert_fraction
         self.mtp_enabled = mtp_enabled
         self.mtp_max_draft_tokens = mtp_max_draft_tokens
+        self.mtp_draft_vocab = mtp_draft_vocab
         self.vision = vision
         self.vision_max_pixels = vision_max_pixels
         self.vision_tower_idle_timeout = vision_tower_idle_timeout
@@ -757,9 +759,13 @@ class GenerationEngine:
                     # BatchGenerator is constructed.
                     from core.inference.mtp import mtp_batch
 
-                    mtp_batch.patch(depth=self.mtp_max_draft_tokens)
+                    mtp_batch.patch(
+                        depth=self.mtp_max_draft_tokens,
+                        draft_vocab=self.mtp_draft_vocab,
+                    )
                     logger.info(
-                        "native MTP armed (max_draft_tokens=%d)", self.mtp_max_draft_tokens
+                        "native MTP armed (max_draft_tokens=%d, draft_vocab=%d)",
+                        self.mtp_max_draft_tokens, self.mtp_draft_vocab,
                     )
                 else:
                     logger.warning("mtp_enabled but the MTP patch could not install; running without MTP")
@@ -2385,6 +2391,7 @@ def main() -> None:
     # a no-op on any model without an MTP head. See config MIRA_MLX_MTP_ENABLED.
     parser.add_argument("--mtp-enabled", action="store_true")
     parser.add_argument("--mtp-max-draft-tokens", type=int, default=3)
+    parser.add_argument("--mtp-draft-vocab", type=int, default=0)
     # Off by default. On, this loads the checkpoint's own vision tower (about
     # 0.89 GB for Qwen3.6-35B-A3B) so screenshots are read as images rather than
     # run through OCR. Costs nothing when off: the tower is never imported.
@@ -2434,6 +2441,7 @@ def main() -> None:
         resident_expert_fraction=args.resident_expert_fraction,
         mtp_enabled=args.mtp_enabled,
         mtp_max_draft_tokens=args.mtp_max_draft_tokens,
+        mtp_draft_vocab=args.mtp_draft_vocab,
         vision=args.vision,
         vision_max_pixels=args.vision_max_pixels,
         vision_tower_idle_timeout=args.vision_tower_idle_timeout,

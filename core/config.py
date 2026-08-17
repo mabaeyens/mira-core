@@ -308,6 +308,13 @@ MIRA_MLX_EXPERT_PROFILE_PATH: Optional[str] = _get("mira_mlx_expert_profile_path
 # cycle (clamped to [1, 8]).
 MIRA_MLX_MTP_ENABLED: bool = _get("mira_mlx_mtp_enabled", False)
 MIRA_MLX_MTP_MAX_DRAFT_TOKENS: int = _get("mira_mlx_mtp_max_draft_tokens", 3)
+# Reduced-vocab draft projection: the MTP head projects only the first N of the
+# 248320 vocab rows when drafting, cutting the lm_head cost of each draft. Lossless
+# by construction (the full-vocab backbone verify decides every emitted token); a
+# narrow N can only lower accept if a true token id lands beyond it. Measured knee
+# on Qwen3.6-35B-A3B: 131072 is +~6% decode t/s at zero accept loss; 65536 trades
+# ~2.5pt accept for ~1% more. 0 = full vocab (off).
+MIRA_MLX_MTP_DRAFT_VOCAB: int = _get("mira_mlx_mtp_draft_vocab", 0)
 # Executing a model repo's own Python at load time. Default off: with this on,
 # loading any repo runs that repo's tokenizer code in-process, so a model id is
 # equivalent to code execution. Enable only for a specific model you trust that

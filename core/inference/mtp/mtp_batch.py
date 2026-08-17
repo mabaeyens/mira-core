@@ -61,6 +61,17 @@ _PENALTY_AWARE_DRAFTS = os.environ.get(
     "MIRA_MLX_MTP_PENALTY_AWARE_DRAFTS", "1"
 ).strip().lower() not in ("0", "false", "no", "off")
 
+# Reduced-vocab draft projection. Commit 6942630 built this on the head
+# (``mtp_forward(draft_vocab=N)``) but only wired it into the dense path; this
+# knob extends it to the MoE spec cycle. The draft head projects only the first
+# N vocab rows instead of all 248320 — a DRAFT-ONLY cost cut: the full-vocab
+# backbone verify still decides every emitted token, so a reduced draft vocab is
+# lossless by construction. It can only lower accept if a true next-token id
+# lands beyond N (negligible when N covers the generated-token id range, which
+# clusters low in Qwen3's BPE). 0 = full vocab (off, byte-identical to before).
+# Set MIRA_MLX_MTP_DRAFT_VOCAB=65536 &c. to enable and A/B tok/s vs accept.
+_DRAFT_VOCAB = int(os.environ.get("MIRA_MLX_MTP_DRAFT_VOCAB", "0") or "0")
+
 
 # --------------------------------------------------------------------------- #
 # Accept-rate accumulator (spec §2: "accept-rate stats in /v1/stats").          #
@@ -870,9 +881,19 @@ def _make_mtp_generation_class(BaseGeneration):
             # changing the emitted token. dctx is the token history, kept separate
             # from the head's recurrent hidden state.
             dctx = list(self.tokens[0])
+            if _DRAFT_VOCAB:
+                # A reduced-vocab draft row is only _DRAFT_VOCAB wide; the pure
+                # penalty procs gather/scatter at ctx-token-id columns, so any id
+                # >= width would read/write out of bounds (MLX does not bounds-
+                # check on the GPU — it corrupts silently, it does not raise).
+                # Drop the out-of-range history once here; chained drafts are the
+                # argmax of the reduced row and are already in range. This only
+                # shapes the draft guess, never the emitted token (full-vocab
+                # verify decides that), so losslessness is untouched.
+                dctx = [t for t in dctx if t < _DRAFT_VOCAB]
             lg, hh = model.mtp_forward(
                 self._mtp_frontier, mx.array(committed, U)[None], hc,
-                return_hidden=True, logits_keep=1,
+                return_hidden=True, logits_keep=1, draft_vocab=_DRAFT_VOCAB,
             )
             d = self._mtp_draft_token(lg[0, -1:], dctx)
             drafts = [d]
@@ -881,6 +902,7 @@ def _make_mtp_generation_class(BaseGeneration):
                 dctx.append(d)
                 lg, hh = model.mtp_forward(
                     h, mx.array([[d]], U), hc, return_hidden=True, logits_keep=1,
+                    draft_vocab=_DRAFT_VOCAB,
                 )
                 d = self._mtp_draft_token(lg[0, -1:], dctx)
                 drafts.append(d)
@@ -1113,12 +1135,18 @@ def _make_mtp_prompt_class(BasePrompt, MtpGeneration):
     return MtpPromptProcessingBatch
 
 
-def patch(depth: int = 3) -> bool:
+def patch(depth: int = 3, draft_vocab: int = 0) -> bool:
     """Swap mlx-lm's prefill/decode batch classes for the MTP subclasses so the
     stock ``BatchGenerator`` serves native MTP. Idempotent; ``depth`` updates the
-    draft depth on every call. Returns True if MTP is now installed."""
-    global _PATCHED, _MTP_DEPTH
+    draft depth on every call. Returns True if MTP is now installed.
+
+    ``draft_vocab`` > 0 overrides the module default (``MIRA_MLX_MTP_DRAFT_VOCAB``
+    env) with the reduced-vocab draft projection width. 0 leaves the env default
+    in place, so the bench path (env only, no engine arg) is unaffected."""
+    global _PATCHED, _MTP_DEPTH, _DRAFT_VOCAB
     _MTP_DEPTH = max(1, int(depth))
+    if draft_vocab:
+        _DRAFT_VOCAB = max(0, int(draft_vocab))
     if _PATCHED:
         return True
     import importlib
@@ -1139,7 +1167,10 @@ def patch(depth: int = 3) -> bool:
     G.GenerationBatch = mtp_gen
     G.PromptProcessingBatch = mtp_prompt
     _PATCHED = True
-    logger.info("native MTP decode path installed (depth=%d)", _MTP_DEPTH)
+    logger.info(
+        "native MTP decode path installed (depth=%d, draft_vocab=%d)",
+        _MTP_DEPTH, _DRAFT_VOCAB,
+    )
     return True
 
 
