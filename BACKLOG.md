@@ -39,14 +39,28 @@
   this head/engine. **Dense native MTP is DONE at 1.91×.** Full write-up: `docs/multi-token-prediction.md`
   (illustrated); history in memory `project_native_mtp_workstream.md`; benches in gitignored `notes/mtp/`.
 
-### Confirm the overnight-eviction culprit from the sampler, then decide if any tuning is warranted
-- The `notes/mem-samples.log` sampler is running (started 2026-08-13). After a night or two, read it
-  and check which process's footprint climbs alongside the compressor at the moment of the next
-  eviction. **If external (Xcode/lldb/browser), no model or config change is warranted** — the fix is
-  behavioural (quit Xcode when idle). If it's Mira's *own* cache growth, the lever is the engine's
-  prompt-cache cap (`mira_mlx_server.py:2114`, defaults to 12G) or the context window — trim peak
-  footprint on this box without changing the model or its quality. Do not touch anything until the log
-  says which. Stop the sampler with `pkill -f notes/mem-sampler.sh` once the question is answered.
+### ~~Confirm the overnight-eviction culprit from the sampler~~ — ANSWERED 2026-08-17: idle-decompress treadmill, leaving as-is
+- Read 22h of `notes/mem-samples.log` (2026-08-16 02:13 → 2026-08-17 00:31) against the timestamped
+  evictions in `~/.local/share/mira/mira-mlx.log`. It is **neither** hypothesis. Not external
+  (no Xcode/lldb; the biggest non-Mira footprint all run is WebKit tabs at a few hundred MB to ~3GB)
+  and not Mira cache *growth* (the model sits steady at ~19GB). It is the **idle-decompress treadmill
+  on the model weights themselves**:
+  - **505 of 579 evictions fired while the macOS advisory was `ok`** — the system was not short on RAM;
+    only 1 was `critical`. Of the causally-tagged evictions, **79/90 are `idle_reclaim`, 10
+    `external_pressure`.** At the eviction instants the sampler shows **80–86% free, compressor ~0.5GB**;
+    the engine logged compressor ~15GB at those same instants because compress → detect → decompress
+    completes in ~2–3s, faster than the 60s sampler, which mostly catches the *after* state.
+  - **Mechanism:** macOS opportunistically compresses the big idle model even with plenty of free RAM,
+    and `proactive_decompress: true` faults it right back in — 79 times overnight, ~2–3s and 6–17GB
+    each. That gate (`mira_mlx_server.py:_maybe_decompress_model`) checks battery and headroom but
+    **not request recency**, so a long idle stretch with no "next reply" keeps fighting macOS for nothing.
+- **Decision: leave it. Costs time, not correctness — replies are unaffected (that is the point of the
+  proactive fault-in), the notification noise is already off (`MEMORY_ADVISORY_NOTIFICATIONS=False`).**
+  The prompt-cache cap and context window are the *wrong* levers here (the 19GB is steady weights, not
+  growing cache) — do not touch them. The only lever that fits, if overnight power/thermals ever
+  matter, is gating `_maybe_decompress_model` on request recency (keep warm only if a request arrived
+  in the last N minutes, else let the next real request pay the one-time ~17s fault-in). Not worth
+  building today. Sampler already stopped.
 
 ### ~~Batched quantized KV kills the engine on any GQA model~~ — FIXED 2026-08-12, kept for the lesson
 - **Production configuration crashes as soon as two requests overlap a long one.** Found 2026-08-12
