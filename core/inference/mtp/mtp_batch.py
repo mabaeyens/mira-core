@@ -650,6 +650,18 @@ def _make_mtp_generation_class(BaseGeneration):
                 if not self._mtp_ready() or not self._mtp_cache_capable():
                     if self._mtp_ready() and not self._mtp_cache_capable():
                         self._mtp_disabled = True
+                    # Dropping to stock decode. If MTP was ever primed (head cache
+                    # live, anchor known), the base async pipeline was never
+                    # advanced past the prompt — the constructing _step() peeked
+                    # the buffer and skipped super()._step(), so _next_tokens still
+                    # points at the last prompt token and _next_logprobs is []. A
+                    # bare super()._step() would then emit fewer logprobs than
+                    # tokens and raise IndexError in GenerationBatch.next. Re-prime
+                    # stock from the anchor exactly once (handback zeroes the head
+                    # cache, so this can't re-fire), then step.
+                    if (self._mtp_head_cache is not None
+                            and self._mtp_next_main is not None):
+                        self._mtp_handback()
                     return super()._step()
                 # Global hand-back (v2): if the controller has parked almost every
                 # recent cycle, MTP is a net loss on this sequence. Re-prime the base
@@ -855,6 +867,12 @@ def _make_mtp_prompt_class(BasePrompt, MtpGeneration):
                 and input_embeddings is None
                 and len(tokens) == 1
                 and hasattr(self.model, "mtp_forward")
+                # A sequence carrying an effective logits processor (repetition
+                # penalty, thinking budget) can't be served losslessly by the
+                # argmax verify, and mira-mlx always attaches at least one (never
+                # an empty list, by _build_logits_processors). Don't prime the
+                # head cache we would only throw away at the generate() handoff.
+                and not any(self.logits_processors or [])
             )
 
         # -- prefill: fold prompt hidden into the head cache ------------------ #
@@ -905,6 +923,12 @@ def _make_mtp_prompt_class(BasePrompt, MtpGeneration):
                 and len(self.uids) == 1
                 and len(tokens) == 1
                 and hasattr(model, "mtp_forward")
+                # See _mtp_single: MTP can't losslessly serve a sequence that
+                # carries a logits processor. Hand off to the stock generation
+                # batch (which primes its own async pipeline) instead of building
+                # an MtpGeneration whose first stock fallback would read an empty
+                # _next_logprobs and crash GenerationBatch.next.
+                and not any(self.logits_processors or [])
             )
             if not primed:
                 return super().generate(tokens)
