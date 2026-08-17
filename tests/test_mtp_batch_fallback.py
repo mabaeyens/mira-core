@@ -107,3 +107,92 @@ def test_handback_disables_mtp_and_frees_head_cache():
     batch.next()   # triggers the handback re-prime
     assert batch._mtp_disabled is True
     assert batch._mtp_head_cache is None
+
+
+# --- eligibility gate ------------------------------------------------------
+
+def test_seq_mtp_eligible_requires_greedy_and_replayable():
+    greedy = lambda l: l
+    greedy.mtp_greedy = True
+    not_greedy = lambda l: l
+    pure = lambda t, l: l
+    pure.mtp_pure = True
+    unknown = lambda t, l: l  # neither pure nor a recognized stateful processor
+
+    class _Stateful:
+        def mtp_observe(self, *a):
+            pass
+
+        def mtp_would_bind(self, *a):
+            return False
+
+    assert mtp_batch._seq_mtp_eligible([greedy], [[pure]])
+    assert mtp_batch._seq_mtp_eligible([greedy], [[pure, _Stateful()]])
+    assert not mtp_batch._seq_mtp_eligible([not_greedy], [[pure]])   # stochastic
+    assert not mtp_batch._seq_mtp_eligible([greedy], [[unknown]])    # unknown proc
+    assert not mtp_batch._seq_mtp_eligible([], [[]])                 # no sampler
+
+
+# --- processor-aware verify (losslessness core) ----------------------------
+
+def _greedy_sampler():
+    s = lambda l: mx.argmax(l, axis=-1)
+    s.mtp_greedy = True
+    return s
+
+
+def _make_eligible_batch(tokens_ctx, processors):
+    Mtp = mtp_batch._make_mtp_generation_class(GenerationBatch)
+    lp = mx.zeros((VOCAB,))
+    return Mtp(
+        _StubModel(),
+        uids=[1],
+        inputs=mx.array([tokens_ctx[-1]]),
+        prompt_cache=[],
+        tokens=[list(tokens_ctx)],
+        samplers=[_greedy_sampler()],
+        fallback_sampler=lambda l: mx.argmax(l, axis=-1),
+        logits_processors=[processors],
+        state_machines=[_NoStop()],
+        max_tokens=[100],
+        mtp_depth=3,
+        mtp_head_cache=object(),
+        mtp_frontier=None,
+        mtp_committed=[tokens_ctx[-1]],
+        mtp_buffer=[(tokens_ctx[-1], lp)],
+        mtp_next_main=tokens_ctx[-1],
+    )
+
+
+def test_resolve_greedy_no_processor_is_plain_argmax_accept():
+    batch = _make_eligible_batch([2], processors=[])
+    V = VOCAB
+    row0 = [0.0] * V; row0[2] = 3.0; row0[3] = 2.5   # raw argmax -> 2
+    row1 = [0.0] * V; row1[5] = 1.0                   # after accepting -> 5
+    vrows = mx.array([row0, row1])
+    m, emitted, _ = batch._mtp_resolve_greedy(vrows, drafts=[2])
+    assert m == 1                 # draft 2 accepted (matches raw argmax)
+    assert emitted == [2, 5]      # accepted draft + bonus token
+
+
+def test_resolve_greedy_applies_real_repetition_penalty():
+    # Repetition penalty on context token 2 lowers logit[2] below logit[3],
+    # so the committed token flips from 2 (raw) to 3 (processed) and a draft of
+    # 2 is rejected. This is the property that makes MTP lossless vs stock decode.
+    from mlx_lm.sample_utils import make_repetition_penalty
+    rp = make_repetition_penalty(1.5, context_size=64)
+    rp.mtp_pure = True
+    batch = _make_eligible_batch([2], processors=[rp])
+    V = VOCAB
+    row0 = [0.0] * V; row0[2] = 3.0; row0[3] = 2.5   # raw argmax 2; penalised -> 3
+    row1 = [0.0] * V; row1[5] = 1.0
+    vrows = mx.array([row0, row1])
+
+    m, emitted, _ = batch._mtp_resolve_greedy(vrows, drafts=[2])
+    assert m == 0                 # draft 2 rejected: processed argmax is 3, not 2
+    assert emitted == [3]         # correction is the penalised argmax
+
+    # Control: same logits, no processor -> the draft is accepted.
+    ctrl = _make_eligible_batch([2], processors=[])
+    m2, emitted2, _ = ctrl._mtp_resolve_greedy(vrows, drafts=[2])
+    assert m2 == 1 and emitted2 == [2, 5]

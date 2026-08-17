@@ -296,6 +296,15 @@ def _passthrough_processor(tokens, logits):
     return logits
 
 
+# Native MTP replays pure logits processors inside its verify step so its
+# committed tokens match stock greedy decode. A processor is "pure" when it is a
+# side-effect-free function of (context tokens, logits) — the repetition/
+# presence/frequency penalties, the logit bias, and this no-op all qualify. MTP
+# reads this flag to know it may re-apply the processor per verify position; an
+# untagged processor is treated as unknown and keeps MTP off that sequence.
+_passthrough_processor.mtp_pure = True
+
+
 class ThinkingBudget:
     """Closes the reasoning block once it has run past its budget.
 
@@ -365,6 +374,52 @@ class ThinkingBudget:
         idx = mx.arange(logits.shape[-1])
         return mx.where(idx == target, logits, mx.array(-1e4, logits.dtype))
 
+    # -- native-MTP replay hooks --------------------------------------------- #
+    # Below its budget ThinkingBudget changes no logit — it only counts and
+    # watches for the block closing. Native MTP replays pure penalties in its
+    # verify step but not this stateful counter; instead it asks would_bind()
+    # whether forcing could start within the cycle (hand back to stock if so),
+    # and otherwise advances this counter over the committed tokens with
+    # observe() so the budget still binds at the right absolute token if a later
+    # stock step runs. Not "pure": MTP must never call __call__ speculatively.
+    mtp_pure = False
+
+    def mtp_would_bind(self, depth: int) -> bool:
+        """True if forcing the closer could begin within ``depth`` more tokens,
+        so MTP must hand this cycle to stock (which applies __call__ exactly).
+        A closed or not-yet-started block can't reach the budget in one small
+        cycle from its current count, so it never binds here."""
+        if self.closed or not self.think_end:
+            return False
+        if not self.started:
+            return False
+        return (self.count + max(0, int(depth))) >= self.budget
+
+    def mtp_observe(self, full_tokens, n_new: int) -> None:
+        """Advance the counter over the last ``n_new`` committed tokens exactly
+        as ``n_new`` below-budget __call__ invocations would, without touching
+        logits. ``full_tokens`` is the sequence's whole token list including the
+        n_new just appended. Only reached when would_bind() was False, so the
+        budget is never crossed inside this call."""
+        if self.closed or not self.think_end:
+            return
+        window = max(len(self.think_start), len(self.think_end), 1)
+        total = len(full_tokens)
+        for pos in range(max(0, total - n_new), total):
+            if self.closed:
+                return
+            lo = max(0, pos - window + 1)
+            tail = [int(t) for t in full_tokens[lo:pos + 1]]
+            if (not self.started and self.think_start
+                    and _rfind_subseq(tail, self.think_start) >= 0):
+                self.started = True
+            if _rfind_subseq(tail, self.think_end) >= 0:
+                self.closed = True
+                return
+            if not self.started:
+                continue
+            self.count += 1
+
 
 def _build_logits_processors(thinking_budget, think_start, think_end,
                              prompt_tokens, penalties=None):
@@ -398,6 +453,12 @@ def _build_logits_processors(thinking_budget, think_start, think_end,
     the whole engine down. A no-op keeps every sequence's list truthy.
     """
     processors = list(make_logits_processors(**(penalties or {})))
+    # Every processor make_logits_processors builds (repetition/presence/
+    # frequency penalty, logit bias) is a pure function of (context, logits):
+    # native MTP may replay it inside its verify step. Tag them so MTP can tell
+    # them apart from the stateful ThinkingBudget appended below.
+    for p in processors:
+        p.mtp_pure = True
     if thinking_budget and think_end:
         preopened = _think_preopened(prompt_tokens, think_start, think_end)
         processors.append(ThinkingBudget(
@@ -1796,6 +1857,10 @@ class GenerationEngine:
             logger.debug("sampling seed %d (%s)", seed,
                          "requested" if job.seed is not None else "drawn")
         sampler = make_sampler(temp=job.temperature, top_p=job.top_p, top_k=job.top_k)
+        # At temperature 0 make_sampler is argmax. Native MTP's greedy accept
+        # (draft == argmax(verify)) is lossless only against greedy decode, so it
+        # engages only when this flag is set; any stochastic draw keeps MTP off.
+        sampler.mtp_greedy = (job.temperature == 0)
         logits_processors = _build_logits_processors(
             thinking_budget=thinking_budget,
             think_start=tuple(getattr(self.tokenizer, "think_start_tokens", ()) or ()),

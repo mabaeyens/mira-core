@@ -545,6 +545,38 @@ def _model_layers(model):
     return lm.model.layers
 
 
+def _proc_list(logits_processors):
+    """The single sequence's processor list (width-1), or [] when absent."""
+    if not logits_processors:
+        return []
+    inner = logits_processors[0]
+    return list(inner) if inner else []
+
+
+def _seq_mtp_eligible(samplers, logits_processors) -> bool:
+    """Whether native MTP may serve this sequence losslessly.
+
+    Two requirements, both set by mira-mlx at admission:
+      * greedy sampling — MTP's greedy accept (draft == argmax(verify)) matches
+        stock decode only when stock is argmax too (``sampler.mtp_greedy``).
+      * every logits processor is replayable — either pure (``mtp_pure``, re-run
+        per verify position) or a recognized stateful processor exposing the
+        ``mtp_observe``/``mtp_would_bind`` hooks (advanced over committed tokens,
+        handed back to stock before it would change a logit). An unrecognized
+        processor keeps MTP off the sequence rather than risk a silent mismatch.
+    """
+    s = samplers or []
+    if not (s and getattr(s[0], "mtp_greedy", False)):
+        return False
+    for p in _proc_list(logits_processors):
+        if getattr(p, "mtp_pure", False):
+            continue
+        if hasattr(p, "mtp_observe") and hasattr(p, "mtp_would_bind"):
+            continue
+        return False
+    return True
+
+
 def _make_mtp_generation_class(BaseGeneration):
     import mlx.core as mx
 
@@ -608,8 +640,48 @@ def _make_mtp_generation_class(BaseGeneration):
                 and self._mtp_head_cache is not None
                 and self._mtp_next_main is not None
                 and len(self.uids) == 1
-                and not any(self.logits_processors)
+                and _seq_mtp_eligible(self.samplers, self.logits_processors)
             )
+
+        def _mtp_pure_procs(self):
+            return [p for p in _proc_list(self.logits_processors)
+                    if getattr(p, "mtp_pure", False)]
+
+        def _mtp_stateful_procs(self):
+            return [p for p in _proc_list(self.logits_processors)
+                    if not getattr(p, "mtp_pure", False)]
+
+        def _mtp_resolve_greedy(self, vrows, drafts):
+            """Greedy verify with the pure logits processors replayed, so the
+            committed tokens equal stock greedy-with-penalties decode.
+
+            ``vrows`` is the (k+1, V) backbone logits for [next_main, *drafts].
+            For each position j the pure processors are applied over the true
+            context (``self.tokens[0]`` + the drafts accepted so far — the exact
+            history stock would have seen), then the token is argmax(processed).
+            A draft is accepted iff it equals that processed argmax; the scan
+            stops at the first mismatch (its argmax is the correction) or runs to
+            the bonus position. Returns ``(m_accepted, committed, logprobs)``
+            where ``committed == emitted`` and ``m`` counts accepted drafts."""
+            pure = self._mtp_pure_procs()
+            k = len(drafts)
+            ctx = list(self.tokens[0])          # ends with next_main
+            emitted, emit_lp = [], []
+            for j in range(k + 1):
+                row = vrows[j:j + 1]            # (1, V)
+                if pure:
+                    ctx_arr = mx.array(ctx, U) if ctx else mx.array([], U)
+                    for proc in pure:
+                        row = proc(ctx_arr, row)
+                lp = (row - mx.logsumexp(row, axis=-1, keepdims=True))[0]
+                tgt = int(mx.argmax(row[0]).item())
+                emitted.append(tgt)
+                emit_lp.append(lp)
+                if j < k and drafts[j] == tgt:
+                    ctx.append(tgt)
+                    continue
+                return j, emitted, emit_lp      # j drafts accepted; emitted is committed
+            return k, emitted, emit_lp          # all drafts accepted + bonus token
 
         def _mtp_cache_capable(self) -> bool:
             """Static, pre-verify check that ``mtp_partial_rollback`` will succeed:
@@ -671,6 +743,14 @@ def _make_mtp_generation_class(BaseGeneration):
                 if self._depth_ctl is not None and self._depth_ctl.should_handback():
                     self._mtp_handback()
                     return super()._step()
+                # A stateful processor (thinking budget) about to force a token
+                # within this cycle's reach can't be replayed by the argmax
+                # verify. Hand the sequence to stock, which applies it exactly.
+                # Horizon = max draft depth + 1 (a cycle emits at most depth+1).
+                if any(p.mtp_would_bind(self._mtp_depth + 1)
+                       for p in self._mtp_stateful_procs()):
+                    self._mtp_handback()
+                    return super()._step()
                 self._mtp_run_cycle()          # fills self._mtp_buffer (>= 1 token)
 
             tok, lp = self._mtp_buffer.pop(0)
@@ -706,6 +786,17 @@ def _make_mtp_generation_class(BaseGeneration):
                 # should_handback() is acted on in _step() at the next buffer-empty
                 # boundary (where _mtp_next_main is provably the last emitted token),
                 # not here mid-cycle — see _mtp_handback().
+
+            # Advance any stateful processor (thinking budget) over the tokens this
+            # cycle committed, so its counter still binds at the right absolute token
+            # if a later stock step runs. would_bind() gated out the forcing case, so
+            # observe() only ever sees below-budget no-ops here.
+            stateful = self._mtp_stateful_procs()
+            if stateful and self._mtp_buffer:
+                committed_toks = [t for t, _ in self._mtp_buffer]
+                full = list(self.tokens[0]) + committed_toks
+                for p in stateful:
+                    p.mtp_observe(full, len(committed_toks))
 
         def _mtp_handback(self):
             """Global hand-back: re-prime the base ``GenerationBatch`` async pipeline
@@ -767,10 +858,11 @@ def _make_mtp_generation_class(BaseGeneration):
             vlogits, vhidden = model(
                 inp, cache=self.prompt_cache, return_hidden=True, n_confirmed=1,
             )
-            vlp = vlogits[0] - mx.logsumexp(vlogits[0], axis=-1, keepdims=True)
-            targets = mx.argmax(vlogits[0], axis=-1).tolist()
-            m = accept_prefix(drafts, targets[:k])
-            correction = int(targets[m])
+            # Greedy verify with the pure logits processors replayed per position
+            # (repetition penalty &c.), so the accepted prefix and the correction
+            # match stock greedy-with-penalties decode. emitted == drafts[:m] +
+            # [correction]; with no processors this reduces to the old argmax path.
+            m, emitted, emit_lp = self._mtp_resolve_greedy(vlogits[0], drafts)
             _record_cycle(drafts, m, depth)
 
             # --- roll the hybrid backbone cache back to the accepted length ---
@@ -785,13 +877,11 @@ def _make_mtp_generation_class(BaseGeneration):
                         "capability gate. Aborting to protect correctness."
                     )
 
-            # --- emit drafts[:m] + correction; carry state for the next cycle --
-            emitted = drafts[:m] + [correction]
-            emit_lp = [vlp[j] for j in range(m)] + [vlp[m]]
+            # --- carry state for the next cycle (len(emitted) == m + 1) --------
             self._mtp_buffer = list(zip(emitted, emit_lp))
             self._mtp_committed = emitted
             self._mtp_frontier = hn(vhidden[:, : m + 1, :])
-            self._mtp_next_main = correction
+            self._mtp_next_main = emitted[-1]
             return k, m
 
         def _mtp_park_cycle(self, hn, next_main, committed, hc):
@@ -819,14 +909,15 @@ def _make_mtp_generation_class(BaseGeneration):
             vlogits, vhidden = model(
                 inp, cache=self.prompt_cache, return_hidden=True, n_confirmed=1,
             )
-            vlp = vlogits[0] - mx.logsumexp(vlogits[0], axis=-1, keepdims=True)
-            correction = int(mx.argmax(vlogits[0, 0]).item())
+            # Greedy verify with the pure processors replayed (drafts empty -> the
+            # single position after the anchor); matches stock greedy-with-penalties.
+            _m, emitted, emit_lp = self._mtp_resolve_greedy(vlogits[0], [])
             _record_cycle([], 0, 0)
 
-            self._mtp_buffer = [(correction, vlp[0])]
-            self._mtp_committed = [correction]
+            self._mtp_buffer = [(emitted[0], emit_lp[0])]
+            self._mtp_committed = [emitted[0]]
             self._mtp_frontier = hn(vhidden[:, :1, :])
-            self._mtp_next_main = correction
+            self._mtp_next_main = emitted[0]
             return 0, 0
 
     return MtpGenerationBatch
@@ -867,12 +958,11 @@ def _make_mtp_prompt_class(BasePrompt, MtpGeneration):
                 and input_embeddings is None
                 and len(tokens) == 1
                 and hasattr(self.model, "mtp_forward")
-                # A sequence carrying an effective logits processor (repetition
-                # penalty, thinking budget) can't be served losslessly by the
-                # argmax verify, and mira-mlx always attaches at least one (never
-                # an empty list, by _build_logits_processors). Don't prime the
-                # head cache we would only throw away at the generate() handoff.
-                and not any(self.logits_processors or [])
+                # Only prime when MTP can actually serve this sequence: greedy
+                # sampling, and every logits processor replayable (pure penalties,
+                # or a recognized stateful budget). Otherwise don't build a head
+                # cache the generate() handoff would only throw away.
+                and _seq_mtp_eligible(self.samplers, self.logits_processors)
             )
 
         # -- prefill: fold prompt hidden into the head cache ------------------ #
@@ -923,12 +1013,10 @@ def _make_mtp_prompt_class(BasePrompt, MtpGeneration):
                 and len(self.uids) == 1
                 and len(tokens) == 1
                 and hasattr(model, "mtp_forward")
-                # See _mtp_single: MTP can't losslessly serve a sequence that
-                # carries a logits processor. Hand off to the stock generation
-                # batch (which primes its own async pipeline) instead of building
-                # an MtpGeneration whose first stock fallback would read an empty
-                # _next_logprobs and crash GenerationBatch.next.
-                and not any(self.logits_processors or [])
+                # See _mtp_single: only serve sequences MTP can decode losslessly
+                # (greedy + replayable processors). Otherwise hand off to the stock
+                # generation batch, which primes its own async pipeline.
+                and _seq_mtp_eligible(self.samplers, self.logits_processors)
             )
             if not primed:
                 return super().generate(tokens)
