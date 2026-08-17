@@ -444,9 +444,13 @@
   (`--with-ollama`, `discover_ollama_models`, `OLLAMA_BASE`, the ingest branch) and the two stray
   refs in `bench_standard.py` (the `think:False` payload field, the `11434→ollama` label) are gone.
   Both scripts compile; zero residual `ollama` references in `scripts/`.
-- **`docs/moe-offload-lazy-load-design.md` is a design doc for something that shipped.** The measured
-  outcome lives in the case study; this is the plan that preceded it, and the two now overlap. Fold
-  whatever is still true into the case study rather than maintaining both.
+- ~~**`docs/moe-offload-lazy-load-design.md` is a design doc for something that shipped.** The measured
+  outcome lives in the case study; this is the plan that preceded it, and the two now overlap.~~
+  **DE-DUPED 2026-08-17, both kept.** On inspection the design doc is not a superseded plan — it is
+  the corrected, measured mechanism reference, and the case study (§8, §9) cross-links *to* it rather
+  than duplicating it. The one real overlap was case-study §8 restating the design doc's
+  sanitize/stand-in-swap mechanism; §8 is now trimmed to the shipped outcome plus the pointer. Both
+  files and both cross-refs (`prior-art.md:5`, `case-study.md:192`) stay; each fact lives in one place.
 
 ### Small, no decision needed
 - **Memory-state notifications should only fire when I can act, or when they explain something

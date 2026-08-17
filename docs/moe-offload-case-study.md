@@ -184,12 +184,10 @@ nothing about MLX memory, including my own earlier conclusions.
 ## 8. The fix that shipped
 
 Since the peak is a load-open cost, the fix is a load-path change, and a one-keyword one:
-`load(..., lazy=True)`, gated on offload being enabled. `mlx_lm.load` no longer materializes the full
-`(num_experts, ...)` expert tensors. `sanitize` still constructs them, but as unevaluated graph nodes
-with zero wired bytes, and the stand-in swap drops those nodes before anything evaluates them, so the
-full table never becomes a live buffer at any point. Whole-run peak went from 18.21GB to 7.25GB on a
-real server, output bit-coherent. Peak now scales with the resident fraction, not the expert-table
-size. Details are in `docs/moe-offload-lazy-load-design.md`.
+`load(..., lazy=True)`, gated on offload being enabled. Whole-run peak went from 18.21GB to 7.25GB on a
+real server, output bit-coherent, and peak now scales with the resident fraction rather than the
+expert-table size. The mechanism — why a deferred `sanitize` node costs nothing once the stand-in swap
+drops it, and why this is safe only with offload — is in `docs/moe-offload-lazy-load-design.md`.
 
 ## 9. The over-DRAM demonstration, observed rather than inferred
 
