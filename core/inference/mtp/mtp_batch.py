@@ -46,11 +46,20 @@ mid-cycle and strand the backbone cache.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import Any, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Penalty-aware drafts (spec: native-mtp-penalty-aware-drafts). Default on. Set
+# MIRA_MLX_MTP_PENALTY_AWARE_DRAFTS=0 to draft from the raw head argmax instead
+# (the pre-2026-08-17 behavior) — a kill switch, and the A/B lever for the MoE
+# accept-rate bench.
+_PENALTY_AWARE_DRAFTS = os.environ.get(
+    "MIRA_MLX_MTP_PENALTY_AWARE_DRAFTS", "1"
+).strip().lower() not in ("0", "false", "no", "off")
 
 
 # --------------------------------------------------------------------------- #
@@ -683,6 +692,26 @@ def _make_mtp_generation_class(BaseGeneration):
                 return j, emitted, emit_lp      # j drafts accepted; emitted is committed
             return k, emitted, emit_lp          # all drafts accepted + bonus token
 
+        def _mtp_draft_token(self, logits_row, ctx):
+            """Argmax of a draft-head logits row after replaying the pure logits
+            processors over ``ctx`` — the exact processing verify applies at the
+            matching position (:meth:`_mtp_resolve_greedy`). Aligning the draft
+            with the penalized target it will be judged against is what raises
+            accept rate on the MoE (spec: native-mtp-penalty-aware-drafts); it
+            never changes the emitted token, which is always ``argmax(verify)``.
+            With no pure processors this reduces to plain argmax, so drafts stay
+            byte-identical to the raw-head path.
+
+            ``logits_row`` is a (1, V) slice; ``ctx`` is the token history the
+            draft position sits at (``self.tokens[0]`` + the drafts so far)."""
+            pure = self._mtp_pure_procs() if _PENALTY_AWARE_DRAFTS else []
+            row = logits_row                    # (1, V)
+            if pure:
+                ctx_arr = mx.array(ctx, U) if ctx else mx.array([], U)
+                for proc in pure:
+                    row = proc(ctx_arr, row)
+            return int(mx.argmax(row[0]).item())
+
         def _mtp_cache_capable(self) -> bool:
             """Static, pre-verify check that ``mtp_partial_rollback`` will succeed:
             one cache per layer, and every full-attention layer trimmable. Linear
@@ -833,18 +862,27 @@ def _make_mtp_generation_class(BaseGeneration):
             body. Returns ``(k, m)``."""
             model = self.model
             # --- draft: fold committed into the head cache -> d1, then chain ---
+            # Drafts are penalty-aware: each head row is processed by the same
+            # pure processors verify applies at the matching position, over the
+            # token history that position sits at (self.tokens[0], which ends with
+            # next_main, plus the drafts so far). Predicting the penalized target
+            # it will be judged against raises accept rate on the MoE without
+            # changing the emitted token. dctx is the token history, kept separate
+            # from the head's recurrent hidden state.
+            dctx = list(self.tokens[0])
             lg, hh = model.mtp_forward(
                 self._mtp_frontier, mx.array(committed, U)[None], hc,
                 return_hidden=True, logits_keep=1,
             )
-            d = int(mx.argmax(lg[0, -1]).item())
+            d = self._mtp_draft_token(lg[0, -1:], dctx)
             drafts = [d]
             h = hh[:, -1:, :]
             for _ in range(1, depth):
+                dctx.append(d)
                 lg, hh = model.mtp_forward(
                     h, mx.array([[d]], U), hc, return_hidden=True, logits_keep=1,
                 )
-                d = int(mx.argmax(lg[0, -1]).item())
+                d = self._mtp_draft_token(lg[0, -1:], dctx)
                 drafts.append(d)
                 h = hh[:, -1:, :]
             spec = depth - 1
