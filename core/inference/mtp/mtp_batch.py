@@ -46,9 +46,92 @@ mid-cycle and strand the backbone cache.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------- #
+# Accept-rate accumulator (spec §2: "accept-rate stats in /v1/stats").          #
+# Process-global, written once per verify cycle on the engine's single decode   #
+# thread and read cross-thread by GET /v1/stats. The per-call stats dict the     #
+# standalone bench loop returns is scoped to one generate(); this is the         #
+# lifetime counter the served path never had. One lock acquire per cycle (not    #
+# per token) keeps the multi-field read self-consistent at negligible cost.      #
+# --------------------------------------------------------------------------- #
+
+_STATS_LOCK = threading.Lock()
+_STATS: dict = {
+    "cycles": 0,
+    "drafted": 0,       # total draft tokens proposed across all cycles
+    "accepted": 0,      # total drafts the backbone confirmed
+    "rejections": 0,    # cycles that accepted fewer than they drafted
+    "emitted": 0,       # tokens emitted (accepted drafts + the guaranteed correction)
+    "depth_drafted": [],   # index j -> times a draft at position j was proposed
+    "depth_accepted": [],  # index j -> times a draft at position j was accepted
+}
+
+
+def _record_cycle(drafts: Sequence[int], accepted: int, depth: int) -> None:
+    """Fold one verify cycle's accept counts into the process-global stats.
+    ``drafts`` is what the head proposed this cycle, ``accepted`` the longest
+    matching prefix the backbone confirmed."""
+    k = len(drafts)
+    with _STATS_LOCK:
+        _STATS["cycles"] += 1
+        _STATS["drafted"] += k
+        _STATS["accepted"] += accepted
+        _STATS["emitted"] += accepted + 1        # +1 for the always-emitted correction
+        if accepted < k:
+            _STATS["rejections"] += 1
+        dd, da = _STATS["depth_drafted"], _STATS["depth_accepted"]
+        if len(dd) < depth:
+            dd.extend([0] * (depth - len(dd)))
+            da.extend([0] * (depth - len(da)))
+        for j in range(k):
+            dd[j] += 1
+            if j < accepted:
+                da[j] += 1
+
+
+def stats() -> dict:
+    """Lifetime MTP accept-rate snapshot for GET /v1/stats. Returns zeroed fields
+    (accept_rate None) if MTP has not run this process."""
+    with _STATS_LOCK:
+        cycles = _STATS["cycles"]
+        drafted = _STATS["drafted"]
+        accepted = _STATS["accepted"]
+        rejections = _STATS["rejections"]
+        emitted = _STATS["emitted"]
+        depth_drafted = list(_STATS["depth_drafted"])
+        depth_accepted = list(_STATS["depth_accepted"])
+    return {
+        "cycles": cycles,
+        # Fraction of drafted tokens the backbone confirmed — the headline number.
+        # omlx reports ~0.88 on the MoE, ~0.83 on the dense 27B.
+        "accept_rate": round(accepted / drafted, 3) if drafted else None,
+        # 1 + accepted/cycle: the decode speedup this run actually earned, since
+        # each cycle emits one guaranteed token plus its accepted drafts.
+        "tokens_per_cycle": round(emitted / cycles, 3) if cycles else None,
+        "drafted": drafted,
+        "accepted": accepted,
+        "rejections": rejections,
+        # Per-position accept rate: index 0 is the nearest draft (d1), the last is
+        # the deepest. It falls off with depth; where it nears 0 is the useful k.
+        "depth_accept_rate": [
+            round(a / d, 3) if d else None
+            for a, d in zip(depth_accepted, depth_drafted)
+        ],
+    }
+
+
+def reset_stats() -> None:
+    """Zero the accumulator. For test isolation only; the server never resets."""
+    with _STATS_LOCK:
+        _STATS.update(cycles=0, drafted=0, accepted=0, rejections=0, emitted=0)
+        _STATS["depth_drafted"] = []
+        _STATS["depth_accepted"] = []
 
 
 # --------------------------------------------------------------------------- #
@@ -449,6 +532,7 @@ def _make_mtp_generation_class(BaseGeneration):
             targets = mx.argmax(vlogits[0], axis=-1).tolist()
             m = accept_prefix(drafts, targets[:k])
             correction = int(targets[m])
+            _record_cycle(drafts, m, depth)
 
             # --- roll the hybrid backbone cache back to the accepted length ---
             if m < k:

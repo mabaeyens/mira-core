@@ -4,9 +4,14 @@ No MLX and no model — this is the one piece of the decode loop that is pure
 control flow, so it is fully testable ahead of the live backbone run.
 """
 
+import pytest
+
 from core.inference.mtp.mtp_batch import (
+    _record_cycle,
     accept_prefix,
     emitted_tokens,
+    reset_stats,
+    stats,
     truncate_at_stop,
 )
 
@@ -68,9 +73,63 @@ def test_truncate_stop_takes_precedence_over_later_tokens():
 
 
 def test_module_imports_without_mlx():
-    # The pure logic must import even where mlx / mlx_lm are absent; the
-    # CompletionBatch base is only imported lazily by the factory.
+    # The pure logic must import even where mlx / mlx_lm are absent; the batch
+    # base classes are only imported lazily by patch(). This asserts the public
+    # API is reachable without mlx (patch installs it; stats feeds /v1/stats).
     import importlib
 
     mod = importlib.import_module("core.inference.mtp.mtp_batch")
-    assert hasattr(mod, "make_mtp_completion_batch_class")
+    assert hasattr(mod, "patch")
+    assert hasattr(mod, "stats")
+
+
+# --- accept-rate accumulator (feeds GET /v1/stats) ------------------------- #
+
+
+@pytest.fixture(autouse=True)
+def _fresh_stats():
+    # The accumulator is process-global; isolate every test that reads it.
+    reset_stats()
+    yield
+    reset_stats()
+
+
+def test_stats_empty_before_any_cycle():
+    s = stats()
+    assert s["cycles"] == 0
+    assert s["accept_rate"] is None
+    assert s["tokens_per_cycle"] is None
+    assert s["depth_accept_rate"] == []
+
+
+def test_stats_accumulates_accept_rate_and_tokens_per_cycle():
+    # depth-3: a partial accept (2/3), a full accept (3/3), a full reject (0/3).
+    _record_cycle([10, 20, 30], 2, 3)
+    _record_cycle([11, 21, 31], 3, 3)
+    _record_cycle([12, 22, 32], 0, 3)
+    s = stats()
+    assert s["cycles"] == 3
+    assert s["drafted"] == 9
+    assert s["accepted"] == 5
+    assert s["accept_rate"] == round(5 / 9, 3)
+    # emitted = (2+1) + (3+1) + (0+1) = 8 over 3 cycles.
+    assert s["tokens_per_cycle"] == round(8 / 3, 3)
+    # A cycle counts as a rejection whenever it accepts fewer than it drafted.
+    assert s["rejections"] == 2
+
+
+def test_stats_depth_accept_rate_falls_off_with_position():
+    _record_cycle([10, 20, 30], 2, 3)  # positions 0,1 accepted
+    _record_cycle([11, 21, 31], 3, 3)  # positions 0,1,2 accepted
+    _record_cycle([12, 22, 32], 0, 3)  # none accepted
+    # d1 and d2 confirmed 2/3, d3 only 1/3.
+    assert stats()["depth_accept_rate"] == [round(2 / 3, 3), round(2 / 3, 3), round(1 / 3, 3)]
+
+
+def test_stats_grows_depth_arrays_when_depth_increases():
+    _record_cycle([10], 1, 1)
+    _record_cycle([11, 21, 31], 3, 3)
+    # First cycle only ever touched position 0; later positions still resolve.
+    dar = stats()["depth_accept_rate"]
+    assert len(dar) == 3
+    assert dar[0] == 1.0

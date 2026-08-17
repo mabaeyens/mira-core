@@ -1305,6 +1305,17 @@ class GenerationEngine:
         except Exception:  # noqa: BLE001 - diagnostics must never break /v1/stats
             prompt_cache_by_type = None
 
+        # Native MTP accept-rate (spec §2). Only meaningful when MTP is armed;
+        # the accumulator lives in the mtp_batch module, written per verify cycle.
+        mtp_stats = None
+        if self.mtp_enabled:
+            try:
+                from core.inference.mtp import mtp_batch
+
+                mtp_stats = mtp_batch.stats()
+            except Exception:  # noqa: BLE001 - diagnostics must never break /v1/stats
+                mtp_stats = None
+
         return {
             "uptime_seconds": round(time.time() - self._start_time, 1),
             "cache_hits": hits,
@@ -1312,6 +1323,10 @@ class GenerationEngine:
             "cache_hit_rate": round(hits / total_requests, 3) if total_requests else None,
             "disk_cache_hits": disk_store.hits if disk_store is not None else 0,
             "expert_cache": expert_cache_stats,
+            # Native MTP self-speculation, lifetime. None when MTP is not armed;
+            # accept_rate None until the first cycle runs. tokens_per_cycle is the
+            # decode speedup this run earned (1 + accepted/cycle).
+            "mtp": mtp_stats,
             # Both counters share a trigger and differ in cost: a trim discards
             # prefills somebody pays for again, the other discards a reuse pool
             # that only costs a reallocation. Read them as a ratio.
