@@ -352,9 +352,11 @@
      sends on one conversation gave 2 rows, then 4 — the control, proving the append still
      reproduces without the flag — then 4 again rather than 6. 12 tests in
      `tests/test_retry_replaces_turn.py`; 729 in the suite. Harness: `notes/retry_live_check.py`.
-     **The app half is not done.** Until mira-apps' `resendLast()` sends `retry=true`, nothing
-     changes for a real user — spec in `mira-apps/specs/retry-replaces-the-failed-turn.md`.
-     Cheap check on the same run: a fresh 10-turn pass showed **0 reasoning-as-answer and 0
+     **App half now done too — CLOSED end to end.** mira-apps' `resendLast()`
+     (`ChatViewModel.swift:407`) sends `retry: replacesServerTurn` and `APIClient` writes the
+     `retry` form field (`:630`), with `retryInFlight` reconciling the optimistic local trim
+     against the server drop (commit `4f00a39`). Both halves are on `main`; a real retry no longer
+     doubles the question. Cheap check on the same run: a fresh 10-turn pass showed **0 reasoning-as-answer and 0
      degenerate replies**, so the generation-side fixes are still holding.
 - **Nothing is established about which sampling config is safer, and two probe rounds prove why.**
   Same prompt, same parameters, two rounds on 2026-08-09, flatly contradictory:
