@@ -6,7 +6,7 @@ control flow, so it is fully testable ahead of the live backbone run.
 
 import pytest
 
-from core.inference.mtp.mtp_batch import (
+from core.inference.mtp.mtp_batch import (  # import-guard: lazy-mlx (mtp_batch imports mlx only inside functions)
     _DepthController,
     _record_cycle,
     accept_prefix,
