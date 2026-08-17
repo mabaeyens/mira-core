@@ -189,22 +189,54 @@ def test_controller_parks_when_speculation_never_pays():
     assert ctl.choose() == 0
 
 
-def test_controller_hands_back_after_sustained_park():
-    ctl = _DepthController(max_depth=2)
-    assert ctl.handback is False
-    for _ in range(ctl.HANDBACK_PARKS):
-        ctl.observe(0, 1.0, 0, 0)
-    assert ctl.handback is True
+def _drain_warmup(ctl, park_cost=1.0):
+    # run the warmup sweep so should_handback() is past its warmup gate; the park
+    # (depth 0) is measured last, fixing t[0] = park_cost (the hand-back reference).
+    for _ in range(ctl.max_depth + 1):
+        d = ctl.choose()
+        ctl.observe(d, park_cost if d == 0 else 1.0, d, d)
 
 
-def test_controller_park_streak_resets_on_a_spec_cycle():
+def test_controller_hands_back_when_park_dominated():
+    # A sequence that parks every cycle realizes the park rate 1/t[0], which is
+    # below park_rate*(1+margin) -> hand back (v2's core purpose: shed the head-fold
+    # tax on a park-dominated sequence, degrading it to pure stock ~1.0x).
     ctl = _DepthController(max_depth=2)
-    for _ in range(ctl.HANDBACK_PARKS - 1):
-        ctl.observe(0, 1.0, 0, 0)
-    ctl.observe(1, 1.0, 1, 1)          # a spec cycle breaks the park streak
-    for _ in range(ctl.HANDBACK_PARKS - 1):
-        ctl.observe(0, 1.0, 0, 0)
-    assert ctl.handback is False       # never reached HANDBACK_PARKS in a row
+    _drain_warmup(ctl)
+    assert ctl.should_handback() is False           # window not yet full
+    for _ in range(ctl.HANDBACK_WINDOW):
+        ctl.observe(0, 1.0, 0, 0)                    # all parks, cost == t[0]
+    assert ctl.should_handback() is True            # realized == park_rate < park_rate*1.15
+
+
+def test_controller_hands_back_on_a_drafting_but_losing_window():
+    # The resident failure mode: it keeps drafting (depth 1) but the drafts cost
+    # more than they save (accepted 0), so realized rate falls below the park rate.
+    ctl = _DepthController(max_depth=2)
+    _drain_warmup(ctl)
+    for _ in range(ctl.HANDBACK_WINDOW):
+        ctl.observe(1, 2.0, 1, 0)                    # draft costs 2x a park, emits 1
+    assert ctl.should_handback() is True            # realized 0.5 < park_rate 1.0
+
+
+def test_controller_does_not_hand_back_when_speculation_pays():
+    # Winning draws: depth 1 at park cost but accepting -> 2 tokens/cycle, realized
+    # rate 2.0 well above park_rate*(1+margin) -> keep speculating.
+    ctl = _DepthController(max_depth=2)
+    _drain_warmup(ctl)
+    for _ in range(ctl.HANDBACK_WINDOW * 2):
+        ctl.observe(1, 1.0, 1, 1)                    # 2 tokens at park cost
+    assert ctl.should_handback() is False
+
+
+def test_controller_never_hands_back_during_warmup():
+    ctl = _DepthController(max_depth=2)
+    # feed a park-dominated window but never finish the warmup sweep -> gate holds
+    for _ in range(ctl.HANDBACK_WINDOW):
+        ctl._win.append((1, 1.0))
+    ctl._win = ctl._win[-ctl.HANDBACK_WINDOW:]
+    assert ctl._warmup                               # warmup not drained
+    assert ctl.should_handback() is False
 
 
 def test_controller_conditional_accept_ema_moves_toward_observed():

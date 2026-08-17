@@ -72,7 +72,14 @@ _STATS: dict = {
     "depth_drafted": [],   # index j -> times a draft at position j was proposed
     "depth_accepted": [],  # index j -> times a draft at position j was accepted
     "depth_chosen": [],    # index d -> times the controller chose depth d (0 == park)
+    "handbacks": 0,        # sequences that globally handed back to the stock decoder
 }
+
+
+def _record_handback() -> None:
+    """Count one global hand-back (a sequence dropped MTP for stock decode)."""
+    with _STATS_LOCK:
+        _STATS["handbacks"] += 1
 
 
 def _record_cycle(drafts: Sequence[int], accepted: int, depth: int) -> None:
@@ -113,6 +120,7 @@ def stats() -> dict:
         depth_drafted = list(_STATS["depth_drafted"])
         depth_accepted = list(_STATS["depth_accepted"])
         depth_chosen = list(_STATS["depth_chosen"])
+        handbacks = _STATS["handbacks"]
     return {
         "cycles": cycles,
         # Fraction of drafted tokens the backbone confirmed — the headline number.
@@ -134,13 +142,16 @@ def stats() -> dict:
         # (plain decode). A healthy MoE run settles mostly at 1-2; all-0 means it
         # parked (speculation never paid) or handed back to the stock decoder.
         "depth_chosen": depth_chosen,
+        # Sequences that globally handed back to stock decode (park-dominated, MTP
+        # a net loss). Nonzero on the compute-bound MoE, ~0 on dense.
+        "handbacks": handbacks,
     }
 
 
 def reset_stats() -> None:
     """Zero the accumulator. For test isolation only; the server never resets."""
     with _STATS_LOCK:
-        _STATS.update(cycles=0, drafted=0, accepted=0, rejections=0, emitted=0)
+        _STATS.update(cycles=0, drafted=0, accepted=0, rejections=0, emitted=0, handbacks=0)
         _STATS["depth_drafted"] = []
         _STATS["depth_accepted"] = []
         _STATS["depth_chosen"] = []
@@ -168,19 +179,32 @@ class _DepthController:
 
     Depth 0 is the **park**: no speculation, one plain decode. It wins when even a
     depth-1 draft costs more wall-clock than the token it would save — the
-    compute-bound-MoE case the old fixed-depth path got wrong. ``HANDBACK_PARKS``
-    consecutive parks flip :attr:`handback`, and the caller drops the sequence to
-    the stock decoder (no more head-fold tax). A 1-in-``PROBE_EVERY`` probe re-measures
-    a neighbouring depth so stale EMAs recover when content shifts (prose↔code).
+    compute-bound-MoE case the old fixed-depth path got wrong. A 1-in-``PROBE_EVERY``
+    probe re-measures a neighbouring depth so stale EMAs recover when content shifts
+    (prose↔code).
+
+    Global hand-back (v2): the park is cheaper than a losing draft but not free (it
+    still folds ``committed`` into the head cache and pays the per-cycle sync).
+    Detection is THROUGHPUT-based, not park-fraction: over the last ``HANDBACK_WINDOW``
+    cycles, if MTP's realized tokens/sec (Σemitted / Σcost) is below what parking
+    every cycle would yield — the park rate ``1/t[0]``, uplifted by ``HANDBACK_MARGIN``
+    to approximate the stock rate (stock is park minus the head-fold tax hand-back
+    sheds) — :meth:`should_handback` fires and the caller drops the whole sequence to
+    the stock decoder. Park-fraction was rejected: resident (production) it is
+    anti-correlated with loss (a 0.79× prose run parked 60%, a 0.92× structured run
+    parked 76%); only offload inflated the park share. Realized-throughput vs park
+    rate is offload-independent and catches both park-dominated and drafting-but-
+    losing sequences.
 
     Lossless by construction: depth only sets how many tokens a cycle *proposes*,
     never which token commits — the emit is always ``argmax(verify)``.
     """
 
-    ALPHA = 0.2            # EMA weight on each new observation
-    PROBE_EVERY = 16       # explore a neighbour depth once every N post-warmup cycles
-    HANDBACK_PARKS = 8     # consecutive depth-0 choices before handing back to stock
-    SEED_ACCEPT = 0.6      # optimistic conditional-accept seed so the warmup drafts
+    ALPHA = 0.2               # EMA weight on each new observation
+    PROBE_EVERY = 16          # explore a neighbour depth once every N post-warmup cycles
+    SEED_ACCEPT = 0.6         # optimistic conditional-accept seed so the warmup drafts
+    HANDBACK_WINDOW = 32      # cycles of realized-throughput history for the hand-back test
+    HANDBACK_MARGIN = 0.15    # park->stock uplift (the head-fold tax hand-back sheds)
 
     def __init__(self, max_depth: int):
         self.max_depth = max(1, int(max_depth))
@@ -190,8 +214,8 @@ class _DepthController:
         # trusting any score, so t[d] exists for all d before the first real choose().
         self._warmup = list(range(self.max_depth, -1, -1))
         self._cycles = 0
-        self._parks = 0
-        self.handback = False
+        # rolling (emitted_tokens, cost) for the last HANDBACK_WINDOW cycles
+        self._win: List[tuple] = []
 
     # -- selection ----------------------------------------------------------- #
     def _expected_tokens(self, d: int) -> float:
@@ -240,13 +264,35 @@ class _DepthController:
             self._p[j] = (1 - self.ALPHA) * self._p[j] + self.ALPHA * hit
             if j >= accepted:
                 break               # first miss ends the observed conditional chain
-        # park / hand-back accounting
-        if depth <= 0:
-            self._parks += 1
-            if self._parks >= self.HANDBACK_PARKS:
-                self.handback = True
-        else:
-            self._parks = 0
+        # rolling realized throughput for global hand-back: emitted == accepted+1
+        # for every cycle (a park emits its 1 correction, a spec emits accepted+1).
+        self._win.append((accepted + 1, cost))
+        if len(self._win) > self.HANDBACK_WINDOW:
+            self._win.pop(0)
+
+    def should_handback(self) -> bool:
+        """True once MTP is realizing fewer tokens/sec than parking every cycle
+        would — the honest, offload-independent signal that MTP is a net loss here.
+
+        Over the last full ``HANDBACK_WINDOW`` cycles (past warmup), compare the
+        realized rate ``Σemitted / Σcost`` against the park rate ``1/t[0]`` uplifted
+        by ``HANDBACK_MARGIN`` (park costs a head-fold more than a pure stock decode,
+        so stock ≈ park × (1+margin); handing back sheds that tax). If realized is
+        below that, drop the sequence to the stock decoder — graceful degradation,
+        not a speedup. Park-fraction was rejected: resident it is anti-correlated
+        with loss (0.79× prose parked 60%, 0.92× structured parked 76%)."""
+        if self._warmup or len(self._win) < self.HANDBACK_WINDOW:
+            return False
+        t_park = self._t[0]
+        if t_park is None or t_park <= 0:
+            return False
+        tot_tok = sum(e for e, _ in self._win)
+        tot_cost = sum(c for _, c in self._win)
+        if tot_cost <= 0:
+            return False
+        realized_rate = tot_tok / tot_cost
+        park_rate = 1.0 / t_park
+        return realized_rate < park_rate * (1.0 + self.HANDBACK_MARGIN)
 
 
 # --------------------------------------------------------------------------- #
@@ -605,6 +651,14 @@ def _make_mtp_generation_class(BaseGeneration):
                     if self._mtp_ready() and not self._mtp_cache_capable():
                         self._mtp_disabled = True
                     return super()._step()
+                # Global hand-back (v2): if the controller has parked almost every
+                # recent cycle, MTP is a net loss on this sequence. Re-prime the base
+                # async pipeline from the last emitted token and drop to stock decode
+                # for good. Checked only here, at buffer-empty, so _mtp_next_main is
+                # provably the last emitted token and the KV cache is at accepted len.
+                if self._depth_ctl is not None and self._depth_ctl.should_handback():
+                    self._mtp_handback()
+                    return super()._step()
                 self._mtp_run_cycle()          # fills self._mtp_buffer (>= 1 token)
 
             tok, lp = self._mtp_buffer.pop(0)
@@ -637,16 +691,36 @@ def _make_mtp_generation_class(BaseGeneration):
 
             if self._depth_ctl is not None:
                 self._depth_ctl.observe(depth, elapsed, k, m)
-                # NOTE: hand-back on sustained park (self._depth_ctl.handback) is
-                # DEFERRED to v2. Flipping _mtp_disabled mid-run would route _step()
-                # to super()._step(), but MTP bypasses the base's double-buffered
-                # async pipeline (_next_tokens/_next_logprobs stay at their
-                # construction state), so the stock decoder resumes from an empty
-                # _current_logprobs and desynced cache position. Correct hand-back
-                # must re-prime that pipeline from _mtp_next_main without re-emitting
-                # the anchor. Until then a sustained park keeps parking — still
-                # lossless, and cheaper than the losing verify it replaced; it only
-                # forgoes shedding the ~15% head-fold tax on fully-unpredictable runs.
+                # should_handback() is acted on in _step() at the next buffer-empty
+                # boundary (where _mtp_next_main is provably the last emitted token),
+                # not here mid-cycle — see _mtp_handback().
+
+        def _mtp_handback(self):
+            """Global hand-back: re-prime the base ``GenerationBatch`` async pipeline
+            and disable MTP for the rest of the sequence.
+
+            MTP and the stock decoder disagree on the last emitted token by exactly
+            one cache slot: MTP has emitted ``_mtp_next_main`` (from the buffer) but
+            left it OUT of the backbone KV cache (it is the anchor a spec cycle would
+            forward next); the stock ``_step`` expects the last emitted token already
+            cached, with ``_next_tokens`` holding the *next* token to forward+emit.
+            Bridge that: forward ``_mtp_next_main`` once (caching it, matching the
+            stock invariant) and seed ``_next_tokens`` / ``_next_logprobs`` with that
+            forward's prediction — emitting nothing. The first ``super()._step()``
+            then forwards+emits ``next_main + 1``: no token duplicated, none skipped.
+            ``self.tokens`` already holds ``next_main`` (MTP appended it on emit) and
+            this manual forward must NOT append again — it is a re-prime, not an emit.
+            """
+            inp = mx.array([self._mtp_next_main], U)[None]
+            logits = self.model(inp, cache=self.prompt_cache)   # plain decode; caches next_main
+            logits = logits[0, -1]
+            lp = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+            self._next_tokens = mx.argmax(logits, keepdims=True)  # the NEXT token to emit
+            self._next_logprobs = [lp]
+            mx.async_eval(self._next_tokens, self._next_logprobs)
+            self._mtp_head_cache = None          # MTP is done on this sequence; free the head KV
+            self._mtp_disabled = True
+            _record_handback()
 
         def _mtp_spec_cycle(self, hn, depth, next_main, committed, hc):
             """§5.3 speculative cycle: draft ``depth``, verify in one backbone
