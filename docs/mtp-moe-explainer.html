@@ -638,6 +638,58 @@
     </div>
     <p style="font-size:14px;color:var(--ink-2);margin-top:14px">Note the run-to-run spread from thermals: <span class="mono">131072</span> gave <span class="mono">[76.5, 70.7]</span> in one session and <span class="mono">[76.8, 75.2]</span> in another. The honest read of the whole lever is <span class="mono">+4 to +7%</span>, landing native MTP at <span class="mono">~74&ndash;76 t/s</span>, which is omlx parity, not yet 80.</p>
   </div>
+
+  <!-- frequency-remap arc -->
+  <div class="spine" style="margin-top:44px">
+    <h3>The increment that vindicated the mechanism but stayed marginal: frequency-remap</h3>
+    <p>The reduced-vocab lever leans on an assumption: the model's hot tokens sit at low ids. They mostly do, thanks to Qwen3's byte-level merges, but not perfectly. So the natural refinement is to stop projecting the <em>first</em> N rows and instead project the N <em>most-frequently-emitted</em> rows, mapped back through an id table. Same projection cost as a contiguous slice, but every column is now a token the model actually uses, so a narrow N should hold the accept rate that the contiguous slice only keeps at a much wider 131072. This is FastMTP's vocab-compression idea (<span class="mono">2509.18362</span>) applied to the draft head.</p>
+    <p>The first map was built from Mira's chat history, and it <span style="color:var(--bad)">refuted itself</span>. It scored beautifully on the corpus it was trained on and came apart on held-out prompts, roughly <span class="mono">9%</span> of true tokens uncovered: textbook train-on-test. The fix was a broader map, built from chat plus the model's own eval generations (<span class="mono">13,712</span> distinct emitted ids) and held out from the bench prompts. On that map the mechanism is genuinely real.</p>
+  </div>
+
+  <div class="fig">
+    <figure>
+      <div class="scroll">
+      <svg viewBox="0 0 660 300" role="img" aria-label="Accept-rate bar chart at equal projection width 16384: the contiguous first-N slice holds 0.692, the frequency-remapped slice holds 0.766, a gain of 7.4 accept points at identical cost. A wider remap at 32768 reaches 0.796, still below the full-vocab reference of 0.822.">
+        <text x="20" y="24" class="glyph-lab" font-size="11">draft accept rate &middot; frequency-remap vs contiguous slice &middot; session-hot</text>
+        <!-- axes -->
+        <line x1="70" y1="250" x2="610" y2="250" class="st-ink" style="stroke-width:1.2"/>
+        <line x1="70" y1="40"  x2="70"  y2="250" class="st-ink" style="stroke-width:1.2"/>
+        <!-- full-vocab reference line at 0.822 -> y 59.4 -->
+        <line x1="70" y1="59" x2="610" y2="59" style="stroke:var(--ink-3);stroke-width:1;stroke-dasharray:2 5"/>
+        <text x="610" y="55" text-anchor="end" class="glyph-lab" font-size="10">full-vocab accept 0.822</text>
+        <!-- equal-width pair: contiguous-16384 (x130) vs remap-16384 (x220) -->
+        <rect x="130" y="212" width="70" height="38" rx="4" class="s-unt" fill-opacity=".55" style="stroke:var(--untested);stroke-width:1.2"/>
+        <rect x="210" y="125" width="70" height="125" rx="4" class="s-good"/>
+        <!-- remap-32768 (x410) -->
+        <rect x="410" y="90" width="70" height="160" rx="4" class="s-good" fill-opacity=".55"/>
+        <!-- +7.4pt bracket over the equal-width pair -->
+        <g fill="none" style="stroke:var(--good);stroke-width:1.6">
+          <path d="M165 200 V190 H245 V125"/>
+        </g>
+        <text x="205" y="182" text-anchor="middle" class="glyph" font-size="11" font-weight="600" style="fill:var(--good)">+7.4 pts, same cost</text>
+        <!-- value labels -->
+        <g class="glyph" font-size="11" text-anchor="middle" font-weight="600">
+          <text x="165" y="228" style="fill:var(--ink-2)">.692</text>
+          <text x="245" y="119" style="fill:var(--good)">.766</text>
+          <text x="445" y="84"  style="fill:var(--good)">.796</text>
+        </g>
+        <!-- width brackets / x labels -->
+        <g class="glyph-m" font-size="11" text-anchor="middle">
+          <text x="165" y="268">contiguous</text><text x="245" y="268">remap</text>
+          <text x="445" y="268">remap</text>
+        </g>
+        <line x1="130" y1="278" x2="280" y2="278" class="s-line"/>
+        <text x="205" y="292" text-anchor="middle" class="glyph-lab" font-size="10">equal width N = 16384</text>
+        <text x="445" y="292" text-anchor="middle" class="glyph-lab" font-size="10">width N = 32768</text>
+      </svg>
+      </div>
+      <figcaption><b>The proof, and its ceiling.</b> At an identical projection width of <span class="mono">16384</span>, the frequency-remapped draft accepts <span class="mono">0.766</span> against the contiguous slice's <span class="mono">0.692</span> &mdash; <span class="mono">+7.4</span> points for the same cost. The mechanism does exactly what it claims. Widening remap to <span class="mono">32768</span> reaches <span class="mono">0.796</span>, still short of full-vocab <span class="mono">0.822</span>.</figcaption>
+    </figure>
+  </div>
+
+  <div class="spine">
+    <p>But vindicating the mechanism is not the same as banking speed. The already-shipped first-131072 slice is <em>also</em> a wide, cheap draft with near-full accept. Measured head to head, remap's net gain over it is about <span class="mono">1%</span> in decode throughput, well inside the thermal noise of a session this hot, and it costs a drift-prone map file plus id-translation on the hot path every cycle. The honest disposition: the mechanism is proven, the increment is real but marginal. The banked lever stays first-131072; remap is kept gated behind an env flag and documented, not switched on.</p>
+  </div>
 </section>
 
 <!-- ================= 6. CHAIN VS TREE ================= -->
@@ -790,7 +842,7 @@
   <div class="fig wide">
     <figure>
       <div class="scroll">
-      <svg viewBox="0 0 900 360" role="img" aria-label="Waterfall from baseline 71.2 tokens per second. Reduced-vocab adds about 4.8 to reach 76, which composes. Depth-4 would subtract 5, so it is rejected and does not stack. omlx parity sits at 77.5. The gap from 76 to the 80 goal remains open and not yet demonstrated.">
+      <svg viewBox="0 0 900 360" role="img" aria-label="Waterfall from baseline 71.2 tokens per second. Reduced-vocab adds about 4.8 to reach 76, which composes. Frequency-remap is tested and adds only about 1, inside the noise. Depth-4 would subtract 5, so it is rejected and does not stack. omlx parity sits at 77.5. The gap from 76 to the 80 goal remains open and not yet demonstrated.">
         <!-- value axis 68..82 ; y = 320 - (v-68)*(280/14) = 320 - (v-68)*20 -->
         <!-- gridlines -->
         <g class="s-line">
@@ -826,6 +878,11 @@
         <text x="570" y="342" text-anchor="middle" class="glyph-m" font-size="11">running total</text>
         <text x="570" y="356" text-anchor="middle" class="glyph-lab" font-size="9.5">= omlx parity</text>
 
+        <!-- remap: tested, real mechanism, net marginal (~1%, noise-swamped) -->
+        <rect x="636" y="140" width="16" height="20" rx="3" class="s-unt" fill-opacity=".5" style="stroke:var(--untested);stroke-width:1"/>
+        <text x="644" y="132" text-anchor="middle" class="glyph" font-size="9.5" style="fill:var(--ink-3)">+~1</text>
+        <text x="644" y="176" text-anchor="middle" class="glyph-lab" font-size="8.5" style="fill:var(--ink-3)">remap</text>
+
         <!-- omlx parity dashed line at 77.5 -> y=320-(77.5-68)*20=320-190=130 -->
         <line x1="120" y1="130" x2="860" y2="130" style="stroke:var(--verify);stroke-width:1;stroke-dasharray:2 5"/>
         <text x="856" y="124" text-anchor="end" class="glyph-lab" font-size="10" style="fill:var(--verify)">omlx 77.5</text>
@@ -846,7 +903,7 @@
         <line x1="120" y1="80" x2="860" y2="80" style="stroke:var(--draft);stroke-width:1.2;stroke-dasharray:2 4"/>
       </svg>
       </div>
-      <figcaption><b>The waterfall.</b> Reduced-vocab is the one banked increment: <span class="mono">+4.8</span> to omlx parity, composing cleanly because it costs no accept. Depth 4 is drawn as what it measured, a loss that does not stack. The last <span class="mono">+4</span> to 80 is an open, honest gap. The next section says what is still in the tank to close it.</figcaption>
+      <figcaption><b>The waterfall.</b> Reduced-vocab is the one banked increment: <span class="mono">+4.8</span> to omlx parity, composing cleanly because it costs no accept. Frequency-remap is drawn as what it measured, a real but marginal <span class="mono">~1%</span> over the banked slice, swamped by thermal noise. Depth 4 is a loss that does not stack. The last <span class="mono">+4</span> to 80 is an open, honest gap. The next section says what is still in the tank to close it.</figcaption>
     </figure>
   </div>
 
@@ -864,8 +921,8 @@
     </div>
     <div class="lev">
       <h4>Frequency-remapped vocab</h4>
-      <p class="why">The one lever worth trying next. Remap the draft vocabulary to the actual generated-token id distribution, aiming for 65536's projection cost at 131072's accept. A clean additive cost increment that erodes nothing already banked.</p>
-      <div class="meta"><span class="pill unt">untested</span><span class="chip good">should compose</span></div>
+      <p class="why">Tested. Remapping the draft vocabulary to the generated-token id distribution beats the contiguous slice by <span class="mono">+7.4</span> accept points at equal width, so the mechanism is real. But against the banked first-131072 slice the net is ~1%, inside the thermal noise, and it adds a drift-prone map plus hot-path id translation. Kept gated, not shipped on.</p>
+      <div class="meta"><span class="pill unt">tested &middot; marginal</span><span class="chip">mechanism proven</span></div>
     </div>
     <div class="lev rej">
       <h4>Depth 4</h4>
@@ -917,6 +974,10 @@
       <div class="fix">True only on one easy prompt. Harder prompts diverged on most outputs. The correct claim is <b>quality-neutral, not byte-identical</b> (section 08).</div>
     </div>
     <div class="reversal">
+      <div class="claim">asserted &middot; &ldquo;frequency-remap beats the free knee&rdquo;</div>
+      <div class="fix">The first map overfit its own chat corpus and <b>refuted itself</b> on held-out prompts. A broader, held-out map vindicated the mechanism (<span class="mono">+7.4</span> accept points at equal width), but against the banked slice the net was <b>~1%, inside the noise</b>. Mechanism proven, increment marginal. Kept gated, not shipped.</div>
+    </div>
+    <div class="reversal">
       <div class="claim">hoped &middot; &ldquo;this lever reaches 80&rdquo;</div>
       <div class="fix">The confirm run said <span class="mono">~76&ndash;77</span>, omlx parity, not 80. Reported the real number, kept the <b>+4 gap open and honest</b>.</div>
     </div>
@@ -933,7 +994,7 @@
   <div class="refs">
     <div class="ref"><span class="id">2211.17192</span><span class="what"><b>Leviathan et&nbsp;al.</b> &mdash; speculative decoding foundations: draft, verify, accept the matching prefix. The frame for the whole cycle.</span></div>
     <div class="ref"><span class="id">DeepSeek-V3</span><span class="what"><b>MTP head</b> &mdash; the single-head, linear-chain self-speculative design we implement, rather than a separate draft model.</span></div>
-    <div class="ref"><span class="id">2509.18362</span><span class="what"><b>FastMTP</b> &mdash; self-distilled head fine-tune and draft-vocab compression. We built the fine-tune (it plateaued) and shipped the vocab idea (it won).</span></div>
+    <div class="ref"><span class="id">2509.18362</span><span class="what"><b>FastMTP</b> &mdash; self-distilled head fine-tune and draft-vocab compression. We built the fine-tune (it plateaued) and shipped the contiguous-vocab idea (it won); its frequency-remap variant tested real but marginal.</span></div>
     <div class="ref"><span class="id">2408.15766</span><span class="what"><b>HASS</b> &mdash; carry the head's own hidden forward to fix exposure bias. Built into the multi-step retrain; still hit the ceiling.</span></div>
     <div class="ref"><span class="id">2406.16858</span><span class="what"><b>EAGLE-2</b> &mdash; dynamic draft trees. The technique we deliberately rejected for this hybrid MoE (section 06).</span></div>
     <div class="ref"><span class="id">2503.01840</span><span class="what"><b>EAGLE-3</b> &mdash; training-time test and richer trees. Same rejection reasoning: linear state does not fork cheaply.</span></div>
