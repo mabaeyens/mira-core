@@ -451,11 +451,14 @@ def _patch_text_model(q35: Any) -> None:
 def _sanitize_text_model(self, weights):
     """Replace stock ``TextModel.sanitize`` (which unconditionally strips
     ``mtp.*``). Keep the head weights when a head is attached, and apply the
-    RMSNorm +1 convention shift — including to the head's own norms, decided
-    PER-KEY from each weight's magnitude, because a head sidecar can carry raw-HF
-    (mean ~0) and already-MLX (mean ~1) norm conventions mixed together. Getting
-    this wrong doesn't error; it silently collapses the head to flat logits and
-    drives draft acceptance to ~0%."""
+    RMSNorm +1 convention shift — including to the head's own norms. A head sidecar
+    carries ONE convention, so the shift is decided ONCE from the head norms whose
+    raw-HF gamma reliably centers near 0 (``pre_fc_*`` + the head layer norms) and
+    applied uniformly to EVERY head norm — including ``q_norm``/``k_norm``/``mtp.norm``,
+    whose raw-HF gammas center ABOVE 0.5 and so cannot be judged by a per-key mean
+    test. Getting this wrong doesn't error; it silently leaves those norms -1 off and
+    bleeds draft acceptance (worst on the deep drafts, where the head's attention
+    compounds), or collapses the head to flat logits entirely (~0% accept)."""
     import mlx.core as mx
 
     # Backbone norms shift only on a raw-HF checkpoint, detected via un-transposed
@@ -485,30 +488,56 @@ def _sanitize_text_model(self, weights):
         ".q_norm.weight",
         ".k_norm.weight",
     )
+    # Every RMSNorm inside the head that follows the +1 convention. q_norm / k_norm /
+    # mtp.norm are here on purpose: their raw-HF gammas center ABOVE 0.5 (measured
+    # ~0.79 / ~0.78 / ~1.25 on the Qwen3.8-27B sidecar), so a per-key mean<0.5 test
+    # misclassifies them as already-MLX and leaves them -1 off — omlx documents this
+    # exact failure (qwen35_model.py: ~14pp of draft acceptance, prose 62.8%->76.3%).
     head_norm_suffixes = (
+        ".input_layernorm.weight",
+        ".post_attention_layernorm.weight",
+        ".q_norm.weight",
+        ".k_norm.weight",
         ".pre_fc_norm_hidden.weight",
         ".pre_fc_norm_embedding.weight",
         "mtp.norm.weight",
     )
+    # Decide the head-norm convention ONCE, from the head norms whose raw-HF gamma
+    # DOES reliably center near 0 (pre_fc_* + the head layer norms), then apply it to
+    # every head norm uniformly — instead of judging q_norm/k_norm/mtp.norm per-key.
+    reliable_head_suffixes = (
+        ".pre_fc_norm_hidden.weight",
+        ".pre_fc_norm_embedding.weight",
+        ".input_layernorm.weight",
+        ".post_attention_layernorm.weight",
+    )
 
-    def _is_raw_hf(v) -> bool:
-        # Raw-HF RMSNorm gammas center near 0; MLX-converted near 1.
-        try:
-            return float(mx.mean(v.astype(mx.float32)).item()) < 0.5
-        except Exception:
-            return backbone_shift
+    def _mean(v) -> float:
+        return float(mx.mean(v.astype(mx.float32)).item())
+
+    reliable_means = []
+    for k, v in weights.items():
+        if ("mtp." in k and getattr(v, "ndim", 0) == 1
+                and any(k.endswith(s) for s in reliable_head_suffixes)):
+            try:
+                reliable_means.append(_mean(v))
+            except Exception:
+                pass
+    # Raw-HF head sidecar (reliable norms near 0) → shift ALL head norms; already-MLX
+    # head sidecar (reliable norms near 1) → shift none. Fall back to the backbone
+    # signal only when no reliable head norm is present.
+    head_shift = (
+        (sum(reliable_means) / len(reliable_means) < 0.5)
+        if reliable_means else backbone_shift
+    )
 
     out = {}
     for k, v in weights.items():
         if "conv1d.weight" in k and getattr(v, "shape", (1,))[-1] != 1:
             v = v.moveaxis(2, 1)
         if getattr(v, "ndim", 0) == 1:
-            if "mtp." in k and (
-                any(k.endswith(s) for s in head_norm_suffixes)
-                or any(k.endswith(s) for s in backbone_norm_suffixes)
-            ):
-                # Per-key decision for every norm inside the head.
-                if backbone_shift or _is_raw_hf(v):
+            if "mtp." in k and any(k.endswith(s) for s in head_norm_suffixes):
+                if head_shift:
                     v = v + 1.0
             elif backbone_shift and any(k.endswith(s) for s in backbone_norm_suffixes):
                 v = v + 1.0

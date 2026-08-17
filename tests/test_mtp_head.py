@@ -78,23 +78,55 @@ def test_head_forward_runs_and_is_non_constant():
     assert float(mx.std(out).item()) > 1e-4
 
 
-def test_sanitize_keeps_mtp_and_shifts_raw_hf_norms():
-    # self stub: has an mtp head, untied embeddings, already-MLX base (no conv1d
-    # transpose needed → backbone_shift stays False so only per-key head norms move).
+def test_sanitize_shifts_all_head_norms_on_raw_hf_sidecar():
+    # A head sidecar carries ONE convention. The reliable head norms (pre_fc_* + the
+    # head layer norms) center near 0 when raw-HF → shift ALL head norms uniformly,
+    # INCLUDING q_norm/k_norm/mtp.norm whose raw gammas sit ABOVE 0.5. Regression: a
+    # per-key mean<0.5 test misclassified those three and left them -1 off (~14pp of
+    # draft acceptance, worst on the deep drafts). Base is already-MLX (no conv1d
+    # transpose), so backbone_shift stays False and the head signal must carry it.
     stub = SimpleNamespace(mtp=object(), args=SimpleNamespace(tie_word_embeddings=False))
     weights = {
-        "language_model.mtp.norm.weight": mx.zeros((8,)),            # raw-HF (mean 0) → +1
-        "language_model.mtp.pre_fc_norm_hidden.weight": mx.ones((8,)),  # already MLX → unchanged
-        "language_model.mtp.fc.weight": mx.ones((8, 16)),           # 2D, kept, not shifted
-        "language_model.model.norm.weight": mx.full((8,), 0.7),     # backbone, no shift (MLX base)
+        # reliable discriminators — raw-HF, center near 0
+        "language_model.mtp.pre_fc_norm_hidden.weight": mx.full((8,), -0.16),
+        "language_model.mtp.pre_fc_norm_embedding.weight": mx.full((8,), -0.46),
+        "language_model.mtp.layers.0.input_layernorm.weight": mx.full((8,), 0.04),
+        "language_model.mtp.layers.0.post_attention_layernorm.weight": mx.full((8,), 0.21),
+        # the three whose raw-HF gamma sits above 0.5 — must STILL shift
+        "language_model.mtp.layers.0.self_attn.q_norm.weight": mx.full((8,), 0.79),
+        "language_model.mtp.layers.0.self_attn.k_norm.weight": mx.full((8,), 0.78),
+        "language_model.mtp.norm.weight": mx.full((8,), 1.25),
+        # non-norm + backbone
+        "language_model.mtp.fc.weight": mx.ones((8, 16)),
+        "language_model.model.norm.weight": mx.full((8,), 0.7),  # MLX base, no shift
     }
     out = qwen3_mtp._sanitize_text_model(stub, weights)
 
-    assert "language_model.mtp.norm.weight" in out          # mtp.* kept
-    assert float(out["language_model.mtp.norm.weight"][0].item()) == pytest.approx(1.0)  # 0 -> +1
-    assert float(out["language_model.mtp.pre_fc_norm_hidden.weight"][0].item()) == pytest.approx(1.0)  # unchanged
-    assert out["language_model.mtp.fc.weight"].shape == (8, 16)  # 2D untouched
-    assert float(out["language_model.model.norm.weight"][0].item()) == pytest.approx(0.7)  # backbone unshifted
+    def val(k):
+        return float(out[k][0].item())
+
+    assert "language_model.mtp.norm.weight" in out                       # mtp.* kept
+    assert val("language_model.mtp.pre_fc_norm_hidden.weight") == pytest.approx(0.84, abs=1e-4)
+    assert val("language_model.mtp.layers.0.self_attn.q_norm.weight") == pytest.approx(1.79, abs=1e-4)
+    assert val("language_model.mtp.layers.0.self_attn.k_norm.weight") == pytest.approx(1.78, abs=1e-4)
+    assert val("language_model.mtp.norm.weight") == pytest.approx(2.25, abs=1e-4)  # the fix
+    assert out["language_model.mtp.fc.weight"].shape == (8, 16)          # 2D untouched
+    assert val("language_model.model.norm.weight") == pytest.approx(0.7, abs=1e-4)  # backbone unshifted
+
+
+def test_sanitize_leaves_head_norms_on_already_mlx_sidecar():
+    # Reliable head norms near 1 → sidecar already in MLX convention → shift NOTHING
+    # (guards against a double +1 on a pre-converted head).
+    stub = SimpleNamespace(mtp=object(), args=SimpleNamespace(tie_word_embeddings=False))
+    weights = {
+        "language_model.mtp.pre_fc_norm_hidden.weight": mx.full((8,), 0.84),
+        "language_model.mtp.pre_fc_norm_embedding.weight": mx.full((8,), 0.54),
+        "language_model.mtp.norm.weight": mx.full((8,), 2.25),
+        "language_model.mtp.fc.weight": mx.ones((8, 16)),
+    }
+    out = qwen3_mtp._sanitize_text_model(stub, weights)
+    assert float(out["language_model.mtp.norm.weight"][0].item()) == pytest.approx(2.25, abs=1e-4)
+    assert float(out["language_model.mtp.pre_fc_norm_hidden.weight"][0].item()) == pytest.approx(0.84, abs=1e-4)
 
 
 def test_sanitize_drops_mtp_when_no_head():
