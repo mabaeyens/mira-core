@@ -438,10 +438,12 @@
   `url_fetch_allow_private` were read by `config.py` and absent from `mira.yaml.example`, so their
   non-default paths have never been exercised by anyone deliberately choosing them. Documenting a
   security control is not the same as having reviewed what happens when it is switched off.
-- **`scripts/benchmark.py` and `scripts/bench_standard.py` still carry ollama** — fifteen references
+- ~~**`scripts/benchmark.py` and `scripts/bench_standard.py` still carry ollama** — fifteen references
   in the first. ollama was retired 2026-08-01, so the harness can name a backend the server cannot
-  start. Left alone deliberately during the doc pass: it is code, not prose, and belongs in its own
-  small change rather than folded into a markdown commit.
+  start.~~ **DONE 2026-08-17.** The whole ollama comparison arm is excised from `benchmark.py`
+  (`--with-ollama`, `discover_ollama_models`, `OLLAMA_BASE`, the ingest branch) and the two stray
+  refs in `bench_standard.py` (the `think:False` payload field, the `11434→ollama` label) are gone.
+  Both scripts compile; zero residual `ollama` references in `scripts/`.
 - **`docs/moe-offload-lazy-load-design.md` is a design doc for something that shipped.** The measured
   outcome lives in the case study; this is the plan that preceded it, and the two now overlap. Fold
   whatever is still true into the case study rather than maintaining both.

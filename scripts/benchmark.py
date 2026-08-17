@@ -5,13 +5,8 @@ Backend performance benchmark for mira-core.
 Runs a 9-cell test matrix (3 prompts × 3 session positions) across locally
 installed mlx-lm models. Produces a markdown report analysed by Claude Haiku.
 
-The Ollama comparison arm predates the 2026-08-01 retirement of the ollama
-backend and is now opt-in (`--with-ollama`); it talks to the ollama daemon on
-:11434 directly, not through Mira, so it does nothing unless ollama is installed.
-
 Usage:
     uv run python scripts/benchmark.py
-    uv run python scripts/benchmark.py --with-ollama   # retired backend, off by default
     uv run python scripts/benchmark.py --skip-mlx
     uv run python scripts/benchmark.py --reps 5
 
@@ -35,7 +30,6 @@ import httpx
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
-OLLAMA_BASE = "http://localhost:11434"
 MLX_LM_BASE = "http://localhost:8080"
 
 # ─── Benchmark parameters ─────────────────────────────────────────────────────
@@ -64,18 +58,6 @@ DEFAULT_REPS = 3
 
 
 # ─── Model discovery ──────────────────────────────────────────────────────────
-
-def discover_ollama_models() -> list[str]:
-    try:
-        out = subprocess.check_output(["ollama", "list"], text=True, timeout=10)
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-        return []
-    models = []
-    for line in out.splitlines()[1:]:
-        parts = line.split()
-        if parts and "embed" not in parts[0].lower():
-            models.append(parts[0])
-    return models
 
 
 def discover_mlx_models() -> list[str]:
@@ -246,35 +228,12 @@ def run_cell(
 
 def run_ingest(
     *,
-    ollama_models: list[str],
     mlx_models: list[str],
-    skip_ollama: bool,
     skip_mlx: bool,
     reps: int,
     jsonl_path: Path,
 ) -> None:
     tasks: list[dict] = []
-
-    if not skip_ollama:
-        for model in ollama_models:
-            is_qwen3 = "qwen3" in model.lower()
-            for prompt_id, prompt_text in PROMPTS.items():
-                for position in SESSION_POSITIONS:
-                    for rep in range(1, reps + 1):
-                        tasks.append(dict(
-                            base_url=OLLAMA_BASE, backend="ollama", model=model,
-                            prompt_id=prompt_id, prompt_text=prompt_text,
-                            position=position, rep=rep, no_think=False,
-                        ))
-            # Qwen3 /no_think cold variant only
-            if is_qwen3:
-                for prompt_id, prompt_text in PROMPTS.items():
-                    for rep in range(1, reps + 1):
-                        tasks.append(dict(
-                            base_url=OLLAMA_BASE, backend="ollama", model=model,
-                            prompt_id=prompt_id, prompt_text=prompt_text,
-                            position="cold", rep=rep, no_think=True,
-                        ))
 
     if not skip_mlx:
         if not mlx_lm_is_running():
@@ -340,7 +299,7 @@ Instructions:
    Sort by Model, Backend, Prompt, Position.
 4. Write exactly three paragraphs with these headings:
    ## Cache behavior
-   Compare warm vs cold TTFT for Ollama vs mlx-lm. Which backend benefits more,
+   Compare warm vs cold TTFT for mlx-lm. How much does a cached prefix help,
    and by how much (use numbers)?
 
    ## Thinking overhead
@@ -382,8 +341,6 @@ def run_analysis(jsonl_path: Path) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="mira-core backend benchmark")
-    parser.add_argument("--with-ollama", action="store_true",
-                        help="Include the retired Ollama backend (off by default; needs ollama installed)")
     parser.add_argument("--skip-mlx",   action="store_true", help="Skip mlx-lm backend")
     parser.add_argument("--reps", type=int, default=DEFAULT_REPS,
                         help=f"Repetitions per cell (default {DEFAULT_REPS})")
@@ -398,23 +355,19 @@ def main() -> None:
     print(f"Report → {report_path}")
 
     # Discovery
-    ollama_models = discover_ollama_models() if args.with_ollama else []
     mlx_models    = [] if args.skip_mlx   else discover_mlx_models()
     mlx_running   = not args.skip_mlx and mlx_lm_is_running()
 
-    print(f"\nOllama  ({OLLAMA_BASE}): {ollama_models or '(none)'}")
-    print(f"mlx-lm  ({MLX_LM_BASE}): {mlx_models or '(none)'}"
+    print(f"\nmlx-lm  ({MLX_LM_BASE}): {mlx_models or '(none)'}"
           + ("" if mlx_running else "  [server not running]"))
 
-    if not ollama_models and not mlx_running:
-        print("\nNo backends available. Start mlx-lm.server (or pass --with-ollama) and retry.")
+    if not mlx_running:
+        print("\nNo backends available. Start mlx-lm.server and retry.")
         sys.exit(1)
 
     # Ingest
     run_ingest(
-        ollama_models=ollama_models,
         mlx_models=mlx_models,
-        skip_ollama=not args.with_ollama,
         skip_mlx=args.skip_mlx,
         reps=args.reps,
         jsonl_path=jsonl_path,

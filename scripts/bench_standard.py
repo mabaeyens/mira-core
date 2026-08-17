@@ -78,7 +78,6 @@ def _stream(
         "stream_options": {"include_usage": True},
         "max_tokens": max_tokens,
         "temperature": 0.0,
-        "think": False,  # suppress Qwen3 thinking on ollama; ignored by other backends
     }
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -201,8 +200,6 @@ def _run_tg_cell(base_url: str, model: str, size: int, reps: int, api_key: str =
 def _print_table(rows: list[dict], model: str, base_url: str, output: str | None = None) -> None:
     if "8080" in base_url:
         backend_label = "omlx"
-    elif "11434" in base_url:
-        backend_label = "ollama"
     else:
         backend_label = base_url
     header = f"| {'model':<28} | {'backend':<10} | {'test':<8} | {'t/s':>8} | {'avg ms':>8} | {'std ms':>7} |"
