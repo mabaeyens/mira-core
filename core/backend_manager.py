@@ -494,11 +494,15 @@ def ensure_backend_running(backend: str, model: Optional[str] = None) -> None:
     # the first disclosure (it POSTs the system prompt). A mismatch raises rather
     # than adopting, so no prompt is ever sent to an unverified process.
     if backend == "mlx-lm":
-        if not _verify_or_adopt(MLX_LM_HOST + "/v1/models", MLX_LM_MODEL):
-            start_mlx_lm()
+        # Honor the configured model like the mira-mlx branch — verify, spawn and
+        # warm the same target, or a fresh process cold-starts MLX_LM_MODEL's
+        # hardcoded default while /chat requests carry config.MODEL_NAME.
+        target_model = model or MLX_LM_MODEL
+        if not _verify_or_adopt(MLX_LM_HOST + "/v1/models", target_model):
+            start_mlx_lm(target_model)
         else:
             logger.info("mlx-lm already running")
-        _warmup_model(MLX_LM_MODEL)
+        _warmup_model(target_model)
     elif backend == "omlx":
         # Honor the configured model (mira.yaml's `model:`), like the mira-mlx
         # branch below — the omlx branch used to warm/verify the hardcoded
@@ -512,11 +516,14 @@ def ensure_backend_running(backend: str, model: Optional[str] = None) -> None:
             logger.info("oMLX already running")
         _warmup_model(target_model, host=OMLX_HOST, api_key=_omlx_api_key())
     elif backend == "vllm-mlx":
-        if not _verify_or_adopt(VLLM_MLX_HOST + "/v1/models", VLLM_MLX_MODEL):
-            start_vllm_mlx()
+        # Same as above: honor mira.yaml's `model:` rather than the hardcoded
+        # VLLM_MLX_MODEL, so verify/spawn/warm all target the configured model.
+        target_model = model or VLLM_MLX_MODEL
+        if not _verify_or_adopt(VLLM_MLX_HOST + "/v1/models", target_model):
+            start_vllm_mlx(target_model)
         else:
             logger.info("vllm-mlx already running")
-        _warmup_model(VLLM_MLX_MODEL, host=VLLM_MLX_HOST)
+        _warmup_model(target_model, host=VLLM_MLX_HOST)
     elif backend == "mira-mlx":
         target_model = model or MIRA_MLX_MODEL
         # Compare the live listener against the TARGET model, not the default —

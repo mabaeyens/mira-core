@@ -110,3 +110,38 @@ def test_served_model_empty_on_no_data(monkeypatch):
     monkeypatch.setattr(bm.urllib.request, "urlopen",
                         lambda url, timeout=2: _FakeResp(body))
     assert bm._served_model("http://x/v1/models") == ""
+
+
+# --- ensure_backend_running honors the configured model --------------------
+# Regression guard for a bug that recurred three times: a backend branch that
+# verified/spawned/warmed its own hardcoded default constant instead of
+# mira.yaml's configured `model:` (mira-mlx 2026-07-18, omlx 2026-08-16,
+# mlx-lm/vllm-mlx 2026-08-17). Every branch must forward `model` to the verify,
+# the spawn and the warm-up, or a fresh process silently runs the wrong model.
+
+@pytest.mark.parametrize("backend,start_fn,start_takes_model", [
+    ("mlx-lm", "start_mlx_lm", True),
+    ("vllm-mlx", "start_vllm_mlx", True),
+    ("mira-mlx", "start_mira_mlx", True),
+    ("omlx", "start_omlx", False),   # start_omlx() resolves the model itself
+])
+def test_ensure_backend_running_honors_configured_model(
+        monkeypatch, backend, start_fn, start_takes_model):
+    seen = {}
+    # _verify_or_adopt returns False (nobody home) so the spawn path is taken.
+    monkeypatch.setattr(bm, "_verify_or_adopt",
+                        lambda url, model, omlx=False: seen.__setitem__("verify", model) or False)
+    monkeypatch.setattr(bm, "_warmup_model",
+                        lambda model, host=None, api_key=None: seen.__setitem__("warmup", model))
+    monkeypatch.setattr(bm, "_omlx_api_key", lambda: "k")
+    if start_takes_model:
+        monkeypatch.setattr(bm, start_fn, lambda model: seen.__setitem__("start", model))
+    else:
+        monkeypatch.setattr(bm, start_fn, lambda: seen.__setitem__("start", "<no-arg>"))
+
+    bm.ensure_backend_running(backend, model="cfg/custom-model")
+
+    assert seen["verify"] == "cfg/custom-model"
+    assert seen["warmup"] == "cfg/custom-model"
+    if start_takes_model:
+        assert seen["start"] == "cfg/custom-model"
