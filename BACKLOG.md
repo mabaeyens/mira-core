@@ -2,11 +2,15 @@
 
 ## Pending
 
-### Test Qwen3.8-27B when weights unlock, as the one real quality lever left
+### Bench Qwen3.8-27B (available now) as the one real quality lever left
 - Qwen3.8-27B (released 2026-08-14) is the only candidate that could beat Qwen3.6-35B-A3B in the
-  ~25.6GB envelope. It is a **dense** 27B, not an MoE successor — there is no 3.8 analogue of the
-  35B-A3B, so "wait for a drop-in MoE" was wrong. It uses the same Gated-DeltaNet hybrid + native
-  MTP, which is what could make a dense 27B viable here. Two hard gates before switching the default,
+  ~25.6GB envelope. **Weights are public and ungated** — `Qwen/Qwen3.8-27B` on HF is `private:false`,
+  Apache-2.0 (~415k downloads as of 2026-08-17), so this is unrun, not blocked; the earlier "when
+  weights unlock" title was stale. It is a **dense** 27B, not an MoE successor — there is no 3.8
+  analogue of the 35B-A3B, so "wait for a drop-in MoE" was wrong. It is also **vision-capable** (HF
+  pipeline tag `image-text-to-text`), so a switch would fold the optional-vision path into the default
+  model rather than needing a separate VLM. It uses the same Gated-DeltaNet hybrid + native MTP, which
+  is what could make a dense 27B viable here. Two hard gates before switching the default,
   both measured on this M5, prod down + fresh engine + RAM watchdog (heavy — run overnight):
   (1) decode tok/s with MTP speculative enabled clears a usable daily-driver bar (naive dense 27B is
   ~2–3× slower than a 3B-active MoE, the exact "too slow" failure mode already hit); (2) real
