@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Any, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,7 @@ _STATS: dict = {
     "emitted": 0,       # tokens emitted (accepted drafts + the guaranteed correction)
     "depth_drafted": [],   # index j -> times a draft at position j was proposed
     "depth_accepted": [],  # index j -> times a draft at position j was accepted
+    "depth_chosen": [],    # index d -> times the controller chose depth d (0 == park)
 }
 
 
@@ -93,6 +95,10 @@ def _record_cycle(drafts: Sequence[int], accepted: int, depth: int) -> None:
             dd[j] += 1
             if j < accepted:
                 da[j] += 1
+        dc = _STATS["depth_chosen"]        # controller-chosen depth histogram
+        if len(dc) <= depth:
+            dc.extend([0] * (depth + 1 - len(dc)))
+        dc[depth] += 1
 
 
 def stats() -> dict:
@@ -106,6 +112,7 @@ def stats() -> dict:
         emitted = _STATS["emitted"]
         depth_drafted = list(_STATS["depth_drafted"])
         depth_accepted = list(_STATS["depth_accepted"])
+        depth_chosen = list(_STATS["depth_chosen"])
     return {
         "cycles": cycles,
         # Fraction of drafted tokens the backbone confirmed — the headline number.
@@ -123,6 +130,10 @@ def stats() -> dict:
             round(a / d, 3) if d else None
             for a, d in zip(depth_accepted, depth_drafted)
         ],
+        # How often the adaptive controller chose each depth; index 0 is the park
+        # (plain decode). A healthy MoE run settles mostly at 1-2; all-0 means it
+        # parked (speculation never paid) or handed back to the stock decoder.
+        "depth_chosen": depth_chosen,
     }
 
 
@@ -132,6 +143,110 @@ def reset_stats() -> None:
         _STATS.update(cycles=0, drafted=0, accepted=0, rejections=0, emitted=0)
         _STATS["depth_drafted"] = []
         _STATS["depth_accepted"] = []
+        _STATS["depth_chosen"] = []
+
+
+# --------------------------------------------------------------------------- #
+# Adaptive draft-depth controller (spec: native-mtp-depth-controller).          #
+# Pure host-side bookkeeping — no MLX, fully unit-testable. One per width-1      #
+# sequence; picks the draft depth per cycle to maximize expected tokens per      #
+# wall-clock second, parks at depth 0 when speculation doesn't pay, and hands    #
+# the sequence back to the stock decoder after a sustained park.                 #
+# --------------------------------------------------------------------------- #
+
+class _DepthController:
+    """Chooses the draft depth for each MTP cycle.
+
+    Ports omlx's ``_DepthController`` as pure host bookkeeping. Each cycle picks a
+    depth ``d`` in ``0..max_depth`` maximizing ``score(d) = E(d) / t[d]``:
+
+      * ``E(d) = 1 + p0 + p0·p1 + … + p0···p(d-1)`` — expected committed tokens,
+        the guaranteed correction (the ``1``) plus each fully-accepted prefix.
+      * ``p[j]`` — EMA of the conditional accept at chain position ``j``
+        (``P(draft j accepted | draft j-1 accepted)``).
+      * ``t[d]`` — EMA of measured wall-clock per cycle at chosen depth ``d``.
+
+    Depth 0 is the **park**: no speculation, one plain decode. It wins when even a
+    depth-1 draft costs more wall-clock than the token it would save — the
+    compute-bound-MoE case the old fixed-depth path got wrong. ``HANDBACK_PARKS``
+    consecutive parks flip :attr:`handback`, and the caller drops the sequence to
+    the stock decoder (no more head-fold tax). A 1-in-``PROBE_EVERY`` probe re-measures
+    a neighbouring depth so stale EMAs recover when content shifts (prose↔code).
+
+    Lossless by construction: depth only sets how many tokens a cycle *proposes*,
+    never which token commits — the emit is always ``argmax(verify)``.
+    """
+
+    ALPHA = 0.2            # EMA weight on each new observation
+    PROBE_EVERY = 16       # explore a neighbour depth once every N post-warmup cycles
+    HANDBACK_PARKS = 8     # consecutive depth-0 choices before handing back to stock
+    SEED_ACCEPT = 0.6      # optimistic conditional-accept seed so the warmup drafts
+
+    def __init__(self, max_depth: int):
+        self.max_depth = max(1, int(max_depth))
+        self._p = [self.SEED_ACCEPT] * self.max_depth        # conditional accept EMA
+        self._t: List[Optional[float]] = [None] * (self.max_depth + 1)  # cost EMA per depth
+        # Warmup sweep: measure every depth once (deepest first, park last) before
+        # trusting any score, so t[d] exists for all d before the first real choose().
+        self._warmup = list(range(self.max_depth, -1, -1))
+        self._cycles = 0
+        self._parks = 0
+        self.handback = False
+
+    # -- selection ----------------------------------------------------------- #
+    def _expected_tokens(self, d: int) -> float:
+        e = 1.0            # the always-emitted correction
+        run = 1.0
+        for j in range(d):
+            run *= self._p[j]
+            e += run
+        return e
+
+    def _score(self, d: int) -> float:
+        t = self._t[d]
+        if t is None or t <= 0.0:
+            return float("inf")     # unmeasured depth: force it to be tried
+        return self._expected_tokens(d) / t
+
+    def choose(self) -> int:
+        if self._warmup:
+            return self._warmup[0]
+        best = max(range(self.max_depth + 1), key=self._score)
+        # Bounded exploration: every PROBE_EVERY-th cycle, nudge to a neighbour so
+        # its EMAs stay fresh across content shifts. Cheap stand-in for omlx's
+        # duty-bounded staleness probing.
+        if self.PROBE_EVERY and self._cycles % self.PROBE_EVERY == self.PROBE_EVERY - 1:
+            probe = best + 1 if best < self.max_depth else best - 1
+            best = min(self.max_depth, max(0, probe))
+        return best
+
+    # -- observation --------------------------------------------------------- #
+    def observe(self, depth: int, cost: float, k: int, accepted: int) -> None:
+        """Fold one cycle's outcome back into the EMAs. ``depth`` is what
+        :meth:`choose` returned, ``cost`` the measured wall-clock, ``k`` the drafts
+        actually proposed (``==depth`` for a spec cycle, 0 for a park), ``accepted``
+        the longest matching prefix."""
+        self._cycles += 1
+        if self._warmup and self._warmup[0] == depth:
+            self._warmup.pop(0)
+        # cost EMA for the depth we ran
+        prev = self._t[depth]
+        self._t[depth] = cost if prev is None else (1 - self.ALPHA) * prev + self.ALPHA * cost
+        # conditional-accept EMA: positions 0..accepted-1 were hits (each conditional
+        # on the previous being accepted, which held); position `accepted` (if it was
+        # actually drafted) was the miss. Deeper positions weren't tested this cycle.
+        for j in range(k):
+            hit = 1.0 if j < accepted else 0.0
+            self._p[j] = (1 - self.ALPHA) * self._p[j] + self.ALPHA * hit
+            if j >= accepted:
+                break               # first miss ends the observed conditional chain
+        # park / hand-back accounting
+        if depth <= 0:
+            self._parks += 1
+            if self._parks >= self.HANDBACK_PARKS:
+                self.handback = True
+        else:
+            self._parks = 0
 
 
 # --------------------------------------------------------------------------- #
@@ -403,6 +518,7 @@ def _make_mtp_generation_class(BaseGeneration):
             self._mtp_buffer = list(kwargs.pop("mtp_buffer", []))    # (token, logprob) already committed
             self._mtp_next_main = kwargs.pop("mtp_next_main", None)  # verify anchor token
             self._mtp_disabled = False
+            self._depth_ctl = None              # adaptive depth controller, built at extend()
             self._mtp_capable = None            # static rollback-capability, probed once
             self._mtp_constructing = True
             super().__init__(*args, **kwargs)
@@ -421,6 +537,12 @@ def _make_mtp_generation_class(BaseGeneration):
                 self._mtp_next_main = batch._mtp_next_main
                 self._mtp_disabled = batch._mtp_disabled
                 self._mtp_capable = None
+                # Fresh controller per sequence: the EMAs must start clean, not carry
+                # a previous sequence's content statistics. Mirrors adopting a fresh
+                # head cache above.
+                self._depth_ctl = (
+                    _DepthController(self._mtp_depth) if self._mtp_depth > 0 else None
+                )
 
         def filter(self, keep):
             super().filter(keep)
@@ -430,6 +552,7 @@ def _make_mtp_generation_class(BaseGeneration):
                 self._mtp_committed = None
                 self._mtp_buffer = []
                 self._mtp_next_main = None
+                self._depth_ctl = None
 
         # -- gating ----------------------------------------------------------- #
         def _mtp_ready(self) -> bool:
@@ -490,18 +613,48 @@ def _make_mtp_generation_class(BaseGeneration):
             return [tok], [lp]
 
         def _mtp_run_cycle(self):
-            """One §5.3 cycle: draft k, verify in one backbone forward, accept the
-            longest greedy-matching prefix, roll the hybrid cache back. Emits
-            ``drafts[:m] + [correction]`` into the buffer; the anchor ``next_main``
-            was already emitted (as the prime seed or the prior cycle's
-            correction). Faithful port of ``mtp_greedy_generate``'s loop body."""
-            model = self.model
-            hn = _head_norm(model)
-            depth = self._mtp_depth
+            """One cycle at an adaptively chosen depth. The controller picks the
+            draft depth per cycle from its accept/cost EMAs; depth 0 parks (plain
+            decode, no speculation) when speculating would cost more wall-clock than
+            the token it saves, and a sustained park hands the sequence back to the
+            stock decoder. Both paths emit ``argmax(verify)`` — depth changes only
+            how many tokens a cycle proposes, never which commits, so losslessness
+            is unchanged."""
+            hn = _head_norm(self.model)
             next_main = self._mtp_next_main
             committed = self._mtp_committed
             hc = self._mtp_head_cache
 
+            depth = (self._mtp_depth if self._depth_ctl is None
+                     else self._depth_ctl.choose())
+
+            t0 = time.perf_counter()
+            if depth <= 0:
+                k, m = self._mtp_park_cycle(hn, next_main, committed, hc)
+            else:
+                k, m = self._mtp_spec_cycle(hn, depth, next_main, committed, hc)
+            elapsed = time.perf_counter() - t0
+
+            if self._depth_ctl is not None:
+                self._depth_ctl.observe(depth, elapsed, k, m)
+                # NOTE: hand-back on sustained park (self._depth_ctl.handback) is
+                # DEFERRED to v2. Flipping _mtp_disabled mid-run would route _step()
+                # to super()._step(), but MTP bypasses the base's double-buffered
+                # async pipeline (_next_tokens/_next_logprobs stay at their
+                # construction state), so the stock decoder resumes from an empty
+                # _current_logprobs and desynced cache position. Correct hand-back
+                # must re-prime that pipeline from _mtp_next_main without re-emitting
+                # the anchor. Until then a sustained park keeps parking — still
+                # lossless, and cheaper than the losing verify it replaced; it only
+                # forgoes shedding the ~15% head-fold tax on fully-unpredictable runs.
+
+        def _mtp_spec_cycle(self, hn, depth, next_main, committed, hc):
+            """§5.3 speculative cycle: draft ``depth``, verify in one backbone
+            forward, accept the longest greedy-matching prefix, roll the hybrid
+            cache back. Emits ``drafts[:m] + [correction]``; the anchor ``next_main``
+            was already emitted. Faithful port of ``mtp_greedy_generate``'s loop
+            body. Returns ``(k, m)``."""
+            model = self.model
             # --- draft: fold committed into the head cache -> d1, then chain ---
             lg, hh = model.mtp_forward(
                 self._mtp_frontier, mx.array(committed, U)[None], hc,
@@ -553,6 +706,42 @@ def _make_mtp_generation_class(BaseGeneration):
             self._mtp_committed = emitted
             self._mtp_frontier = hn(vhidden[:, : m + 1, :])
             self._mtp_next_main = correction
+            return k, m
+
+        def _mtp_park_cycle(self, hn, next_main, committed, hc):
+            """Depth-0 park: no speculation. This is the ``m=0`` special case of a
+            spec cycle — with zero drafts, the correction is by definition the true
+            token following ``next_main``, so the carried state stays on the exact
+            invariant a spec cycle maintains and re-entry to speculation is seamless.
+
+            Still folds the pending ``committed`` tokens into the head cache (one
+            head forward, no draft chain, nothing to trim) so it advances in lockstep
+            with the backbone — this is the park's only cost above a plain decode.
+            Then a single 1-token backbone forward over the anchor. Returns ``(0, 0)``."""
+            model = self.model
+            # keep the head cache coherent for re-entry: fold committed, no chain.
+            # This fold is a separate graph from the backbone decode below, so it
+            # evaluates lazily (forced when the next spec cycle reads hc, or dropped
+            # if we hand back). Its cost therefore lands in the adjacent cycle's
+            # timing; because parks cluster in the same depth-0 bucket the t[0] EMA
+            # still converges in steady state, and hand-back caps any lazy backlog.
+            model.mtp_forward(
+                self._mtp_frontier, mx.array(committed, U)[None], hc, logits_keep=1,
+            )
+            # plain 1-token decode over the anchor (no drafts -> no rollback).
+            inp = mx.array([next_main], U)[None]
+            vlogits, vhidden = model(
+                inp, cache=self.prompt_cache, return_hidden=True, n_confirmed=1,
+            )
+            vlp = vlogits[0] - mx.logsumexp(vlogits[0], axis=-1, keepdims=True)
+            correction = int(mx.argmax(vlogits[0, 0]).item())
+            _record_cycle([], 0, 0)
+
+            self._mtp_buffer = [(correction, vlp[0])]
+            self._mtp_committed = [correction]
+            self._mtp_frontier = hn(vhidden[:, :1, :])
+            self._mtp_next_main = correction
+            return 0, 0
 
     return MtpGenerationBatch
 

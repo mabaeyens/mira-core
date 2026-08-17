@@ -7,6 +7,7 @@ control flow, so it is fully testable ahead of the live backbone run.
 import pytest
 
 from core.inference.mtp.mtp_batch import (
+    _DepthController,
     _record_cycle,
     accept_prefix,
     emitted_tokens,
@@ -133,3 +134,91 @@ def test_stats_grows_depth_arrays_when_depth_increases():
     dar = stats()["depth_accept_rate"]
     assert len(dar) == 3
     assert dar[0] == 1.0
+
+
+def test_stats_records_chosen_depth_histogram():
+    _record_cycle([], 0, 0)            # a park
+    _record_cycle([10], 1, 1)          # depth 1
+    _record_cycle([11, 21, 31], 2, 3)  # depth 3
+    _record_cycle([], 0, 0)            # another park
+    # index d == times depth d was chosen: 2 parks, one d1, none at d2, one d3.
+    assert stats()["depth_chosen"] == [2, 1, 0, 1]
+
+
+# --- adaptive depth controller (spec: native-mtp-depth-controller) --------- #
+
+
+def _warm_up(ctl, cost_by_depth, accepted_by_depth):
+    """Drive the warmup sweep to completion so choose() starts scoring. The sweep
+    order is deepest-first then park; feed each depth a cost and an accepted count."""
+    for _ in range(ctl.max_depth + 1):
+        d = ctl.choose()
+        ctl.observe(d, cost_by_depth(d), d, accepted_by_depth(d))
+
+
+def test_controller_warmup_sweeps_every_depth_deepest_first_then_park():
+    ctl = _DepthController(max_depth=3)
+    seen = []
+    for _ in range(4):
+        d = ctl.choose()
+        seen.append(d)
+        ctl.observe(d, 1.0, d, d)  # everything accepted, uniform cost
+    assert seen == [3, 2, 1, 0]  # deepest first, park last
+
+
+def test_controller_prefers_the_higher_throughput_depth():
+    # depth 1 costs the same as a park but returns ~1.8 tokens vs the park's 1;
+    # depths 2-3 cost 3x for barely more accepts -> score(1) is the winner.
+    ctl = _DepthController(max_depth=3)
+    cost = {0: 1.0, 1: 1.0, 2: 3.0, 3: 3.0}
+    _warm_up(ctl, lambda d: cost[d], lambda d: 1 if d >= 1 else 0)
+    # after warmup, with p[0] high and p[1..] low, depth 1 is the throughput winner
+    picks = [ctl.choose() for _ in range(8)]
+    assert picks.count(1) >= 6
+
+
+def test_controller_parks_when_speculation_never_pays():
+    # every draft is rejected (accepted=0) and speculation is expensive; the
+    # park (depth 0, cheap, 1 guaranteed token) must win on score.
+    ctl = _DepthController(max_depth=3)
+    _warm_up(ctl, lambda d: 1.0 if d == 0 else 5.0, lambda d: 0)
+    # feed several more losing spec observations to drive p[j] toward 0
+    for _ in range(10):
+        d = ctl.choose()
+        ctl.observe(d, 1.0 if d == 0 else 5.0, d, 0)
+    assert ctl.choose() == 0
+
+
+def test_controller_hands_back_after_sustained_park():
+    ctl = _DepthController(max_depth=2)
+    assert ctl.handback is False
+    for _ in range(ctl.HANDBACK_PARKS):
+        ctl.observe(0, 1.0, 0, 0)
+    assert ctl.handback is True
+
+
+def test_controller_park_streak_resets_on_a_spec_cycle():
+    ctl = _DepthController(max_depth=2)
+    for _ in range(ctl.HANDBACK_PARKS - 1):
+        ctl.observe(0, 1.0, 0, 0)
+    ctl.observe(1, 1.0, 1, 1)          # a spec cycle breaks the park streak
+    for _ in range(ctl.HANDBACK_PARKS - 1):
+        ctl.observe(0, 1.0, 0, 0)
+    assert ctl.handback is False       # never reached HANDBACK_PARKS in a row
+
+
+def test_controller_conditional_accept_ema_moves_toward_observed():
+    ctl = _DepthController(max_depth=2)
+    seed = ctl.SEED_ACCEPT
+    # depth-2 cycle accepting only the first draft: p[0] hit, p[1] miss.
+    ctl.observe(2, 1.0, 2, 1)
+    assert ctl._p[0] > seed            # a hit pulls p[0] up
+    assert ctl._p[1] < seed            # a miss pulls p[1] down
+
+
+def test_controller_expected_tokens_matches_the_formula():
+    ctl = _DepthController(max_depth=3)
+    ctl._p = [0.9, 0.5, 0.2]
+    # E(2) = 1 + p0 + p0*p1 = 1 + 0.9 + 0.45
+    assert ctl._expected_tokens(2) == pytest.approx(1 + 0.9 + 0.9 * 0.5)
+    assert ctl._expected_tokens(0) == 1.0  # park emits exactly the correction
