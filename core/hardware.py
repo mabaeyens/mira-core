@@ -43,6 +43,40 @@ WIRED_HEADROOM_BYTES = 3 * BYTES_PER_GB
 # for decode throughput.
 RAM_AWARE_PEAK_FRACTION = 0.55
 
+# --- Long-context peak model (calibrated 2026-08-18 on Qwen3.6-35B-A3B) ---------
+# The context window a machine can actually serve is bounded by PEAK footprint
+# during prefill of a full-length prompt, not by the KV cache alone. Measured on
+# this 32GB Mac: a 32k turn peaks at 23.5GiB and fits; a 64k turn peaks at
+# ~25.1GiB and Metal-OOMs against the 24.96GiB wired ceiling. KV is a rounding
+# error in that curve (<1GiB even at 128k on the 10 full-attn layers); the two
+# terms that actually move it are the resident weights and the prefill
+# score-materialization transient.
+#
+# Runtime residency sits above on-disk weight bytes: fixed GatedDeltaNet
+# recurrent state, allocator + Metal driver overhead, MoE routing buffers. This
+# is roughly CONSTANT, not proportional to model size, so it must be ADDITIVE —
+# a multiplicative factor mis-attributes it (and, on an assembled MTP dir whose
+# on-disk bytes already include the MTP head, double-counts the head and craters
+# the budget). Measured on the served MTP model: 21.7GiB resident vs 20.57GiB
+# on-disk = ~1.13GiB; use 1.25GiB so the estimate is a hair conservative
+# (overshooting caps context a little, undershooting OOMs the Mac).
+RUNTIME_OVERHEAD_BYTES = int(1.25 * BYTES_PER_GB)
+# Headroom kept below the Metal wired ceiling for the context-window peak. Small
+# and distinct from WIRED_HEADROOM_BYTES (which guards the coarser expert-sizing
+# estimate): the peak model here is anchored to live measurement, so it needs
+# margin for run-to-run variance and thermal drift, not gross estimation error.
+CONTEXT_PEAK_HEADROOM_BYTES = 1 * BYTES_PER_GB
+# Prefill attention-score transient per token of context, per prefill-step token.
+# The manual quantized SDPA on each full-attention layer materializes a
+# (prefill_step x context) score buffer to HBM (MLX 0.32 ships no fused
+# quantized SDPA); processed one layer at a time, so peak is ONE layer's buffer,
+# independent of layer count but linear in both prefill_step and context. Buffer
+# holds ~num_attention_heads x KV_DTYPE_BYTES per (token, step-token), times a
+# factor for the score + softmax + output copies. Calibrated from two 32k runs
+# (step 256 peak 22.26GiB vs step 1024 peak 23.5GiB => 50.4 B/token/step; with
+# 16 heads x 2B that is a 1.58 factor). 1.6 rounds it up slightly.
+PREFILL_TRANSIENT_SCORE_FACTOR = 1.6
+
 
 def get_total_ram_bytes() -> int:
     """Total physical RAM on this Mac, via `sysctl hw.memsize` (no new dependency)."""
@@ -568,7 +602,20 @@ def derive_dynamic_ceiling_bytes(
 
 
 def _find_cached_config(model_id: str) -> Optional[Path]:
-    """Locate a HF-cached model's config.json without invoking transformers/mlx_lm."""
+    """Locate a model's config.json without invoking transformers/mlx_lm.
+
+    Accepts an HF repo id (searched in the hub cache) OR a local model directory
+    path. The local branch matters: prod runs a locally-pathed model (the
+    assembled/omlx MTP dir, e.g. ~/.omlx/models/Qwen3.6-35B-A3B-MTP), and without
+    it every RAM-aware budget below silently no-ops for that model and passes the
+    requested context straight through with no ceiling — which is exactly how a
+    64k window that can't fit reached the engine unguarded.
+    """
+    local = Path(model_id).expanduser()
+    if local.is_dir():
+        candidate = local / "config.json"
+        if candidate.exists():
+            return candidate
     cache_root = Path.home() / ".cache" / "huggingface" / "hub"
     repo_dir = cache_root / f"models--{model_id.replace('/', '--')}"
     if not repo_dir.exists():
@@ -616,12 +663,51 @@ def estimate_kv_bytes_per_token(
     except KeyError:
         return None
 
+    # Hybrid models (Qwen3.6 "qwen3_5_moe": 10 full-attention + 30 GatedDeltaNet
+    # linear-attention layers) grow a KV cache ONLY on their full-attention
+    # layers; the linear-attention layers hold fixed-size recurrent state that
+    # does not scale with context. Counting all num_hidden_layers overcounts
+    # growing KV 4x on Qwen3.6. layer_types ("full_attention"/"linear_attention")
+    # is the source of truth; absent it, every layer is full attention (the
+    # pre-hybrid default, unchanged for Ministral/Qwen3 dense).
+    layer_types = cfg.get("layer_types")
+    if isinstance(layer_types, list) and layer_types:
+        kv_layers = sum(1 for t in layer_types if t == "full_attention")
+        if kv_layers > 0:
+            num_layers = kv_layers
+
     if kv_bits is not None:
         bytes_per_element = kv_bits / 8 + (2 * KV_DTYPE_BYTES) / kv_group_size
     else:
         bytes_per_element = KV_DTYPE_BYTES
 
     return int(2 * num_layers * num_kv_heads * head_dim * bytes_per_element)
+
+
+def estimate_prefill_transient_bytes_per_token(
+    model_id: str, prefill_step_size: int = 1024
+) -> Optional[int]:
+    """Peak prefill score-buffer bytes attributable to one token of context, at a
+    given --prefill-step-size. This is the term that dominates the long-context
+    RAM curve and actually OOMs a 32GB Mac at 64k (KV is <1GiB there). See
+    PREFILL_TRANSIENT_SCORE_FACTOR. Returns None if the config can't be read."""
+    config_path = _find_cached_config(model_id)
+    if config_path is None:
+        return None
+    try:
+        cfg = json.loads(config_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    cfg = cfg.get("text_config", cfg)
+    num_attention_heads = cfg.get("num_attention_heads")
+    if not num_attention_heads:
+        return None
+    return int(
+        PREFILL_TRANSIENT_SCORE_FACTOR
+        * num_attention_heads
+        * KV_DTYPE_BYTES
+        * max(1, prefill_step_size)
+    )
 
 
 def estimate_model_weight_bytes(model_id: str) -> Optional[int]:
@@ -778,18 +864,36 @@ def derive_prompt_cache_max_bytes(
 def derive_context_window(model_id: str, total_ram_bytes: Optional[int] = None,
                            requested_context: int = 65536,
                            kv_bits: Optional[int] = None, kv_group_size: int = 64,
-                           resident_expert_fraction: Optional[float] = None) -> int:
-    """Cap a requested context window to what this machine can actually hold in
-    KV cache for a single active generation, without touching the cache pool."""
+                           resident_expert_fraction: Optional[float] = None,
+                           prefill_step_size: int = 1024) -> int:
+    """Cap a requested context window to what this machine can actually serve at
+    PEAK footprint during prefill of a full-length prompt.
+
+    The binding constraint is the Metal wired working-set ceiling
+    (METAL_WIRED_FRACTION x total RAM): resident bytes past it Metal-OOM
+    regardless of free RAM. Peak = resident weights (x runtime overhead) + the
+    growing KV cache + the prefill score transient. The transient dominates and
+    scales with prefill_step_size; the KV term is small. Anchored to live
+    measurement on Qwen3.6-35B-A3B: 32k fits (23.5GiB), 64k OOMs (~25.1GiB vs
+    the 24.96GiB ceiling), and this derives ~40k on a 32GB Mac. On a 128GB Mac
+    the ceiling scales up and the full requested window is returned; on an 8GB
+    Mac it floors at 1024. Falls back to the requested value only when the model
+    architecture can't be read at all."""
     total_ram_bytes = total_ram_bytes if total_ram_bytes is not None else get_total_ram_bytes()
-    model_bytes = estimate_active_weight_bytes(model_id, resident_expert_fraction) or 8 * BYTES_PER_GB
     kv_bytes_per_token = estimate_kv_bytes_per_token(model_id, kv_bits=kv_bits, kv_group_size=kv_group_size)
     if kv_bytes_per_token is None:
         return requested_context  # unknown architecture — don't guess, use the caller's value
+    transient_per_token = estimate_prefill_transient_bytes_per_token(model_id, prefill_step_size) or 0
+    per_token = kv_bytes_per_token + transient_per_token
 
-    available = total_ram_bytes - model_bytes - SAFETY_MARGIN_BYTES
-    max_tokens_by_ram = available // kv_bytes_per_token
-    return int(max(min(requested_context, max_tokens_by_ram), 1024))
+    model_bytes = estimate_active_weight_bytes(model_id, resident_expert_fraction) or 8 * BYTES_PER_GB
+    resident_bytes = model_bytes + RUNTIME_OVERHEAD_BYTES
+    metal_ceiling = int(total_ram_bytes * METAL_WIRED_FRACTION)
+    budget_for_context = metal_ceiling - resident_bytes - CONTEXT_PEAK_HEADROOM_BYTES
+    if budget_for_context <= 0:
+        return 1024
+    max_tokens_by_peak = budget_for_context // per_token
+    return int(max(min(requested_context, max_tokens_by_peak), 1024))
 
 
 def derive_disk_cache_max_bytes(cache_dir: Path, cap_bytes: int = 50 * BYTES_PER_GB) -> int:

@@ -77,6 +77,78 @@ def test_estimate_kv_bytes_per_token_quantized_smaller_than_unquantized(tmp_path
     assert quantized == expected
 
 
+# A Qwen3.6-style hybrid: 40 layers, but only every 4th is full-attention (10
+# grow a KV cache; the other 30 are GatedDeltaNet linear-attention with fixed
+# recurrent state). num_key_value_heads=2, head_dim=256, 16 attention heads.
+HYBRID_CONFIG = {
+    "text_config": {
+        "num_hidden_layers": 40,
+        "num_key_value_heads": 2,
+        "head_dim": 256,
+        "num_attention_heads": 16,
+        "hidden_size": 2048,
+        "layer_types": [
+            "full_attention" if (i + 1) % 4 == 0 else "linear_attention"
+            for i in range(40)
+        ],
+    }
+}
+
+
+def test_estimate_kv_bytes_per_token_hybrid_counts_only_full_attention(tmp_path, monkeypatch):
+    """Hybrid models grow KV only on full_attention layers; counting all 40 would
+    overcount 4x. layer_types is the source of truth."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(HYBRID_CONFIG))
+    monkeypatch.setattr(hardware, "_find_cached_config", lambda model_id: config_path)
+    # 10 full-attention layers, not 40
+    assert hardware.estimate_kv_bytes_per_token("fake/hybrid") == 2 * 10 * 2 * 256 * 2
+
+
+def test_estimate_prefill_transient_scales_with_heads_and_step(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(HYBRID_CONFIG))
+    monkeypatch.setattr(hardware, "_find_cached_config", lambda model_id: config_path)
+    t1024 = hardware.estimate_prefill_transient_bytes_per_token("fake/hybrid", 1024)
+    t256 = hardware.estimate_prefill_transient_bytes_per_token("fake/hybrid", 256)
+    assert t1024 == int(hardware.PREFILL_TRANSIENT_SCORE_FACTOR * 16 * hardware.KV_DTYPE_BYTES * 1024)
+    assert t256 * 4 == t1024  # linear in prefill_step_size
+    # Dominates KV: transient >> the growing-KV term at the same context
+    assert t1024 > hardware.estimate_kv_bytes_per_token("fake/hybrid", kv_bits=4) * 5
+
+
+def test_estimate_prefill_transient_unknown_config_returns_none(monkeypatch):
+    monkeypatch.setattr(hardware, "_find_cached_config", lambda model_id: None)
+    assert hardware.estimate_prefill_transient_bytes_per_token("fake/x", 1024) is None
+
+
+def test_find_cached_config_accepts_local_dir(tmp_path, monkeypatch):
+    """A locally-pathed model dir (the assembled/omlx MTP dir prod runs) must
+    resolve, or every RAM-aware budget silently no-ops for it."""
+    (tmp_path / "config.json").write_text("{}")
+    # No HF hub match for this path; the local-dir branch must find it.
+    assert hardware._find_cached_config(str(tmp_path)) == tmp_path / "config.json"
+
+
+def test_derive_context_window_capped_by_prefill_transient(tmp_path, monkeypatch):
+    """The transient term must pull a large requested window DOWN below the
+    request on a 32GB Mac for the hybrid model — the whole point of the fix."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(HYBRID_CONFIG))
+    monkeypatch.setattr(hardware, "_find_cached_config", lambda model_id: config_path)
+    monkeypatch.setattr(hardware, "estimate_model_weight_bytes", lambda model_id: 20 * GB)
+    capped = hardware.derive_context_window(
+        "fake/hybrid", 32 * GB, requested_context=65536,
+        kv_bits=4, kv_group_size=64, prefill_step_size=1024)
+    # Lands well below the unfittable 65536, but still a usable window.
+    assert 24000 < capped < 65536
+    # A smaller prefill step shrinks the transient -> allows more context.
+    capped_small_step = hardware.derive_context_window(
+        "fake/hybrid", 32 * GB, requested_context=65536,
+        kv_bits=4, kv_group_size=64, prefill_step_size=256)
+    assert capped_small_step > capped
+
+
 # -- derive_context_window / derive_prompt_cache_max_bytes across RAM tiers -
 
 @pytest.fixture
@@ -86,15 +158,20 @@ def fixed_model(monkeypatch):
     monkeypatch.setattr(hardware, "estimate_kv_bytes_per_token", lambda model_id, **kwargs: 163840)
 
 
-@pytest.mark.parametrize("ram_gb,expect_context", [
-    (8, 1024),      # floored: available RAM can't even cover the model + margin
-    (16, 32768),
-    (24, 65536),
-    (32, 65536),
-    (64, 65536),
-])
-def test_derive_context_window_scales_with_ram(fixed_model, ram_gb, expect_context):
-    assert hardware.derive_context_window("fake/model", ram_gb * GB, requested_context=65536) == expect_context
+def test_derive_context_window_scales_with_ram(fixed_model):
+    """Derived window is non-decreasing in RAM, floored at 1024 when the model
+    barely fits, and capped at the requested value once RAM is ample. Exact
+    interior values depend on the Metal-ceiling + transient constants, so this
+    asserts the shape rather than pinning brittle magic numbers."""
+    windows = {
+        gb: hardware.derive_context_window("fake/model", gb * GB, requested_context=65536)
+        for gb in (8, 16, 24, 32, 64)
+    }
+    assert windows[8] == 1024          # model + margin can't fit in an 8GB Metal ceiling
+    assert windows[64] == 65536        # ample RAM returns the full request
+    ordered = [windows[gb] for gb in (8, 16, 24, 32, 64)]
+    assert ordered == sorted(ordered)  # monotonic non-decreasing
+    assert all(1024 <= w <= 65536 for w in windows.values())
 
 
 def test_derive_context_window_kv_bits_none_matches_no_kv_bits_arg(fixed_model):

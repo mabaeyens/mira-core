@@ -135,7 +135,25 @@ async def lifespan(app: FastAPI):
             # Per-conversation orchestrators are created lazily on first use (no
             # conversation is preloaded). Heavy RAG models are process-wide shared,
             # so each session is cheap.
-            sessions = SessionManager(verbose=VERBOSE_DEFAULT)
+            # Seed the pool with the SERVED context window, not the raw configured
+            # request. derive_context_window caps a 65536 request to what actually
+            # fits under the Metal wired ceiling (~39k on a 32GB Mac for the MTP
+            # MoE); the engine already launches with that as --max-kv-size, and the
+            # app-side compression trigger keys off _preset["context_window"], so
+            # it must match — otherwise the engine caps the prompt while the app
+            # keeps growing context past it. get_preset_for starts nothing.
+            try:
+                _served = _bm.get_preset_for(BACKEND, MODEL_NAME)
+                _served_ctx = int(_served.get("context_window", CONTEXT_WINDOW))
+            except Exception as exc:  # never block startup on a sizing estimate
+                logger.warning("could not derive served context window at startup "
+                               "(%s); using configured %d", exc, CONTEXT_WINDOW)
+                _served_ctx = CONTEXT_WINDOW
+            _rt["context_window"] = _served_ctx
+            if _served_ctx != CONTEXT_WINDOW:
+                logger.info("served context window %d (configured request %d capped to fit RAM)",
+                            _served_ctx, CONTEXT_WINDOW)
+            sessions = SessionManager(verbose=VERBOSE_DEFAULT, context_window=_served_ctx)
             logger.info(f"Initialized session pool — backend: {BACKEND}, model: {MODEL_NAME}")
             logger.info(f"{BACKEND} backend — model {MODEL_NAME} at {BACKEND_HOST}")
             _backend_ready = True
@@ -393,17 +411,22 @@ async def hardware_info(_=Depends(_ready)):
     whatever else is running.
     """
     from core import hardware as hw
+    from core.config import MIRA_MLX_KV_BITS, MIRA_MLX_KV_GROUP_SIZE, PREFILL_STEP_SIZE
 
     total_ram = hw.get_total_ram_bytes()
     model = _rt["model"]
-    kv_bytes_per_token = hw.estimate_kv_bytes_per_token(model)
+    kv_bytes_per_token = hw.estimate_kv_bytes_per_token(
+        model, kv_bits=MIRA_MLX_KV_BITS, kv_group_size=MIRA_MLX_KV_GROUP_SIZE)
     model_bytes = hw.estimate_model_weight_bytes(model)
     return {
         "total_ram_gb": round(total_ram / hw.BYTES_PER_GB, 1),
         "model": model,
         "model_weight_gb": round(model_bytes / hw.BYTES_PER_GB, 1) if model_bytes else None,
         "kv_bytes_per_token": kv_bytes_per_token,
-        "derived_context_window": hw.derive_context_window(model, total_ram, _rt["context_window"]),
+        "derived_context_window": hw.derive_context_window(
+            model, total_ram, _rt["context_window"],
+            kv_bits=MIRA_MLX_KV_BITS, kv_group_size=MIRA_MLX_KV_GROUP_SIZE,
+            prefill_step_size=PREFILL_STEP_SIZE),
         "derived_prompt_cache_max_gb": round(
             hw.derive_prompt_cache_max_bytes(model, total_ram) / hw.BYTES_PER_GB, 1
         ),

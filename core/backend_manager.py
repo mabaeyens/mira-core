@@ -176,6 +176,7 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
         kv_bits=MIRA_MLX_KV_BITS,
         kv_group_size=MIRA_MLX_KV_GROUP_SIZE,
         resident_expert_fraction=resident_expert_fraction,
+        prefill_step_size=PREFILL_STEP_SIZE,
     )
     # A 0 budget is how the engine disables the store entirely
     # (mira_mlx_server.py: `if self.disk_cache_dir and self.disk_cache_max_bytes > 0`),
@@ -620,6 +621,7 @@ def get_preset_for(backend: str, model_id: str) -> dict:
             kv_bits=MIRA_MLX_KV_BITS,
             kv_group_size=MIRA_MLX_KV_GROUP_SIZE,
             resident_expert_fraction=resolve_offload_fraction(model_id),
+            prefill_step_size=PREFILL_STEP_SIZE,
         )
         return {"backend": "mira-mlx", "model": model_id, "host": MIRA_MLX_HOST, "context_window": actual_context}
     else:

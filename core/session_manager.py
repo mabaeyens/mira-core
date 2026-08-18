@@ -27,19 +27,24 @@ logger = logging.getLogger(__name__)
 class SessionManager:
     """Bounded LRU pool of per-conversation orchestrators with per-conversation locks."""
 
-    def __init__(self, max_sessions: int = 8, verbose: bool = VERBOSE_DEFAULT):
+    def __init__(self, max_sessions: int = 8, verbose: bool = VERBOSE_DEFAULT,
+                 context_window: int = CONTEXT_WINDOW):
         self._sessions: "OrderedDict[str, ChatOrchestrator]" = OrderedDict()
         self._locks: Dict[str, asyncio.Lock] = {}
         self._guard = asyncio.Lock()          # protects _sessions / _locks mutation
         self._max = max_sessions
         self._verbose = verbose
         # Current runtime backend preset; updated on a backend/model switch so newly
-        # created sessions inherit it (config provides the initial values).
+        # created sessions inherit it (config provides the initial values). The
+        # context_window here is the SERVED window — what the engine can actually
+        # hold under the Metal ceiling, which on constrained hardware is below the
+        # configured request — because the compression trigger keys off it and must
+        # fire before the engine's own --max-kv-size cap, not after.
         self._preset = {
             "backend": BACKEND,
             "model": MODEL_NAME,
             "host": BACKEND_HOST,
-            "context_window": CONTEXT_WINDOW,
+            "context_window": context_window,
         }
         # A single conversation-less orchestrator for stateless one-shot LLM calls
         # (e.g. the /ask endpoint). Built lazily, kept in sync with the preset.
