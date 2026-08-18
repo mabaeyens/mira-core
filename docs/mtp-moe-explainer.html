@@ -122,6 +122,7 @@
   .pill.banked{color:var(--good);border-color:var(--good);background:var(--good-wash)}
   .pill.rej{color:var(--bad);border-color:var(--bad);background:var(--bad-wash)}
   .pill.unt{color:var(--untested);border-color:var(--untested);background:var(--surface-2)}
+  .pill.open{color:var(--draft);border-color:var(--draft);background:var(--draft-wash)}
   .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 
   /* ---- ledger cards ---- */
@@ -140,6 +141,21 @@
   .reversal .claim{font-family:var(--mono);color:var(--bad);font-size:.85rem;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px}
   .reversal .fix{color:var(--ink)}
   .reversal .fix b{color:var(--good)}
+
+  /* ---- plain-language primer ---- */
+  .primer{border:1px solid var(--line);border-left:3px solid var(--verify);background:var(--surface-2);
+    border-radius:0 12px 12px 0;padding:16px 20px 18px;margin:24px 0}
+  .primer .ptag{font-family:var(--mono);font-size:11px;letter-spacing:.13em;text-transform:uppercase;
+    color:var(--verify);margin-bottom:9px;display:flex;align-items:center;gap:8px}
+  .primer .ptag::before{content:"?";display:inline-flex;align-items:center;justify-content:center;
+    width:16px;height:16px;border-radius:50%;border:1px solid var(--verify);font-size:10px;font-weight:600}
+  .primer p{font-size:.98rem;color:var(--ink-2);line-height:1.58;margin:0 0 .7em}
+  .primer p:last-child{margin-bottom:0}
+  .primer b,.primer strong{color:var(--ink);font-weight:600}
+  .primer dl{margin:.2em 0 0;display:grid;grid-template-columns:auto 1fr;gap:8px 16px}
+  .primer dt{font-family:var(--mono);color:var(--ink);font-size:.88rem;font-weight:600;white-space:nowrap}
+  .primer dd{margin:0;font-size:.95rem;color:var(--ink-2);line-height:1.5}
+  @media (max-width:520px){.primer dl{grid-template-columns:1fr;gap:2px 0}.primer dd{margin:0 0 .5em}}
 
   /* ---- legend ---- */
   .legend{display:flex;flex-wrap:wrap;gap:16px;font-family:var(--mono);font-size:12px;color:var(--ink-2);margin-top:14px}
@@ -305,6 +321,18 @@
   </div>
   <div class="spine">
     <p class="lead">The dense matmuls that dominate a forward pass are memory-bandwidth bound at decode. Widening the batch from 1 to 4 tokens rides the same weight read, so it is nearly free. The mixture-of-experts routing is the one part that is not.</p>
+
+    <div class="primer">
+      <div class="ptag">Start here &middot; what &ldquo;free-M&rdquo; and a cycle actually are</div>
+      <p><b>M</b> is the <b>verify width</b> &mdash; the number of token positions the big model scores in a single forward pass. &ldquo;<b>Free-M</b>&rdquo; is the name for the finding this section proves: going from <span class="mono">M=1</span> to <span class="mono">M=4</span> costs almost nothing extra, because a decode pass is bottlenecked on <em>reading the weights out of memory</em>, not on the arithmetic. Four tokens ride the same weight read, so checking four is nearly as cheap as checking one. That flatness is the entire reason speculative decoding pays.</p>
+      <p>A <b>cycle</b> is the repeating unit drawn in section 01. Broken down <b>by step</b> it is three moves:</p>
+      <dl>
+        <dt>1 &middot; draft</dt><dd>the lightweight MTP head cheaply guesses the next few tokens, each guess feeding the next (<span class="mono">d1&rarr;d2&rarr;d3</span>).</dd>
+        <dt>2 &middot; verify</dt><dd>one backbone forward scores all of them at once &mdash; this is the pass whose width is <span class="mono">M</span>.</dd>
+        <dt>3 &middot; emit</dt><dd>keep the longest run of guesses the backbone agrees with, add its own token as one free correction at the first miss, then start the next cycle.</dd>
+      </dl>
+      <p>Broken down <b>by time</b>, that same cycle is a wall-clock budget: the stacked bar at the foot of this section shows one cycle is about <span class="mono">34&nbsp;ms</span>, of which verify is <span class="mono">77%</span>, drafting is <span class="mono">21%</span>, and host bookkeeping is the rest. So &ldquo;step&rdquo; tells you <em>what happens</em>; &ldquo;time&rdquo; tells you <em>where the milliseconds go</em> &mdash; and the winning lever in section 05 attacks that <span class="mono">21%</span> draft slice.</p>
+    </div>
   </div>
 
   <div class="fig">
@@ -520,6 +548,16 @@
   <div class="spine">
     <p class="lead">The draft head spends most of its time projecting a hidden state onto all 248,320 vocabulary rows, only to take one argmax. Project onto the first N rows instead and the draft gets cheaper with no change to what gets emitted.</p>
     <p>This is safe <b>by construction</b>. The full-vocab backbone verify still decides every token, so a narrower draft vocabulary can only ever cost <em>accept rate</em>, if a true next token's id happens to land beyond N. It can never change the output. Qwen3's byte-level merges put common tokens at low ids, so a generous N covers essentially everything the model generates.</p>
+
+    <div class="primer">
+      <div class="ptag">Reminder &middot; vocabulary, token ids, and the knee</div>
+      <dl>
+        <dt>the vocabulary</dt><dd>the fixed list of <span class="mono">248,320</span> tokens (word-pieces) the model can ever output. Every step it produces one score per row and takes the highest &mdash; that pick is the next token. The <b>lm_head</b> is the big matrix that turns a hidden state into those 248,320 scores.</dd>
+        <dt>token ids</dt><dd>just the row numbers, <span class="mono">0</span> to <span class="mono">248,319</span>. Qwen3's tokenizer gives <b>low ids</b> to the most common pieces (frequent words, punctuation, code symbols) and <b>high ids</b> to rare ones. So &ldquo;the first <span class="mono">N</span> rows&rdquo; means &ldquo;the <span class="mono">N</span> most common tokens.&rdquo;</dd>
+        <dt>the knee</dt><dd>as you shrink the draft's vocabulary <span class="mono">N</span>, speed climbs while accept rate holds &mdash; up to the point where accept starts to fall. That elbow in the curve is the knee. <span class="chip good">131072</span> sits right on it: half the width, zero accept loss.</dd>
+        <dt>past the knee</dt><dd>cut further (e.g. <span class="chip bad">32768</span>) and you've trimmed so hard that real next-tokens start landing beyond <span class="mono">N</span>. Accept collapses, the controller starts parking, and you lose more than the narrower projection saved.</dd>
+      </dl>
+    </div>
   </div>
 
   <div class="fig">
@@ -798,6 +836,17 @@
   </div>
   <div class="spine">
     <p class="lead">Every emitted token is the backbone's own greedy pick, yet the text is not bit-for-bit identical across draft settings. Both statements are true, and the gap between them is where a careless claim gets made.</p>
+
+    <div class="primer">
+      <div class="ptag">Two words this section leans on</div>
+      <dl>
+        <dt>greedy</dt><dd>the decoding rule where each step always takes the single highest-scoring token &mdash; no sampling, no temperature, no randomness. Same input plus same numerics gives the same choice. These benchmarks all run greedy.</dd>
+        <dt>lossless</dt><dd>the speculative machinery never changes <em>which</em> token greedy would have picked: every emitted token is still <code>argmax(full-vocab&nbsp;verify)</code>, the backbone's own choice. What it does <b>not</b> promise is identical <em>bytes</em> &mdash; see below.</dd>
+      </dl>
+      <p>So &ldquo;lossless&rdquo; here means <b>same decision rule, same quality</b>, not <b>same output text</b>. The bytes can still shift because the tie-breaking arithmetic differs by batch width on this hardware.</p>
+    </div>
+  </div>
+  <div class="spine">
     <p>The invariant <code>emit = argmax(full-vocab&nbsp;verify)</code> holds by construction. But changing the draft changes which batch <em>widths</em> the verify runs at, and on M5 the batched attention numerics (<span class="mono">mlx#3897</span>, <span class="mono">mlx#3860</span>, both closed won't-fix, so we always run <code>MLX_ENABLE_TF32=0</code>) resolve argmax ties slightly differently at different widths. That is the same non-determinism that already makes batch-1 and batch-4 diverge in production. We verified by reading divergent outputs side by side that they are equal quality, not regressions.</p>
   </div>
 
@@ -921,18 +970,18 @@
     </div>
     <div class="lev">
       <h4>Frequency-remapped vocab</h4>
-      <p class="why">Tested. Remapping the draft vocabulary to the generated-token id distribution beats the contiguous slice by <span class="mono">+7.4</span> accept points at equal width, so the mechanism is real. But against the banked first-131072 slice the net is ~1%, inside the thermal noise, and it adds a drift-prone map plus hot-path id translation. Kept gated, not shipped on.</p>
-      <div class="meta"><span class="pill unt">tested &middot; marginal</span><span class="chip">mechanism proven</span></div>
+      <p class="why">The <span class="mono">+7.4</span> accept points were measured at width <span class="mono">16384</span>, where the contiguous slice is starved to <span class="mono">0.692</span>. At the shipped <span class="mono">131072</span> the contiguous slice already reaches <span class="mono">0.857</span>, so there is almost no hot-token mass left to recover: the gain does not transfer to the operating point. Net ~1%, inside thermal noise, plus a drift-prone map. Document-only, kept gated.</p>
+      <div class="meta"><span class="pill unt">width-confounded</span><span class="chip">document-only</span></div>
     </div>
     <div class="lev rej">
       <h4>Depth 4</h4>
       <p class="why">Measured to lower throughput. The controller rarely picks it and the MoE union tax outweighs the rare deep hit.</p>
       <div class="meta"><span class="pill rej">rejected</span><span class="chip bad">diminishes</span></div>
     </div>
-    <div class="lev rej">
+    <div class="lev">
       <h4>Accept via head retrain</h4>
-      <p class="why">Exhausted. FastMTP + HASS both plateaued at a capacity ceiling on the stronger dense head. Low expected value on the weaker MoE head.</p>
-      <div class="meta"><span class="pill rej">exhausted</span></div>
+      <p class="why">Exhausted <em>only on the dense head</em> &mdash; FastMTP and HASS both plateaued there. The MoE head, at <span class="mono">0.83</span> accept, was never retrained, and a weaker head can hold more headroom, not less. The distill harness is already built, so the probe is a training run, not new code. The one lever here with compounding headroom toward 80.</p>
+      <div class="meta"><span class="pill open">open &middot; MoE head unproven</span><span class="chip good">compounding</span></div>
     </div>
     <div class="lev rej">
       <h4>Draft trees</h4>
@@ -948,6 +997,33 @@
       <h4>Expert offload tricks</h4>
       <p class="why">DraftExpert and friends. Their gain is hiding offload latency; our experts are resident in 32GB, so there is nothing to hide.</p>
       <div class="meta"><span class="pill unt">not applicable</span></div>
+    </div>
+  </div>
+
+  <h3 class="spine" style="margin-top:44px">The audit: where the last few t/s hide</h3>
+  <div class="spine">
+    <p>Chasing 80 harder, I put the engine and the literature through a twelve-way audit and turned two of the reviewers loose on this very page. The blunt result: the <span class="mono">76.0</span> base is softer than it looks. It is the top of a noisy pass-pair whose low end is <span class="mono">70.7</span>, and every number here was measured at short context while production serves <span class="mono">131072</span>, where the speedup tapers. So the honest reading is that 80 is an aspiration, not a delivery &mdash; but the audit turned up more than trims. The first card below is the surprise: the verify batch never coalesces its expert gather because MLX gates the sort at a width the single-stream batch never reaches, and flipping it on is bit-identical and cut ~20% off every MoE forward in a resident A/B that held steady across 32 cold layers &mdash; a one-time jump that the resident full-model A/B then measured at <span class="mono">+4.6%</span> end-to-end: real, lossless, and dead-consistent, but a third of the projection, so it lifts 76 to ~<span class="mono">79.5</span> without clearing 80. The one lever with <em>compounding</em> headroom is still retraining the MoE head, ruled out so far only on the dense one: a faster head lifts accept, which multiplies every cycle after. Both are unrun. Before I am allowed to write &ldquo;exhausted&rdquo;, they have to be.</p>
+  </div>
+  <div class="ledger">
+    <div class="lev">
+      <h4>Bounded penalty context</h4>
+      <p class="why">Every cycle marshals the <em>full</em> token history to replay the repetition penalty, but the penalty only reads the last 64 tokens. A host-only probe measured the waste: <span class="mono">3.3&nbsp;ms/cycle</span> at 64k context, and bounding it to the window is byte-identical. That is ~<span class="mono">10%</span> decode at 64k (2&ndash;5% at 16&ndash;32k), paid only at long context &mdash; exactly the served regime every headline skipped.</p>
+      <div class="meta"><span class="pill open">measured &middot; promising</span><span class="chip good">~10% @64k</span><span class="chip">lossless</span></div>
+    </div>
+    <div class="lev">
+      <h4>Expert-gather coalescing &mdash; measured</h4>
+      <p class="why">MLX sorts the MoE expert gather only at <span class="mono">&ge;64</span> routed indices; a single-stream verify batch routes <span class="mono">4&times;8=32</span>, so it runs <em>unsorted</em> and an expert two verified tokens share is read twice. I measured the overlap live: <span class="mono">20.6</span> distinct of 32 (~36% reuse). Forcing the sort on is <b>bit-identical</b> (|&Delta;|&thinsp;=&thinsp;0) and the win <em>scales with reuse</em> &mdash; the coalescing signature. A resident A/B then streamed the verify forward through 8&ndash;32 <em>distinct</em> cold layers (a 14&nbsp;GB working set, cache-defeating) and the speedup held rock-steady at <b>on/off&nbsp;<span class="mono">0.80</span></b> &mdash; ~20% off every MoE forward, not decaying with scale. Those forwards are <span class="mono">55%</span> of the cycle, so it projected to +12% end-to-end. The resident full-model A/B then settled it: 36 paired-interleaved reps with the model fully resident gave <b>+4.6% end-to-end, 76 &rarr; ~79.5</b> &mdash; ON faster in 36/36 pairs, byte-identical output, accept unchanged. Real and free, but a third of the projection: MoE is a smaller share of the cycle than 55% once the whole stack is resident, so this trims rather than clears 80. The fix is a threshold, not a kernel: sort at <span class="mono">&ge;16</span> (catches verify M=2&ndash;7, spares single-token decode), via Mira's own MTP patch.</p>
+      <div class="meta"><span class="pill open">measured &middot; full-model confirmed</span><span class="chip good">~20% MoE fwd</span><span class="chip good">+4.6% end-to-end</span><span class="chip">lossless</span></div>
+    </div>
+    <div class="lev">
+      <h4>N-gram draft extension</h4>
+      <p class="why">After the head's drafts, scan the context for the current suffix and append the following tokens into the <em>same</em> verify. Free draft tokens, no head forward, and it stays a linear chain, so the GatedDeltaNet recurrence never forks &mdash; the exact blocker that killed the tree. Large on code and edits, ~0 on prose. Untried.</p>
+      <div class="meta"><span class="pill open">open &middot; untried</span><span class="chip good">code-heavy</span></div>
+    </div>
+    <div class="lev">
+      <h4>Penalty-aware drafts, off?</h4>
+      <p class="why">Penalty-aligned drafting was added to lift accept, but the reduced-vocab knee already covers the hot penalized tokens, so it may now be pure draft-slice cost. A one-flag A/B settles whether it still buys accept or can be dropped for a free trim.</p>
+      <div class="meta"><span class="pill open">open &middot; cheap A/B</span></div>
     </div>
   </div>
 </section>
