@@ -38,6 +38,13 @@
   FastMTP chain loss +2pt d3, plateau). Reaching 2.36× would need a genuinely bigger drafter, not tuning
   this head/engine. **Dense native MTP is DONE at 1.91×.** Full write-up: `docs/multi-token-prediction.md`
   (illustrated); history in memory `project_native_mtp_workstream.md`; benches in gitignored `notes/mtp/`.
+  **2026-08-18 road-to-80 close-out:** SwitchGLU sort-threshold lever measured **+4.6%** end-to-end
+  (76->~79.5, lossless, committed `bbebb0d`, inert in prod) — real but not the projected +12%. Penalty-aware
+  drafts measured **redundant** at draft_vocab 131072 (accept holds 0.767/0.776, safe to drop). Long-context
+  profile: decode **collapses** 73 t/s @2k -> 25 @32k -> 11 @64k, so 76 is a 2k number and the served 128k
+  regime is 7×+ slower, and 96k won't fit resident. **80 is unreachable at short ctx (exhausted); the real
+  frontier is the served long-ctx regime** — cutting per-decode KV-read cost, not the last few short-ctx t/s.
+  Memory `project_road_to_80_pa_longctx.md`, `project_moe_sort_threshold_lever.md`.
 
 ### ~~Confirm the overnight-eviction culprit from the sampler~~ — ANSWERED 2026-08-17: idle-decompress treadmill, leaving as-is
 - Read 22h of `notes/mem-samples.log` (2026-08-16 02:13 → 2026-08-17 00:31) against the timestamped
