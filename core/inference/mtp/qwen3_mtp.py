@@ -28,6 +28,7 @@ Attribute names inside the head are fixed by the checkpoint tensor keys
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,32 @@ def _ours(cls: Any, attr: str) -> bool:
     inherited), so a re-apply after some other patch clobbered it re-establishes
     ownership instead of chaining wraps."""
     return getattr(cls.__dict__.get(attr), _MARKER, False)
+
+
+# MoE expert-gather sort threshold. mlx-lm hardcodes ``do_sort = indices.size >= 64``
+# in SwitchGLU, which leaves the single-stream MTP verify batch UNSORTED: at the
+# depth-3 default it routes 4 tokens x top_k=8 = 32 indices (< 64), so an expert
+# two verified tokens share is read from memory twice instead of once. Sorting
+# coalesces same-expert rows into a single weight read. Measured 2026-08-18:
+# sorting the depth-3 verify batch is bit-identical to stock and ~20% faster per
+# MoE forward (held steady across 32 cold-streamed layers), projecting ~+12%
+# decode. We lower the threshold to 16 so verify batches (M=2..7, size 16..56)
+# sort while single-token stock decode (M=1, size 8) stays unsorted — sorting 8
+# no-reuse experts there is pure overhead. Set MIRA_MLX_MTP_MOE_SORT_THRESHOLD=64
+# to restore stock behavior (the A/B "off" arm).
+_MOE_SORT_THRESHOLD = int(os.environ.get("MIRA_MLX_MTP_MOE_SORT_THRESHOLD", "16") or "16")
+
+
+def set_moe_sort_threshold(n: int) -> None:
+    """Set the routed-index count at/above which the MoE expert gather is sorted
+    (coalesced). Read live by the patched SwitchGLU on every forward, so a paired
+    A/B can flip it in one process with no reload."""
+    global _MOE_SORT_THRESHOLD
+    _MOE_SORT_THRESHOLD = max(1, int(n))
+
+
+def get_moe_sort_threshold() -> int:
+    return _MOE_SORT_THRESHOLD
 
 
 def apply() -> bool:
@@ -64,6 +91,7 @@ def apply() -> bool:
     _patch_text_model(q35)
     _patch_outer_model(q35)
     _patch_moe_sanitize()
+    _patch_switchglu_sort_threshold()
     logger.info("mira native MTP: Qwen3.5/3.6 model patch applied")
     return True
 
@@ -638,3 +666,51 @@ def _patch_moe_sanitize() -> None:
 
     setattr(sanitize, _MARKER, True)
     cls.sanitize = sanitize
+
+
+def _patch_switchglu_sort_threshold() -> None:
+    """Lower SwitchGLU's expert-gather sort threshold from mlx-lm's hardcoded 64
+    (see ``_MOE_SORT_THRESHOLD``) so the single-stream MTP verify batch coalesces
+    its expert reads. The output is bit-identical to stock — this is a pure
+    bandwidth win — so it is safe to install unconditionally: for the batch sizes
+    that occur without MTP (M=1 decode, size 8; large prefill) the decision is
+    unchanged, only the M=2..7 verify batch flips from unsorted to sorted."""
+    try:
+        from mlx_lm.models import switch_layers as sl
+    except ImportError:
+        logger.debug("mlx_lm.models.switch_layers not importable; sort-threshold patch skipped")
+        return
+    cls = sl.SwitchGLU
+    if _ours(cls, "__call__"):
+        return
+
+    import mlx.core as mx
+
+    def __call__(self, x, indices):
+        # Verbatim mlx-lm SwitchGLU.__call__, except do_sort uses the mira-tunable
+        # threshold (read live) instead of the hardcoded 64.
+        x = mx.expand_dims(x, (-2, -3))
+        do_sort = indices.size >= _MOE_SORT_THRESHOLD
+        idx = indices
+        inv_order = None
+        if do_sort:
+            x, idx, inv_order = sl._gather_sort(x, indices)
+        if self.training:
+            idx = mx.stop_gradient(idx)
+        x_up = self.up_proj(x, idx, sorted_indices=do_sort)
+        x_gate = self.gate_proj(x, idx, sorted_indices=do_sort)
+        x = self.down_proj(
+            self.activation(x_up, x_gate),
+            idx,
+            sorted_indices=do_sort,
+        )
+        if do_sort:
+            x = sl._scatter_unsort(x, inv_order, indices.shape)
+        return x.squeeze(-2)
+
+    setattr(__call__, _MARKER, True)
+    cls.__call__ = __call__
+    logger.info(
+        "mira native MTP: SwitchGLU expert-gather sort threshold patch installed "
+        "(default %d, was 64)", _MOE_SORT_THRESHOLD
+    )

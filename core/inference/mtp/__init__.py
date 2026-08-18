@@ -62,6 +62,22 @@ def get_depth() -> int:
     return _DEPTH
 
 
+def set_moe_sort_threshold(n: int) -> None:
+    """Set the routed-index count at/above which the MoE expert gather is sorted
+    (coalesced). Default 16 lets the single-stream verify batch coalesce its expert
+    reads; 64 restores stock mlx-lm behavior. Read live per forward — a paired A/B
+    can flip it in one process. Requires apply() to have installed the patch."""
+    from . import qwen3_mtp
+
+    qwen3_mtp.set_moe_sort_threshold(n)
+
+
+def get_moe_sort_threshold() -> int:
+    from . import qwen3_mtp
+
+    return qwen3_mtp.get_moe_sort_threshold()
+
+
 def apply() -> bool:
     """Install the Qwen3.5/3.6 MTP model patches. Idempotent; safe to call more
     than once. Returns True if the patch is in place (or already was), False if
