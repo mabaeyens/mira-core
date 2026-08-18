@@ -9,8 +9,10 @@ import pytest
 from core.inference.mtp.mtp_batch import (  # import-guard: lazy-mlx (mtp_batch imports mlx only inside functions)
     _DepthController,
     _record_cycle,
+    _record_ngram,
     accept_prefix,
     emitted_tokens,
+    ngram_lookup,
     reset_stats,
     stats,
     truncate_at_stop,
@@ -254,3 +256,69 @@ def test_controller_expected_tokens_matches_the_formula():
     # E(2) = 1 + p0 + p0*p1 = 1 + 0.9 + 0.45
     assert ctl._expected_tokens(2) == pytest.approx(1 + 0.9 + 0.9 * 0.5)
     assert ctl._expected_tokens(0) == 1.0  # park emits exactly the correction
+
+
+# --- prompt-lookup n-gram extension (lever #3) ------------------------------
+
+def test_ngram_lookup_returns_continuation_of_most_recent_match():
+    # suffix [4,5,6] last occurred at index 3, followed by 7,8; take up to 2.
+    seq = [4, 5, 6, 4, 5, 6, 7, 8, 9]
+    # last 3 tokens are [7,8,9]; that trigram never recurs -> no match.
+    assert ngram_lookup(seq, 3, 2) == []
+    # build a case where the tail DOES recur: end with [4,5,6]
+    seq = [1, 4, 5, 6, 7, 8, 2, 4, 5, 6]
+    assert ngram_lookup(seq, 3, 4) == [7, 8, 2, 4]      # what followed the earlier [4,5,6]
+
+
+def test_ngram_lookup_prefers_nearest_earlier_occurrence():
+    # [1,2] occurs at 0 (->3) and at 4 (->9); the tail [1,2] should match the
+    # nearest earlier one at index 4, returning [9].
+    seq = [1, 2, 3, 0, 1, 2, 9, 0, 1, 2]
+    assert ngram_lookup(seq, 2, 1) == [9]
+
+
+def test_ngram_lookup_empty_when_no_match_or_degenerate():
+    assert ngram_lookup([1, 2, 3], 3, 2) == []          # suffix == whole seq, no earlier
+    assert ngram_lookup([1, 2, 3, 4], 0, 2) == []       # n <= 0
+    assert ngram_lookup([1, 2, 3, 4], 2, 0) == []       # max_tokens <= 0
+    assert ngram_lookup([], 3, 2) == []
+
+
+def test_ngram_lookup_truncates_to_max_tokens():
+    # suffix [7,8] recurs at index 0 with a long continuation; cap at 3.
+    seq = [7, 8, 1, 1, 1, 1, 7, 8]
+    assert ngram_lookup(seq, 2, 3) == [1, 1, 1]
+
+
+def test_record_ngram_counts_only_reachable_positions():
+    reset_stats()
+    # head chain fully accepted (m=2 == len(head)); 3 n-gram tokens, 2 accepted.
+    _record_ngram(head_drafts=[10, 11], ngram=[12, 13, 14], next_main=9, m=4)
+    ng = stats()["ngram"]
+    assert ng is not None
+    assert ng["appended"] == 3
+    assert ng["reachable"] == 2          # m - len(head) = 4 - 2
+    assert ng["accepted"] == 2
+    assert ng["accept_rate_reachable"] == pytest.approx(1.0)
+
+
+def test_record_ngram_unreachable_when_head_chain_rejected():
+    reset_stats()
+    # head chain broke early (m=1 < len(head)=2): n-gram never reached.
+    _record_ngram(head_drafts=[10, 11], ngram=[12, 13], next_main=9, m=1)
+    ng = stats()["ngram"]
+    assert ng["reachable"] == 0
+    assert ng["accepted"] == 0
+    assert ng["accept_rate_reachable"] is None
+
+
+def test_record_ngram_distinct_inflation_zero_for_context_repeats():
+    reset_stats()
+    # n-gram tokens duplicate tokens already in the verify window -> no new experts.
+    _record_ngram(head_drafts=[10, 11], ngram=[10, 11], next_main=9, m=2)
+    assert stats()["ngram"]["distinct_inflation"] == pytest.approx(0.0)
+
+
+def test_ngram_snapshot_none_until_a_match_is_recorded():
+    reset_stats()
+    assert stats()["ngram"] is None

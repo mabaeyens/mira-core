@@ -72,6 +72,50 @@ _PENALTY_AWARE_DRAFTS = os.environ.get(
 # Set MIRA_MLX_MTP_DRAFT_VOCAB=65536 &c. to enable and A/B tok/s vs accept.
 _DRAFT_VOCAB = int(os.environ.get("MIRA_MLX_MTP_DRAFT_VOCAB", "0") or "0")
 
+# Prompt-lookup n-gram draft extension (road-to-80 ledger lever #3). After the
+# MTP head drafts d1..dk, scan the token history for the current suffix and append
+# the tokens that FOLLOWED that suffix's most-recent earlier occurrence as extra
+# drafts into the SAME single verify forward. Properties that make it safe here:
+#   * free  — no head forward, no GPU: the draft slice budget is untouched, only
+#             the verify window widens (with tokens already present in context);
+#   * linear — appended after the head chain as one flat sequence, so the
+#             GatedDeltaNet recurrence verifies with no fork (the blocker that
+#             killed the draft tree);
+#   * lossless — the full-vocab backbone verify still decides every emitted token,
+#             so a wrong n-gram guess is simply rejected, never emitted.
+# The MoE-cost hypothesis (ledger #3): because the appended tokens are context
+# repeats, they route to experts near the verify window's existing load set, so
+# they inflate the expert union — the thing that made depth>1 lose on the MoE —
+# far less than fresh head drafts would. _NGRAM_STATS measures that inflation
+# directly. Default OFF: inert in prod, byte-identical to today. A probe knob.
+_NGRAM_DRAFT = os.environ.get("MIRA_MLX_MTP_NGRAM", "0").strip().lower() not in (
+    "0", "false", "no", "off", "",
+)
+_NGRAM_N = int(os.environ.get("MIRA_MLX_MTP_NGRAM_N", "3") or "3")        # match order
+_NGRAM_MAX = int(os.environ.get("MIRA_MLX_MTP_NGRAM_MAX", "4") or "4")    # max appended
+# Bound the backward scan to the last N tokens (0 = whole history). Prompt copies
+# (RAG quotes, code) can live anywhere in the prompt, so 0 matches best, but a
+# window caps the O(len) per-cycle host scan at long context if ever enabled live.
+_NGRAM_WINDOW = int(os.environ.get("MIRA_MLX_MTP_NGRAM_WINDOW", "0") or "0")
+
+
+def ngram_lookup(seq: Sequence[int], n: int, max_tokens: int) -> List[int]:
+    """Prompt-lookup drafting. Match the last ``n`` tokens of ``seq`` against the
+    most recent earlier occurrence and return up to ``max_tokens`` of the tokens
+    that followed it; empty when there is no match. Pure and host-side — the
+    backbone verify decides whether any returned token is actually emitted, so a
+    wrong guess costs only its share of one wider verify forward, never quality."""
+    L = len(seq)
+    if n <= 0 or max_tokens <= 0 or L <= n:
+        return []
+    suffix = list(seq[L - n:])
+    # Scan backwards for the most recent earlier occurrence whose continuation
+    # exists. i is a candidate window start; stop at the first (nearest) hit.
+    for i in range(L - n - 1, -1, -1):
+        if list(seq[i:i + n]) == suffix:
+            return list(seq[i + n:i + n + max_tokens])
+    return []
+
 
 # --------------------------------------------------------------------------- #
 # Accept-rate accumulator (spec §2: "accept-rate stats in /v1/stats").          #
@@ -128,6 +172,66 @@ def _record_cycle(drafts: Sequence[int], accepted: int, depth: int) -> None:
         dc[depth] += 1
 
 
+# Prompt-lookup n-gram probe counters (lever #3). Kept SEPARATE from _STATS so the
+# head accept_rate / depth_accept EMAs stay uncontaminated by n-gram positions —
+# the head chain and the retrieval chain are measured independently. Guarded by
+# the same lock, folded once per cycle that appended a match.
+_NGRAM_STATS: dict = {
+    "cycles_with_match": 0,   # cycles where a non-empty n-gram was appended
+    "appended": 0,            # total n-gram tokens appended into verify windows
+    "reachable": 0,           # n-gram positions actually reached (head fully accepted)
+    "accepted": 0,            # n-gram tokens the backbone confirmed (the free wins)
+    "inflation_sum": 0,       # Sum (distinct-with - distinct-without) verify-window tokens
+    "windows": 0,             # cycles counted into inflation_sum
+}
+
+
+def _record_ngram(head_drafts, ngram, next_main, m) -> None:
+    """Fold one cycle's n-gram extension into the probe counters. ``m`` is the
+    total accepted prefix over ``head_drafts + ngram``; n-gram positions were only
+    reachable if the whole head chain accepted (``m >= len(head_drafts)``)."""
+    kh = len(head_drafts)
+    reached = max(0, m - kh) if m >= kh else 0           # n-gram positions verified
+    accepted = max(0, m - kh)                            # == reached for a greedy prefix
+    # Expert-union proxy: distinct tokens in the verify window WITH vs WITHOUT the
+    # n-gram tail. The hypothesis is this delta stays small (n-gram = context
+    # repeats routing to already-loaded experts).
+    with_ng = len(set([next_main, *head_drafts, *ngram]))
+    without = len(set([next_main, *head_drafts]))
+    with _STATS_LOCK:
+        _NGRAM_STATS["cycles_with_match"] += 1
+        _NGRAM_STATS["appended"] += len(ngram)
+        _NGRAM_STATS["reachable"] += reached if m >= kh else 0
+        _NGRAM_STATS["accepted"] += accepted
+        _NGRAM_STATS["inflation_sum"] += with_ng - without
+        _NGRAM_STATS["windows"] += 1
+
+
+def _ngram_snapshot() -> Optional[dict]:
+    """Probe readout for /v1/stats; None until an n-gram was ever appended."""
+    with _STATS_LOCK:
+        if _NGRAM_STATS["cycles_with_match"] == 0:
+            return None
+        appended = _NGRAM_STATS["appended"]
+        reachable = _NGRAM_STATS["reachable"]
+        accepted = _NGRAM_STATS["accepted"]
+        windows = _NGRAM_STATS["windows"]
+        infl = _NGRAM_STATS["inflation_sum"]
+        cwm = _NGRAM_STATS["cycles_with_match"]
+    return {
+        "cycles_with_match": cwm,
+        "appended": appended,
+        "reachable": reachable,
+        "accepted": accepted,
+        # Accept rate over positions the verify actually reached — the honest
+        # n-gram accept, comparable to the head's depth_accept_rate.
+        "accept_rate_reachable": round(accepted / reachable, 3) if reachable else None,
+        # Mean extra distinct tokens the n-gram tail added to the verify window
+        # (expert-union inflation proxy). Near 0 supports the ledger #3 hypothesis.
+        "distinct_inflation": round(infl / windows, 3) if windows else None,
+    }
+
+
 def stats() -> dict:
     """Lifetime MTP accept-rate snapshot for GET /v1/stats. Returns zeroed fields
     (accept_rate None) if MTP has not run this process."""
@@ -165,6 +269,9 @@ def stats() -> dict:
         # Sequences that globally handed back to stock decode (park-dominated, MTP
         # a net loss). Nonzero on the compute-bound MoE, ~0 on dense.
         "handbacks": handbacks,
+        # Prompt-lookup n-gram extension probe (lever #3). None unless enabled and
+        # a match was appended; head fields above stay n-gram-free by design.
+        "ngram": _ngram_snapshot(),
     }
 
 
@@ -175,6 +282,8 @@ def reset_stats() -> None:
         _STATS["depth_drafted"] = []
         _STATS["depth_accepted"] = []
         _STATS["depth_chosen"] = []
+        _NGRAM_STATS.update(cycles_with_match=0, appended=0, reachable=0,
+                            accepted=0, inflation_sum=0, windows=0)
 
 
 # --------------------------------------------------------------------------- #
@@ -685,12 +794,22 @@ def _make_mtp_generation_class(BaseGeneration):
             where ``committed == emitted`` and ``m`` counts accepted drafts."""
             pure = self._mtp_pure_procs()
             k = len(drafts)
-            ctx = list(self.tokens[0])          # ends with next_main
+            # Only materialize the context the pure processors read. With no pure
+            # procs (penalties off) the per-position argmax is context-free, so the
+            # O(context) marshalling is skipped entirely. When they are present,
+            # build the mx.array ONCE and grow it by one accepted token per position
+            # with a concat -- instead of re-marshalling the whole Python token list
+            # (a fresh mx.array(ctx)) every position. Same values in the same order,
+            # so the processed rows and the committed tokens are byte-identical to
+            # the old path; cost drops from O(context)*(k+1) to O(context)+k*O(1).
+            ctx_arr = None
+            if pure:
+                base = list(self.tokens[0])     # ends with next_main
+                ctx_arr = mx.array(base, U) if base else mx.array([], U)
             emitted, emit_lp = [], []
             for j in range(k + 1):
                 row = vrows[j:j + 1]            # (1, V)
                 if pure:
-                    ctx_arr = mx.array(ctx, U) if ctx else mx.array([], U)
                     for proc in pure:
                         row = proc(ctx_arr, row)
                 lp = (row - mx.logsumexp(row, axis=-1, keepdims=True))[0]
@@ -698,7 +817,8 @@ def _make_mtp_generation_class(BaseGeneration):
                 emitted.append(tgt)
                 emit_lp.append(lp)
                 if j < k and drafts[j] == tgt:
-                    ctx.append(tgt)
+                    if pure:
+                        ctx_arr = mx.concatenate([ctx_arr, mx.array([tgt], U)])
                     continue
                 return j, emitted, emit_lp      # j drafts accepted; emitted is committed
             return k, emitted, emit_lp          # all drafts accepted + bonus token
@@ -880,8 +1000,13 @@ def _make_mtp_generation_class(BaseGeneration):
             # it will be judged against raises accept rate on the MoE without
             # changing the emitted token. dctx is the token history, kept separate
             # from the head's recurrent hidden state.
-            dctx = list(self.tokens[0])
-            if _DRAFT_VOCAB:
+            # Only build the draft context when a penalty-aware draft will actually
+            # read it: _mtp_draft_token consumes ctx only when penalty-aware drafts
+            # are on AND pure procs exist. Otherwise skip the O(context) list copy
+            # and the reduced-vocab filter -- the draft is plain argmax either way.
+            need_dctx = _PENALTY_AWARE_DRAFTS and bool(self._mtp_pure_procs())
+            dctx = list(self.tokens[0]) if need_dctx else None
+            if need_dctx and _DRAFT_VOCAB:
                 # A reduced-vocab draft row is only _DRAFT_VOCAB wide; the pure
                 # penalty procs gather/scatter at ctx-token-id columns, so any id
                 # >= width would read/write out of bounds (MLX does not bounds-
@@ -899,7 +1024,8 @@ def _make_mtp_generation_class(BaseGeneration):
             drafts = [d]
             h = hh[:, -1:, :]
             for _ in range(1, depth):
-                dctx.append(d)
+                if need_dctx:
+                    dctx.append(d)
                 lg, hh = model.mtp_forward(
                     h, mx.array([[d]], U), hc, return_hidden=True, logits_keep=1,
                     draft_vocab=_DRAFT_VOCAB,
@@ -912,18 +1038,37 @@ def _make_mtp_generation_class(BaseGeneration):
                 for kc in hc:
                     kc.trim(spec)
 
-            # --- verify: ONE backbone forward over [next_main, d1..dk] ---------
-            k = len(drafts)
-            inp = mx.array([next_main, *drafts], U)[None]
+            # --- prompt-lookup n-gram extension (lever #3, off by default) ------
+            # Append context-retrieved continuation tokens AFTER the head chain.
+            # They cost no head forward and no GPU draft: the head cache is
+            # untouched (no mtp_forward for them, so the trim above stands), only
+            # the verify window widens. Losslessness is unchanged — the full-vocab
+            # verify still decides every emit, so a wrong n-gram token is rejected.
+            ngram: List[int] = []
+            if _NGRAM_DRAFT:
+                hist = list(self.tokens[0])          # ...context.., next_main
+                scan = hist if _NGRAM_WINDOW <= 0 else hist[-_NGRAM_WINDOW:]
+                ngram = ngram_lookup(scan + drafts, _NGRAM_N, _NGRAM_MAX)
+            all_drafts = drafts + ngram
+
+            # --- verify: ONE backbone forward over [next_main, d1..dk, g1..gj] --
+            k = len(all_drafts)
+            inp = mx.array([next_main, *all_drafts], U)[None]
             vlogits, vhidden = model(
                 inp, cache=self.prompt_cache, return_hidden=True, n_confirmed=1,
             )
             # Greedy verify with the pure logits processors replayed per position
             # (repetition penalty &c.), so the accepted prefix and the correction
-            # match stock greedy-with-penalties decode. emitted == drafts[:m] +
+            # match stock greedy-with-penalties decode. emitted == all_drafts[:m] +
             # [correction]; with no processors this reduces to the old argmax path.
-            m, emitted, emit_lp = self._mtp_resolve_greedy(vlogits[0], drafts)
-            _record_cycle(drafts, m, depth)
+            m, emitted, emit_lp = self._mtp_resolve_greedy(vlogits[0], all_drafts)
+            # Head accounting stays n-gram-free: the controller + headline accept_rate
+            # see only the head chain (m capped at the head length); the retrieval
+            # chain is measured on its own in _NGRAM_STATS.
+            m_head = min(m, len(drafts))
+            _record_cycle(drafts, m_head, depth)
+            if ngram:
+                _record_ngram(drafts, ngram, next_main, m)
 
             # --- roll the hybrid backbone cache back to the accepted length ---
             if m < k:
@@ -942,7 +1087,9 @@ def _make_mtp_generation_class(BaseGeneration):
             self._mtp_committed = emitted
             self._mtp_frontier = hn(vhidden[:, : m + 1, :])
             self._mtp_next_main = emitted[-1]
-            return k, m
+            # Report the HEAD chain to the controller (elapsed already reflects the
+            # true wider verify); n-gram positions must not enter its per-depth EMAs.
+            return len(drafts), m_head
 
         def _mtp_park_cycle(self, hn, next_main, committed, hc):
             """Depth-0 park: no speculation. This is the ``m=0`` special case of a
