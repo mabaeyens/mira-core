@@ -87,3 +87,20 @@ This is "report batch size with the scores," made mandatory.
   first, per the bench protocol).
 - Judge scoring is offline against stored jsonl (`bench_eval.py`), so it is free to
   repeat and never on the critical path.
+
+## Validation log
+
+**2026-08-18 — proxy vs gate, 12 identical items (sub100 stratified prefix), git 7a93d02.**
+Proxy (thinking off) and gate (thinking on) on the same 12 questions. On every one of the
+8 items the gate actually completed, proxy letter == gate letter — **8/8 letter agreement**,
+including a shared wrong pick. So thinking did not change the final choice here, and the
+no-think proxy faithfully reproduces the gate: it is trusted to rank levers. Two structural
+facts fell out: the gate is **120× slower** (0.5 vs 60 q/min), and **4 of 12** thinking-on
+items stalled the engine (HTTP 504, RAM pressure on 32GB) and returned no answer — so the
+gate cannot be run clean on this machine and belongs on a higher-RAM host. This is why the
+runner now records stalls/errors as apparatus failures (`accuracy_completed`), distinct from
+wrong answers. Caveat: 8 completed items, first-prefix only — a fuller proxy↔gate rank
+validation across ≥2 real levers is still owed once the gate has a machine it fits on.
+
+Proxy baseline (canonical): **45.0% on n=100** thinking-off, 1.24 min, 0 degenerate
+(fixture `gpqa_diamond_sub100.jsonl` sha 35be7d860593).

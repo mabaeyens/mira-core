@@ -125,31 +125,42 @@ def build_fixture(n: int, seed: int) -> Path:
         d = max(quotas, key=lambda d: (quotas[d] - alloc[d], len(buckets[d])))
         alloc[d] += 1
 
+    # round-robin interleave across domains so ANY prefix (e.g. --limit 12) stays
+    # stratified, not clustered by domain.
+    selected = {d: buckets[d][: alloc[d]] for d in sorted(buckets)}
+    ordered: list[tuple[str, dict]] = []
+    rank = 0
+    while any(rank < len(selected[d]) for d in selected):
+        for d in sorted(selected):
+            if rank < len(selected[d]):
+                ordered.append((d, selected[d][rank]))
+        rank += 1
+
     items = []
-    idx = 0
-    for dom in sorted(buckets):
-        for r in buckets[dom][: alloc[dom]]:
-            opts = [
-                r["Correct Answer"].strip(),
-                r["Incorrect Answer 1"].strip(),
-                r["Incorrect Answer 2"].strip(),
-                r["Incorrect Answer 3"].strip(),
-            ]
-            order = list(range(4))
-            random.Random(seed + 100000 + idx).shuffle(order)
-            shuffled = [opts[i] for i in order]
-            gold = "ABCD"[order.index(0)]  # where the correct answer landed
-            items.append(
-                {
-                    "id": idx,
-                    "domain": dom,
-                    "subdomain": r.get("Subdomain", ""),
-                    "question": r["Question"].strip(),
-                    "options": shuffled,
-                    "gold": gold,
-                }
-            )
-            idx += 1
+    for idx, (dom, r) in enumerate(ordered):
+        opts = [
+            r["Correct Answer"].strip(),
+            r["Incorrect Answer 1"].strip(),
+            r["Incorrect Answer 2"].strip(),
+            r["Incorrect Answer 3"].strip(),
+        ]
+        # option order seeded by the question itself, so it is stable no matter where
+        # the item lands in the interleaved sequence.
+        qseed = seed + int.from_bytes(hashlib.sha256(r["Question"].encode()).digest()[:6], "big")
+        order = list(range(4))
+        random.Random(qseed).shuffle(order)
+        shuffled = [opts[i] for i in order]
+        gold = "ABCD"[order.index(0)]  # where the correct answer landed
+        items.append(
+            {
+                "id": idx,
+                "domain": dom,
+                "subdomain": r.get("Subdomain", ""),
+                "question": r["Question"].strip(),
+                "options": shuffled,
+                "gold": gold,
+            }
+        )
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         for it in items:
@@ -223,7 +234,21 @@ async def ask(
     r = await client.post(
         f"{base_url}/v1/chat/completions", json=payload, headers=headers
     )
-    r.raise_for_status()
+    sec = round(time.perf_counter() - t0, 2)
+    base = {"id": item["id"], "domain": item["domain"], "gold": item["gold"], "sec": sec}
+    if r.status_code != 200:
+        # A stall/wedge (504) or any non-200 is an APPARATUS failure, not a wrong
+        # answer — record it separately so it never silently scores as incorrect.
+        detail = ""
+        try:
+            detail = str(r.json().get("detail", ""))[:200]
+        except Exception:
+            detail = r.text[:200]
+        stalled = r.status_code in (503, 504)
+        return {**base, "picked": None, "correct": False, "finish_reason": None,
+                "empty": True, "no_letter": True, "truncated": False,
+                "errored": True, "stalled": stalled, "http_status": r.status_code,
+                "err": f"HTTP {r.status_code}: {detail}", "answer": ""}
     body = r.json()
     choice = body["choices"][0]
     msg = choice.get("message", {})
@@ -231,16 +256,15 @@ async def ask(
     finish = choice.get("finish_reason")
     picked = extract_letter(answer)
     return {
-        "id": item["id"],
-        "domain": item["domain"],
-        "gold": item["gold"],
+        **base,
         "picked": picked,
         "correct": picked == item["gold"],
         "finish_reason": finish,
-        "sec": round(time.perf_counter() - t0, 2),
         "empty": not answer.strip(),
         "no_letter": picked is None,
         "truncated": finish == "length",
+        "errored": False,
+        "stalled": False,
         "answer": answer,
     }
 
@@ -275,6 +299,7 @@ async def run(items, base_url, model, think, max_tokens, concurrency, api_key):
                         "id": item["id"], "gold": item["gold"], "picked": None,
                         "correct": False, "err": f"{type(e).__name__}: {e}",
                         "empty": True, "no_letter": True, "truncated": False,
+                        "errored": True, "stalled": False,
                         "domain": item["domain"], "answer": "",
                     }
                 done = sum(1 for r in results if r is not None)
@@ -318,7 +343,10 @@ def main():
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--proxy", action="store_true", help="fast ranking apparatus (default): thinking OFF, subset, high concurrency")
     mode.add_argument("--gate", action="store_true", help="ship apparatus: thinking ON, full 198, low concurrency")
-    ap.add_argument("--n", type=int, default=100, help="proxy subset size (ignored by --gate, which uses all 198)")
+    ap.add_argument("--n", type=int, default=100, help="fixture subset size (proxy; gate defaults to full 198)")
+    ap.add_argument("--full", action="store_true", help="use all 198 Diamond items regardless of mode")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="cap items to the first N of the fixed order; pair --proxy/--gate with the same --limit to validate")
     ap.add_argument("--concurrency", type=int, default=None, help="override effective batch (default 8 proxy / 2 gate)")
     ap.add_argument("--max-tokens", type=int, default=None, help="override (default 16 proxy / 20480 gate)")
     ap.add_argument("--base-url", default=DEFAULT_BASE_URL)
@@ -342,15 +370,20 @@ def main():
     if fg < RAM_FLOOR_GB + 1:
         sys.exit(f"ABORT: only {fg:.1f} GB free before start")
 
-    # fixture
-    if is_gate:
+    # item source. --full (or a bare --gate, the ship default) uses all 198 in fixed
+    # seeded order; otherwise the sub-N fixture. --limit caps how many are actually run,
+    # from the front of that fixed order — so `--proxy --limit K` and `--gate --limit K`
+    # score the IDENTICAL K items (the proxy-vs-gate validation of the contract).
+    use_full = args.full or (is_gate and args.limit is None and args.n == 100)
+    if use_full:
         rows = _load_diamond()
         items = []
         for i, r in enumerate(rows):
             opts = [r["Correct Answer"].strip(), r["Incorrect Answer 1"].strip(),
                     r["Incorrect Answer 2"].strip(), r["Incorrect Answer 3"].strip()]
+            qseed = args.seed + int.from_bytes(hashlib.sha256(r["Question"].encode()).digest()[:6], "big")
             order = list(range(4))
-            random.Random(args.seed + 100000 + i).shuffle(order)
+            random.Random(qseed).shuffle(order)
             gold = "ABCD"[order.index(0)]
             items.append({"id": i, "domain": r.get(DOMAIN_COL, ""), "subdomain": r.get("Subdomain", ""),
                           "question": r["Question"].strip(), "options": [opts[j] for j in order], "gold": gold})
@@ -359,6 +392,9 @@ def main():
         fpath = build_fixture(args.n, args.seed)
         items = [json.loads(l) for l in open(fpath)]
         subset_id, subset_hash = fpath.name, fixture_sha(fpath)
+    if args.limit is not None:
+        items = items[: args.limit]
+        subset_id = f"{subset_id}[:{args.limit}]"
 
     model = args.model or probe_model(args.base_url, args.api_key)
 
@@ -390,6 +426,9 @@ def main():
 
     n = len(results)
     correct = sum(1 for r in results if r["correct"])
+    errored = sum(1 for r in results if r.get("errored"))
+    stalled = sum(1 for r in results if r.get("stalled"))
+    completed = n - errored  # answered without an apparatus failure
     by_dom: dict[str, list[int]] = {}
     for r in results:
         b = by_dom.setdefault(r["domain"], [0, 0])
@@ -399,7 +438,11 @@ def main():
         "apparatus": apparatus,
         "n": n,
         "correct": correct,
-        "accuracy": round(correct / n, 4),
+        "accuracy": round(correct / n, 4),  # raw: apparatus failures count as wrong
+        "completed": completed,
+        "accuracy_completed": round(correct / completed, 4) if completed else None,  # excludes stalls/errors
+        "errored_turns": errored,
+        "stalled_turns": stalled,
         "empty_turns": sum(1 for r in results if r.get("empty")),
         "no_letter_turns": sum(1 for r in results if r.get("no_letter")),
         "truncated_turns": sum(1 for r in results if r.get("truncated")),
@@ -422,12 +465,18 @@ def main():
     print("\n=== SUMMARY ===")
     print(json.dumps({k: v for k, v in summary.items() if k != "apparatus"}, indent=2))
     print(f"\nraw → {out}")
+    acc_c = summary["accuracy_completed"]
     print(
         f"accuracy {summary['accuracy']:.1%} on n={n} "
         f"({apparatus['mode']}, {elapsed/60:.1f} min, {summary['throughput_q_per_min']} q/min). "
-        "Behavioral flags: "
-        f"empty={summary['empty_turns']} no_letter={summary['no_letter_turns']} truncated={summary['truncated_turns']}."
+        + (f"completed {completed}/{n} → {acc_c:.1%} on completed. " if errored else "")
+        + "Flags: "
+        f"stalled={stalled} errored={errored} empty={summary['empty_turns']} "
+        f"no_letter={summary['no_letter_turns']} truncated={summary['truncated_turns']}."
     )
+    if errored:
+        print("Apparatus failures present (stalls/errors) — they are NOT wrong answers; "
+              "read accuracy_completed and fix the apparatus before trusting the number.")
     if not is_gate:
         print("Proxy number — trust the DELTA vs another proxy run, not this absolute (docs/eval-contract.md).")
 
