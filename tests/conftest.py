@@ -26,6 +26,17 @@ if "MIRA_DATA_DIR" not in os.environ:
     os.environ["MIRA_DATA_DIR"] = _TEST_DATA_DIR
     atexit.register(shutil.rmtree, _TEST_DATA_DIR, True)
 
+# Neutralize the developer's local mira.yaml, same principle as the auth-token
+# fixture below and with the same import-time constraint: core.config computes
+# _cfg from mira.yaml at import, so a test that asserts the *unconfigured* posture
+# (e.g. test_generation_guard's "nothing is sent when nothing is configured")
+# fails locally the moment mira.yaml sets repetition_penalty/max_thinking_tokens,
+# while passing on CI where no mira.yaml exists. MIRA_CONFIG points the loader at a
+# file that yields an empty config, so the whole suite sees code-defaults — which
+# by design match mira.yaml.example. setdefault, not assignment: the bench sets an
+# explicit MIRA_CONFIG and must still win.
+os.environ.setdefault("MIRA_CONFIG", "/dev/null")
+
 # Allow imports from the project root regardless of where pytest is invoked from
 sys.path.insert(0, str(Path(__file__).parent.parent))
 

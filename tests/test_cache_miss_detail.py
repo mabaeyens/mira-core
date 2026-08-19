@@ -49,6 +49,14 @@ def _entry():
     return [_FakeCacheArray()]
 
 
+# These tests store an entry and then exercise the divergence diagnostic against
+# it. On a non-trimmable cache `insert_cache` now DROPS any non-"system" entry
+# (it could only ever be reused via the dead trim path — see
+# DiskBackedPromptCache.insert_cache), so the setup inserts below are typed
+# "system": that is the class kept on a non-trimmable model and reused via the
+# whole-prefix path, which is exactly the path these tests pin.
+
+
 @pytest.fixture
 def cache():
     # No disk store: this exercises the in-memory path, which is where the
@@ -71,7 +79,7 @@ def _field(msg, name):
 def test_it_reports_the_divergence_index(cache, caplog):
     """The Q10 shape: a stored entry shares a long prefix and then differs."""
     stored = list(range(1000))
-    cache.insert_cache(MODEL, stored, _entry())
+    cache.insert_cache(MODEL, stored, _entry(), cache_type="system")
 
     query = list(range(900)) + [99999] + list(range(901, 1100))
     with caplog.at_level(logging.INFO, logger="core.inference.disk_prompt_cache"):
@@ -87,7 +95,7 @@ def test_a_whole_prefix_entry_is_a_hit_and_needs_no_explanation(cache, caplog):
     """The control. If this ever misses, the diagnostic above is measuring a
     broken cache rather than a diverging prompt."""
     stored = list(range(1000))
-    cache.insert_cache(MODEL, stored, _entry())
+    cache.insert_cache(MODEL, stored, _entry(), cache_type="system")
 
     with caplog.at_level(logging.INFO, logger="core.inference.disk_prompt_cache"):
         got, rest = cache.fetch_nearest_cache(MODEL, stored + [1000, 1001])
@@ -101,7 +109,7 @@ def test_one_differing_token_at_the_end_costs_the_whole_entry(cache, caplog):
     """This is the behaviour that makes Q10 expensive: divergence in the last
     token of a 1000-token entry reuses nothing, not 999 tokens."""
     stored = list(range(1000))
-    cache.insert_cache(MODEL, stored, _entry())
+    cache.insert_cache(MODEL, stored, _entry(), cache_type="system")
 
     query = list(range(999)) + [77777] + [1000]
     with caplog.at_level(logging.INFO, logger="core.inference.disk_prompt_cache"):
