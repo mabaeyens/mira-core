@@ -34,6 +34,9 @@ Usage:
   MLX_ENABLE_TF32=0 python scripts/eval_gpqa_fast.py --proxy --tag with-lever
   # the ship decision, once a lever wins the proxy:
   MLX_ENABLE_TF32=0 python scripts/eval_gpqa_fast.py --gate --tag with-lever
+  # rank a LONG-CONTEXT lever (kv_bits, kv_group_size, prefill_step): pad each
+  # question to a long prompt so the lever actually bites, concurrency forced to 1:
+  MLX_ENABLE_TF32=0 python scripts/eval_gpqa_fast.py --proxy --context-pad 32000 --n 40 --tag kv4
 
 On a 32GB Mac the served model holds ~20GB wired, leaving ~4GB, and the engine's
 working set grows ~16MB per request. A run that starts from an engine that has
@@ -172,17 +175,75 @@ def fixture_sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
 
 
+# ─── Long-context padding ─────────────────────────────────────────────────────
+# A short GPQA prompt cannot rank a long-context lever (kv_bits, kv_group_size,
+# prefill_step): quant error accrues over the sequence and is negligible at ~200
+# tokens, so every long-ctx lever returns a null delta on the bare proxy — not
+# because it is safe, but because the proxy never enters the regime where it acts.
+# --context-pad injects a large neutral passage BETWEEN the question and the
+# answer instruction, forcing the model to attend back across a long (quantized)
+# KV span to the question. The passage is deterministic per (seed, item id) so
+# kv4 and kv8 runs see byte-identical prompts. Extraction runs on the model's
+# OUTPUT, never the prompt, so filler content can never pollute the score.
+
+CHARS_PER_TOKEN = 6.4  # measured for _FILLER_WORDS against the Qwen3.6 tokenizer (common words
+                       # tokenize ~1 token each); achieved prompt_tokens is recorded from usage
+_FILLER_WORDS = (
+    "region river valley meadow harbor village orchard cabinet lantern compass "
+    "signal harvest merchant journey pattern surface distance measure balance "
+    "current season weather timber granite meadow prairie current custom market "
+    "council ledger parcel courier notice matter subject ordinary quiet distant "
+    "steady gentle narrow modest common plain sober careful patient slower older "
+    "toward across beside beyond within around before after during between under"
+).split()
+
+
+def make_filler(target_tokens: int, seed: int) -> str:
+    """Deterministic neutral prose of ~target_tokens tokens, seeded so it is stable.
+
+    Built to a CHARACTER budget (target_tokens × CHARS_PER_TOKEN) and biased to
+    undershoot: overshooting the requested context risks blowing past the served
+    window (truncation/rejection) or the Metal ceiling (OOM). The achieved length
+    is recorded from usage.prompt_tokens, so the operator always sees the real number.
+    """
+    rng = random.Random(seed)
+    char_budget = int(target_tokens * CHARS_PER_TOKEN)
+    out, sent, length = [], [], 0
+    step = rng.randint(8, 16)
+    while length < char_budget:
+        w = rng.choice(_FILLER_WORDS)
+        sent.append(w)
+        length += len(w) + 1
+        if len(sent) >= step:
+            sent[0] = sent[0].capitalize()
+            out.append(" ".join(sent) + ".")
+            sent, step = [], rng.randint(8, 16)
+    if sent:
+        sent[0] = sent[0].capitalize()
+        out.append(" ".join(sent) + ".")
+    return " ".join(out)
+
+
 # ─── Prompt + scoring ─────────────────────────────────────────────────────────
 
-def build_messages(item: dict) -> list[dict]:
+def build_messages(item: dict, context_pad: int = 0, seed: int = 0) -> list[dict]:
     labels = "ABCD"
     choices = "\n".join(f"({labels[i]}) {opt}" for i, opt in enumerate(item["options"]))
-    user = (
-        f"{item['question']}\n\n"
-        f"{choices}\n\n"
+    ask_line = (
         "What is the correct answer? Reply with only a single letter: A, B, C, or D. "
         "Do not explain."
     )
+    if context_pad and context_pad > 0:
+        filler = make_filler(context_pad, seed ^ item["id"])
+        user = (
+            "Below is a multiple-choice question, followed by an unrelated passage. "
+            "Read the question, then ignore the passage, and answer at the end.\n\n"
+            f"QUESTION:\n{item['question']}\n\n{choices}\n\n"
+            f"PASSAGE (irrelevant, ignore it):\n{filler}\n\n"
+            f"Now recall the multiple-choice QUESTION above. {ask_line}"
+        )
+    else:
+        user = f"{item['question']}\n\n{choices}\n\n{ask_line}"
     return [{"role": "user", "content": user}]
 
 
@@ -219,10 +280,12 @@ async def ask(
     think: bool,
     max_tokens: int,
     api_key: str,
+    context_pad: int = 0,
+    seed: int = 0,
 ) -> dict:
     payload = {
         "model": model,
-        "messages": build_messages(item),
+        "messages": build_messages(item, context_pad, seed),
         "max_tokens": max_tokens,
         "temperature": 0.0,
         "chat_template_kwargs": {"enable_thinking": think},
@@ -248,6 +311,7 @@ async def ask(
         return {**base, "picked": None, "correct": False, "finish_reason": None,
                 "empty": True, "no_letter": True, "truncated": False,
                 "errored": True, "stalled": stalled, "http_status": r.status_code,
+                "prompt_tokens": None,
                 "err": f"HTTP {r.status_code}: {detail}", "answer": ""}
     body = r.json()
     choice = body["choices"][0]
@@ -255,6 +319,7 @@ async def ask(
     answer = msg.get("content", "") or ""
     finish = choice.get("finish_reason")
     picked = extract_letter(answer)
+    prompt_tokens = (body.get("usage") or {}).get("prompt_tokens")
     return {
         **base,
         "picked": picked,
@@ -265,19 +330,22 @@ async def ask(
         "truncated": finish == "length",
         "errored": False,
         "stalled": False,
+        "prompt_tokens": prompt_tokens,
         "answer": answer,
     }
 
 
-async def run(items, base_url, model, think, max_tokens, concurrency, api_key):
+async def run(items, base_url, model, think, max_tokens, concurrency, api_key,
+              context_pad=0, seed=0):
     sem = asyncio.Semaphore(concurrency)
     results: list[dict | None] = [None] * len(items)
-    aborted = {"flag": False}
+    aborted = {"flag": False, "fired": False}
 
     async def watchdog():
         while not aborted["flag"]:
             if free_gb() < RAM_FLOOR_GB:
                 aborted["flag"] = True
+                aborted["fired"] = True
                 print(f"\nABORT: free memory below {RAM_FLOOR_GB} GB floor", file=sys.stderr)
                 return
             await asyncio.sleep(2)
@@ -292,14 +360,15 @@ async def run(items, base_url, model, think, max_tokens, concurrency, api_key):
                     return
                 try:
                     results[i] = await ask(
-                        client, base_url, model, item, think, max_tokens, api_key
+                        client, base_url, model, item, think, max_tokens, api_key,
+                        context_pad, seed,
                     )
                 except Exception as e:  # noqa: BLE001 — record, keep the batch going
                     results[i] = {
                         "id": item["id"], "gold": item["gold"], "picked": None,
                         "correct": False, "err": f"{type(e).__name__}: {e}",
                         "empty": True, "no_letter": True, "truncated": False,
-                        "errored": True, "stalled": False,
+                        "errored": True, "stalled": False, "prompt_tokens": None,
                         "domain": item["domain"], "answer": "",
                     }
                 done = sum(1 for r in results if r is not None)
@@ -311,9 +380,12 @@ async def run(items, base_url, model, think, max_tokens, concurrency, api_key):
         aborted["flag"] = True
         await wd
     print()
-    if any(r is None for r in results):
-        raise RuntimeError("run aborted before completion (RAM watchdog) — no verdict")
-    return results
+    # A watchdog abort no longer discards the completed work: keep whatever finished
+    # and flag the run inconclusive. On a RAM-starved host (32GB, long-context pad) a
+    # near-complete batch is still worth its partial data, provided it is never treated
+    # as a ship-grade number — the caller stamps aborted=True on the summary.
+    done_results = [r for r in results if r is not None]
+    return done_results, aborted["fired"]
 
 
 # ─── Apparatus ────────────────────────────────────────────────────────────────
@@ -347,7 +419,12 @@ def main():
     ap.add_argument("--full", action="store_true", help="use all 198 Diamond items regardless of mode")
     ap.add_argument("--limit", type=int, default=None,
                     help="cap items to the first N of the fixed order; pair --proxy/--gate with the same --limit to validate")
-    ap.add_argument("--concurrency", type=int, default=None, help="override effective batch (default 8 proxy / 2 gate)")
+    ap.add_argument("--context-pad", type=int, default=0,
+                    help="target total prompt tokens: inject a neutral passage between the "
+                         "question and the answer so long-ctx levers (kv_bits, kv_group_size, "
+                         "prefill_step) actually bite. Forces concurrency to 1 by default (a 32k "
+                         "prefill per request; several at once OOM a 32GB Mac). 0 = off (short proxy).")
+    ap.add_argument("--concurrency", type=int, default=None, help="override effective batch (default 8 proxy / 2 gate / 1 when --context-pad)")
     ap.add_argument("--max-tokens", type=int, default=None, help="override (default 16 proxy / 20480 gate)")
     ap.add_argument("--base-url", default=DEFAULT_BASE_URL)
     ap.add_argument("--model", default=None, help="default: probe /v1/models")
@@ -359,7 +436,16 @@ def main():
 
     is_gate = args.gate
     think = is_gate
-    concurrency = args.concurrency if args.concurrency is not None else (2 if is_gate else 8)
+    padded = args.context_pad and args.context_pad > 0
+    if args.concurrency is not None:
+        concurrency = args.concurrency
+    elif padded:
+        concurrency = 1  # a padded prefill is ~all the RAM headroom; don't stack them
+    else:
+        concurrency = 2 if is_gate else 8
+    if padded and concurrency > 2:
+        print(f"WARNING: --context-pad with concurrency={concurrency}: several long-context "
+              "prefills at once can OOM a 32GB Mac. The watchdog will abort if it must.")
     # proxy: the letter-only prompt answers in ~1 token, so a tiny cap keeps it fast;
     # gate: thinking is on and counts against the cap, so it needs real room.
     max_tokens = args.max_tokens if args.max_tokens is not None else (20480 if is_gate else 16)
@@ -405,6 +491,7 @@ def main():
         "think": think,
         "concurrency": concurrency,
         "max_tokens": max_tokens,
+        "context_pad": args.context_pad,
         "temperature": 0.0,
         "mlx_enable_tf32": os.environ.get("MLX_ENABLE_TF32", "unset"),
         "subset_id": subset_id,
@@ -421,8 +508,14 @@ def main():
         print("WARNING: MLX_ENABLE_TF32 is not 0 — the contract mandates TF32 off for reproducibility.")
 
     t0 = time.time()
-    results = asyncio.run(run(items, args.base_url, model, think, max_tokens, concurrency, args.api_key))
+    results, aborted = asyncio.run(run(items, args.base_url, model, think, max_tokens, concurrency,
+                                       args.api_key, args.context_pad, args.seed))
     elapsed = time.time() - t0
+    if aborted:
+        print(f"WATCHDOG ABORT: {len(results)}/{len(items)} items completed before the RAM floor. "
+              "Partial results below are INCONCLUSIVE (never a ship number).", file=sys.stderr)
+    if not results:
+        sys.exit("No items completed — nothing to report.")
 
     n = len(results)
     correct = sum(1 for r in results if r["correct"])
@@ -434,10 +527,20 @@ def main():
         b = by_dom.setdefault(r["domain"], [0, 0])
         b[1] += 1
         b[0] += int(r["correct"])
+    ptoks = sorted(r["prompt_tokens"] for r in results if r.get("prompt_tokens"))
+    ptok_stats = None
+    if ptoks:
+        ptok_stats = {
+            "min": ptoks[0], "median": ptoks[len(ptoks) // 2], "max": ptoks[-1],
+            "mean": round(sum(ptoks) / len(ptoks)),
+        }
     summary = {
         "apparatus": apparatus,
+        "aborted": aborted,  # True = RAM watchdog fired; n < requested, treat as inconclusive
+        "requested_n": len(items),
         "n": n,
         "correct": correct,
+        "prompt_tokens": ptok_stats,  # achieved context length (from usage) when --context-pad
         "accuracy": round(correct / n, 4),  # raw: apparatus failures count as wrong
         "completed": completed,
         "accuracy_completed": round(correct / completed, 4) if completed else None,  # excludes stalls/errors

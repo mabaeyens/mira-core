@@ -170,6 +170,14 @@ def start_mira_mlx(model: str = MIRA_MLX_MODEL) -> None:
         model, kv_bits=MIRA_MLX_KV_BITS, kv_group_size=MIRA_MLX_KV_GROUP_SIZE,
         resident_expert_fraction=resident_expert_fraction,
     )
+    # Escape hatch (mainly for RAM-starved long-context benching): the in-memory
+    # prompt-cache pool is never reused on Qwen3.6 (ArraysCache is not trimmable),
+    # yet it still holds up to the derived budget (~4GB on a 32GB Mac) and starves
+    # the prefill transient. MIRA_MLX_PROMPT_CACHE_MAX_BYTES overrides the derived
+    # value; 0 disables the pool. Unset in normal operation.
+    _pc_override = os.environ.get("MIRA_MLX_PROMPT_CACHE_MAX_BYTES")
+    if _pc_override is not None:
+        prompt_cache_max_bytes = int(_pc_override)
     context_window = hardware.derive_context_window(
         model,
         requested_context=MIRA_MLX_CONTEXT,
