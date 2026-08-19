@@ -2073,9 +2073,10 @@ class GenerationEngine:
                 # three eviction classes are visible in one grep (SNAPSHOT_CACHE_TYPE).
                 # A completed turn is the most replaceable entry in the pool and
                 # should be the first thing evicted.
-                self.prompt_cache.insert_cache(self.model_path, r.all_tokens, r.prompt_cache,
-                                               cache_type="assistant")
-                logger.info("insert_cache: registered %d tokens (finish_reason=%s)", len(r.all_tokens), r.finish_reason)
+                inserted = self.prompt_cache.insert_cache(self.model_path, r.all_tokens, r.prompt_cache,
+                                                          cache_type="assistant")
+                if inserted is not False:  # None (mlx-lm base) or True both mean "stored"
+                    logger.info("insert_cache: registered %d tokens (finish_reason=%s)", len(r.all_tokens), r.finish_reason)
             else:
                 logger.info(
                     "insert_cache SKIPPED: prompt_cache=%s all_tokens=%s (finish_reason=%s)",

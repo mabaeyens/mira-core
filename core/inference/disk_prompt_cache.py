@@ -166,6 +166,32 @@ class DiskBackedPromptCache(LRUPromptCache):
         logger.info("disk prompt cache: exact-match hit for %d tokens", len(tokens))
         return disk_cache, []
 
+    def insert_cache(self, model: Any, tokens: List[int], prompt_cache: List[Any],
+                     *, cache_type: str = "assistant"):
+        """Drop entries that can never be reused on a non-trimmable model.
+
+        On a hybrid model (Qwen3.6: GatedDeltaNet layers make the whole cache
+        non-trimmable) a non-"system" entry is reusable ONLY via fetch's
+        `result.longer` trim path, which is gated on can_trim_prompt_cache() and so
+        never fires — it becomes pure hold-and-evict deadweight (up to the derived
+        pool budget, ~4.5GB on a 32GB Mac) that starves the prefill score transient.
+        "system" entries are reused via a whole-prefix match (no trim needed — the
+        system-checkpoint openers), so they are always kept. On a trimmable dense
+        model the predicate is True and every class inserts exactly as before.
+        """
+        try:
+            reusable = cache_type == "system" or can_trim_prompt_cache(prompt_cache)
+        except Exception:  # noqa: BLE001 — never let a predicate error drop a working cache
+            reusable = True
+        if not reusable:
+            logger.info(
+                "insert_cache SKIPPED (non-trimmable, cache_type=%s): %d tokens "
+                "would never be reused", cache_type, len(tokens),
+            )
+            return False
+        super().insert_cache(model, tokens, prompt_cache, cache_type=cache_type)
+        return True
+
     def _explain_miss(self, model: Any, tokens: List[int]) -> None:
         """Say WHY a lookup missed, which the hit/miss counters cannot.
 
