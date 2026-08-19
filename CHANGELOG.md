@@ -2,49 +2,13 @@
 
 ## v1.5.0 — August 2026
 
-The release where the engine learned to speculate on its own. v1.4.0 made Mira
-distributable; this one makes the bundled engine fast without an external app, and
-builds the eval discipline to prove a change is worth shipping before it ships.
+The release where the engine learned to speculate on its own. v1.4.0 made Mira distributable; this one makes the bundled engine fast without an external app, and builds the eval discipline to prove a change is worth shipping before it ships.
 
-- **Mira's own engine now does speculative decoding — no external app.** mira-mlx
-  can run a Qwen3.5/3.6 checkpoint's own multi-token-prediction (MTP) head as a
-  self-speculator: a tiny extra head drafts a few tokens ahead and the backbone
-  verifies the whole run in one pass, spending compute that decode otherwise leaves
-  idle. On the Qwen3.6-35B-A3B MoE that's roughly 1.2–1.3× faster generation, and
-  it's lossless in practice — it stays correct even with the repetition-penalty
-  runaway guard on. Until now this only worked through the separate oMLX app; the
-  bundled default backend now serves it itself. It's off by default and needs a
-  checkpoint carrying the `model-mtp.safetensors` sidecar (`mira_mlx_mtp_enabled`).
-  The MTP path also ships an adaptive draft-depth controller, an accept-rate readout
-  in `/v1/stats`, a reduced-vocab draft projection (a free ~6% on top), and a
-  sort-threshold tweak in the MoE expert gather (+4.6%). I wrote up the whole thing
-  two ways: a plain-language primer,
-  [Small Mac, fast AI](https://askmira.es/writing/small-mac-fast-ai) (no ML degree
-  required), and the engineering deep-dive,
-  [Chasing 80 tok/s](https://askmira.es/writing/chasing-80-tokens) — a field guide to
-  native MTP on a mixture-of-experts model and an honest ledger of where the speed is
-  still hiding. The code-level notes are in `docs/multi-token-prediction.md`.
-- **The context window now sizes itself to real peak memory, not just the KV cache.**
-  On a 32 GB Mac, asking for a 64k window used to over-commit and could OOM mid-run,
-  because the real ceiling is weights plus the growing KV plus the prefill attention
-  transient — and that transient dominates. Sizing now accounts for all of it, so the
-  same aspirational `context_window` request resolves to what actually fits (~39k on
-  this 32 GB Mac, the full amount on a larger one) instead of failing late.
-- **A failed model can no longer sit on ~4.5 GB of dead prompt cache.** On Qwen3.6
-  (and any hybrid model with recurrent-attention layers) most per-turn cache entries
-  can never be reused, yet they filled the cache pool up to its budget and starved
-  the very memory the engine needs to prefill a long prompt. Those entries are now
-  skipped at the source; the reusable ones (the system-prompt openers, ~79% reuse)
-  are untouched, and dense models like Ministral are byte-for-byte unchanged.
-- **Switching model actually switches the model on every backend.** The mlx-lm and
-  vllm-mlx paths were ignoring the configured model id in some cases; they now honor
-  it, matching mira-mlx and omlx.
-- **A fast evaluation harness for ranking changes.** Scoring a real GPQA run takes
-  12–14 hours, which is too slow to steer week-to-week tuning. There's now a
-  documented two-instrument contract (`docs/eval-contract.md`): a ~1-minute proxy
-  that *ranks* candidate changes on relative deltas, and the full apparatus that
-  decides what actually ships. This is developer tooling, not a user-facing feature,
-  but it's why the performance claims above come with numbers.
+- **Mira's own engine now does speculative decoding — no external app.** mira-mlx can run a Qwen3.5/3.6 checkpoint's own multi-token-prediction (MTP) head as a self-speculator: a tiny extra head drafts a few tokens ahead and the backbone verifies the whole run in one pass, spending compute that decode otherwise leaves idle. On the Qwen3.6-35B-A3B MoE that's roughly 1.2–1.3× faster generation, and it's lossless in practice — it stays correct even with the repetition-penalty runaway guard on. Until now this only worked through the separate oMLX app; the bundled default backend now serves it itself. It's off by default and needs a checkpoint carrying the `model-mtp.safetensors` sidecar (`mira_mlx_mtp_enabled`). The MTP path also ships an adaptive draft-depth controller, an accept-rate readout in `/v1/stats`, a reduced-vocab draft projection (a free ~6% on top), and a sort-threshold tweak in the MoE expert gather (+4.6%). I wrote up the whole thing two ways: a plain-language primer, [Small Mac, fast AI](https://askmira.es/writing/small-mac-fast-ai) (no ML degree required), and the engineering deep-dive, [Chasing 80 tok/s](https://askmira.es/writing/chasing-80-tokens) — a field guide to native MTP on a mixture-of-experts model and an honest ledger of where the speed is still hiding. The code-level notes are in `docs/multi-token-prediction.md`.
+- **The context window now sizes itself to real peak memory, not just the KV cache.** On a 32 GB Mac, asking for a 64k window used to over-commit and could OOM mid-run, because the real ceiling is weights plus the growing KV plus the prefill attention transient — and that transient dominates. Sizing now accounts for all of it, so the same aspirational `context_window` request resolves to what actually fits (~39k on this 32 GB Mac, the full amount on a larger one) instead of failing late.
+- **A failed model can no longer sit on ~4.5 GB of dead prompt cache.** On Qwen3.6 (and any hybrid model with recurrent-attention layers) most per-turn cache entries can never be reused, yet they filled the cache pool up to its budget and starved the very memory the engine needs to prefill a long prompt. Those entries are now skipped at the source; the reusable ones (the system-prompt openers, ~79% reuse) are untouched, and dense models like Ministral are byte-for-byte unchanged.
+- **Switching model actually switches the model on every backend.** The mlx-lm and vllm-mlx paths were ignoring the configured model id in some cases; they now honor it, matching mira-mlx and omlx.
+- **A fast evaluation harness for ranking changes.** Scoring a real GPQA run takes 12–14 hours, which is too slow to steer week-to-week tuning. There's now a documented two-instrument contract (`docs/eval-contract.md`): a ~1-minute proxy that *ranks* candidate changes on relative deltas, and the full apparatus that decides what actually ships. This is developer tooling, not a user-facing feature, but it's why the performance claims above come with numbers.
 
 ## v1.4.0 — August 2026
 
