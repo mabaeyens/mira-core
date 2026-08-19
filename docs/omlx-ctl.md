@@ -78,11 +78,14 @@ ln -s ~/.cache/huggingface/hub/models--mlx-community--gemma-4-26b-a4b-it-4bit/sn
 
 ### Adding an MTP model (one-time setup)
 
-MTP (multi-token prediction) speculative decoding **only runs on omlx**. The default
-mira-mlx backend and mlx-lm strip the `mtp.*` head when loading; vllm-mlx loads it but
-caps at `effective_draft_tokens=1` for VLM-capable models (Qwen3.x), so it gives no
-speedup. omlx runs the head for real — measured on M5: dense 27B 8.1→19.1 t/s (2.36×),
-35B-A3B MoE 58→77.5 (1.34×), output distribution-preserving.
+MTP (multi-token prediction) speculative decoding runs on **two** backends: mira-mlx's
+own native MTP (`mira_mlx_mtp_enabled`, see [`multi-token-prediction.md`](multi-token-prediction.md))
+and omlx, set up here. Only mlx-lm and vllm-mlx can't use it — mlx-lm strips the `mtp.*`
+head when loading, and vllm-mlx caps at `effective_draft_tokens=1` for VLM-capable models
+(Qwen3.x), so it gives no speedup. omlx runs the head for real — measured on M5: dense 27B
+8.1→19.1 t/s (2.36×), 35B-A3B MoE 58→77.5 (1.34×), output distribution-preserving. This
+section is the omlx route; the model prep below (baking the bf16 head back into a 4-bit
+checkpoint) is the same idea mira-mlx uses via its `model-mtp.safetensors` sidecar.
 
 A 4-bit checkpoint doesn't ship the head (the quant strips it), so bake it back:
 

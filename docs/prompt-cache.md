@@ -96,6 +96,27 @@ Two details worth keeping:
   have halved how many conversations stay warm — a slowdown nothing would have
   reported. Bytes remain the real ceiling and are enforced separately.
 
+## 2b. Dropping deadweight on a non-trimmable model (shipped 2026-08-19)
+
+The boundary snapshot fixes the openers, but the *other* per-turn inserts still
+have nowhere to be reused. On a hybrid model like Qwen3.6 (a GatedDeltaNet layer
+makes the whole cache non-trimmable) a `history`/`user` or completed-turn
+`assistant` entry can only ever be reused via fetch's `result.longer` trim path —
+which is gated on `can_trim_prompt_cache()` and never fires. So every one of them
+was pure hold-and-evict: it sat in the pool up to the derived byte budget (~4.5 GB
+on a 32 GB Mac) and starved the prefill score transient, with `cached_tokens: 0`
+the honest result.
+
+`DiskBackedPromptCache.insert_cache` now **skips an entry when the model's cache is
+non-trimmable, unless its `cache_type` is `system`**. The `system` (opener) entries
+are reused by whole-prefix match — no trim needed — so they stay, and the 78.7%
+opener-reuse win from §2a is untouched. Trimmable dense models (Mistral) are
+byte-for-byte unchanged: the predicate is `True` and every class inserts as before.
+A predicate error falls open (never drop a working cache). Verified live: across 40
+distinct long prompts the pool holds only `system` (0 bytes for `assistant`/`user`),
+freeing the ~4.5 GB of deadweight back to the working set. Pinned in
+`tests/test_prompt_cache_trimmable_gate.py`.
+
 ## 3. Reading the log
 
 Every request logs a hit/miss line, and every miss now also logs why:

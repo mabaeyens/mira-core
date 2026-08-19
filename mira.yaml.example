@@ -79,14 +79,17 @@ backends:
     backend: omlx
     model: Qwen3.6-35B-A3B
     context_window: 131072
-  # Native MTP (multi-token prediction) — omlx runs the model's own MTP head as a
-  # self-speculator (measured on M5: dense 27B 8.1->19.1 t/s / 2.36x; 35B-A3B MoE
-  # 58->77.5 / 1.34x; adaptive depth, max mtp_num_draft_tokens=3 in model_settings.json;
-  # output distribution-preserving, not bit-identical). MTP REQUIRES the omlx backend:
-  # the default mira-mlx and mlx-lm strip the mtp.* head entirely, and vllm-mlx loads it
-  # but caps at effective_draft_tokens=1 for VLM-capable models (Qwen3.x) so it gives no
-  # speedup. The model dirs (~/.omlx/models/<name> with the raw bf16 mtp head baked back
-  # in + mtp_enabled in model_settings.json) must exist first — see docs/omlx-ctl.md.
+  # Native MTP (multi-token prediction) self-speculative decoding runs on TWO
+  # backends now. As of 2026-08-18 mira-mlx has its own native MTP (no external
+  # app) — turn it on with mira_mlx_mtp_enabled below; that is the prod default on
+  # the maintainer's Mac. omlx also serves MTP via these presets (measured on M5:
+  # dense 27B 8.1->19.1 t/s / 2.36x; 35B-A3B MoE 58->77.5 / 1.34x; adaptive depth,
+  # max mtp_num_draft_tokens=3 in model_settings.json; output distribution-preserving,
+  # not bit-identical). Only mlx-lm and vllm-mlx can't use it: mlx-lm strips the
+  # mtp.* head entirely, and vllm-mlx caps at effective_draft_tokens=1 for VLM-capable
+  # models (Qwen3.x) so it gives no speedup. The omlx model dirs (~/.omlx/models/<name>
+  # with the raw bf16 mtp head baked back in + mtp_enabled in model_settings.json) must
+  # exist first — see docs/omlx-ctl.md; for mira-mlx's own MTP see docs/multi-token-prediction.md.
   - id: omlx-qwen36-moe-mtp
     label: "Qwen3.6 35B (MTP)"
     backend: omlx
@@ -246,13 +249,29 @@ brave_api_key: "your-brave-search-api-key-here"
 # Valid powers of 2: 256 | 512 | 1024 | 2048 (2048 is experimental on 32GB RAM).
 prefill_step_size: 1024
 
+# ── Native MTP (mira-mlx self-speculative decoding) ──
+# mira_mlx_mtp_enabled: run the model's own multi-token-prediction head as a
+# self-speculator inside mira-mlx — no external app. Off by default, and only
+# meaningful on a Qwen3.5/3.6 checkpoint that carries the bf16 model-mtp.safetensors
+# sidecar; the engine RAISES at load if you enable it without the sidecar. On this
+# machine's prod config it is on (Qwen3.6-35B-A3B MoE ~1.19-1.34x, lossless with the
+# runaway guard). See docs/multi-token-prediction.md.
+# mira_mlx_mtp_enabled: false
+# mira_mlx_mtp_max_draft_tokens: draft depth per verify pass (1..3). 3 is the sweet
+# spot on M5; deeper diminishes.
+# mira_mlx_mtp_max_draft_tokens: 3
+# mira_mlx_mtp_draft_vocab: project only the first N vocab entries in the draft head
+# (Qwen3's high ids are rare) for a free ~6% decode gain at zero accept loss. 0 = full
+# vocab. 131072 is the validated knee on Qwen3.6-35B-A3B.
+# mira_mlx_mtp_draft_vocab: 0
+
 # mira_mlx_kv_bits: quantize mira-mlx's KV cache to this many bits (opt-in;
-# unset/null = today's unquantized fp16 cache). Only 8 is numerically validated
-# (mlx-lm fork's own test suite, rtol=4e-2) — trades a small amount of accuracy
-# for ~1.6-2x more usable context window / concurrent-request headroom on
-# RAM-constrained Macs. 4-bit is unproven anywhere in this codebase; treat as
-# experimental if you try it.
-# mira_mlx_kv_bits: 8
+# unset/null = today's unquantized fp16 cache). 8-bit is validated against the
+# mlx-lm fork's own suite (rtol=4e-2); 4-bit is what the maintainer runs in
+# production — a paired A/B vs 8-bit at ~8k context showed no measurable quality
+# difference (small n), and it is the RAM-cheapest way to widen the usable context
+# window / concurrent-request headroom on RAM-constrained Macs.
+# mira_mlx_kv_bits: 4
 
 # mira_mlx_kv_group_size: quantization group size for mira_mlx_kv_bits (default 64).
 mira_mlx_kv_group_size: 64
@@ -414,5 +433,6 @@ mira_mlx_expert_ram_aware: true
 # mira-mlx sizes its context window, prompt-cache pool and Metal cache limit from
 # the RAM it actually finds (core/hardware.py), so there is nothing to tune by
 # hand for a normal install. The knobs above are the ones worth touching:
-# mira_mlx_kv_bits: 8 buys roughly 1.9x the context for a small accuracy cost,
-# and mira_mlx_expert_offload lets a model larger than RAM open at all.
+# mira_mlx_kv_bits: 4 widens the usable context for the least RAM (prod default),
+# mira_mlx_mtp_enabled speeds decode on an MTP-equipped checkpoint, and
+# mira_mlx_expert_offload lets a model larger than RAM open at all.

@@ -37,7 +37,7 @@ execution hole.
 | `backend` | `mira-mlx` | One of `mira-mlx`, `omlx`, `mlx-lm`, `vllm-mlx`. An unknown name raises rather than silently starting something else. |
 | `model` | `mlx-community/Qwen3.6-35B-A3B-4bit` | An mlx-community repo id for mira-mlx/mlx-lm/vllm-mlx; omlx wants its own model name instead (`Qwen3.6-35B-A3B`). |
 | `host` | `http://localhost:8080` | Where the backend listens. Only one backend runs at a time. |
-| `backends` | built-in preset list | Named backend+model combinations served to the iOS/macOS model picker via `GET /backends`. Adding a combination needs only a config edit, no app update. Some presets are backend-locked — e.g. the MTP (multi-token prediction) presets only work on `omlx` (see `docs/omlx-ctl.md`). |
+| `backends` | built-in preset list | Named backend+model combinations served to the iOS/macOS model picker via `GET /backends`. Adding a combination needs only a config edit, no app update. Some presets are backend-locked — e.g. the `omlx-…-mtp` presets serve multi-token prediction through omlx (see `docs/omlx-ctl.md`); mira-mlx has its own native MTP via `mira_mlx_mtp_enabled`. |
 | `context_window` | `65536` | Token context window. mira-mlx lowers this on its own if the machine's RAM cannot hold it. |
 | `max_output_tokens` | `16384` | Ceiling on a single reply. Raising it does not make replies longer — a finished model still emits its stop token — it stops them being cut off. |
 | `paths` | built-in defaults | Absolute paths to backend binaries: `mlx_lm_cli` and `omlx_cli`. Omit either to use the default. |
@@ -99,7 +99,10 @@ The remaining RAG knobs (`RAG_CHUNK_SIZE`, `RAG_RETRIEVE_K`, `RAG_RERANK_TOP_K`,
 | Setting | Default | What it does |
 |---|---|---|
 | `prefill_step_size` | `1024` | Tokens per prefill chunk. Powers of two only: 256, 512, 1024, 2048 (2048 is experimental on 32 GB). Applies to mira-mlx and mlx-lm. |
-| `mira_mlx_kv_bits` | unset | Quantize the KV cache to this many bits. Only `8` is numerically validated (the fork's own suite, rtol 4e-2), buying roughly 1.6–2× usable context. 4-bit is unproven here. |
+| `mira_mlx_mtp_enabled` | `false` | Run the model's own multi-token-prediction head as a self-speculator (native MTP, no external app). Only meaningful on a Qwen3.5/3.6 checkpoint carrying the `model-mtp.safetensors` sidecar; the engine **raises at load** if enabled without it. ~1.19–1.34× decode on Qwen3.6-35B-A3B, lossless with the runaway guard. See [`docs/multi-token-prediction.md`](multi-token-prediction.md). |
+| `mira_mlx_mtp_max_draft_tokens` | `3` | Draft depth per verify pass (1–3). 3 is the M5 sweet spot; deeper diminishes. Only applies when MTP is on. |
+| `mira_mlx_mtp_draft_vocab` | `0` | Project only the first N vocab entries in the draft head (Qwen3's high ids are rare) for a free ~6% decode gain at zero accept loss. `0` = full vocab; `131072` is the validated knee on Qwen3.6-35B-A3B. Only applies when MTP is on. |
+| `mira_mlx_kv_bits` | unset | Quantize the KV cache to this many bits. `8` is validated against the fork's own suite (rtol 4e-2); `4` is the maintainer's production default — a paired A/B vs 8-bit at ~8k context showed no measurable quality difference (small n) and it is the RAM-cheapest way to widen usable context (~1.6–2×). |
 | `mira_mlx_kv_group_size` | `64` | Quantization group size for `mira_mlx_kv_bits`. |
 | `mira_mlx_trust_remote_code` | `false` | Execute a model repo's own Python at load time. With this on, a model id is equivalent to code execution. Enable only for a specific model you trust that genuinely ships a custom tokenizer. |
 | `memory_advisory_notifications` | `true` | Post a macOS notification when another app evicts Mira's model from memory. On since 2026-08-13; the `cause` field filters out the harmless idle-reclaim treadmill so it fires only for a genuine shortage. Fires only on the transition into that state, at most once every 15 minutes. |
@@ -148,3 +151,5 @@ Not `mira.yaml` keys, but they override or complement it:
 | `MIRA_HOST` | Bind address. Needed (with `allowed_source_cidrs`) to opt into plain-LAN mode, which is plaintext and sniffable. |
 | `BRAVE_API_KEY` | Default for `brave_api_key`. |
 | `MIRA_HOME` | Repo root used by `mira doctor` and the `mira` CLI when resolving a checkout. |
+| `MIRA_MLX_MTP_NGRAM` | Off by default. Extends native MTP drafts with a prompt-lookup n-gram continuation (repeated spans get drafted for free). `MIRA_MLX_MTP_NGRAM_N` / `_MAX` / `_WINDOW` tune match order, appended count and lookback. Experimental; flag-gated because it only helps repetitive output. |
+| `MIRA_MLX_PROMPT_CACHE_MAX_BYTES` | Overrides the RAM-derived prompt-cache pool size (bytes). Escape hatch used to zero the pool on a RAM-starved batch; the per-entry skip (below) makes it redundant for correctness on non-trimmable models. |
