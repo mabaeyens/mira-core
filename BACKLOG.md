@@ -2,6 +2,22 @@
 
 ## Pending
 
+### ~~Cut v1.5.0~~ — SHIPPED 2026-08-19
+- Tag `v1.5.0` + GitHub release with wheel attached. Packages the native-MTP engine work
+  documented below (self-speculation now runs in mira-mlx, off by default, needs a
+  `model-mtp.safetensors` sidecar), plus: RAM-aware context sizing (window sized to real peak
+  RAM, not KV alone — ~39,409 served on this 32GB Mac instead of a late OOM); the prompt-cache
+  deadweight gate (`2c3a432` — `DiskBackedPromptCache` skips non-reusable inserts on a
+  non-trimmable Qwen3.6, frees ~4.5GB, keeps the reusable `system` openers, dense models
+  byte-unchanged); the model-switch fix across mlx-lm/vllm-mlx; and the fast-GPQA eval contract
+  (`docs/eval-contract.md`, ~1-min proxy ranks / full apparatus gates).
+- Docs synced (README, `mira.yaml.example`, `docs/configuration.md`, `docs/prompt-cache.md`,
+  `docs/omlx-ctl.md`). Two MTP explainers hosted at
+  `askmira.es/writing/{small-mac-fast-ai,chasing-80-tokens}` (mira-web `32fab27`) and linked
+  from the CHANGELOG. Full suite **831 green** (run in two halves; the 61-module
+  collect-at-once OOMs on this Mac). `conftest` now neutralizes the local `mira.yaml`
+  (`MIRA_CONFIG=/dev/null` setdefault) so tests see code-defaults.
+
 ### Bench Qwen3.8-27B (available now) as the one real quality lever left
 - Qwen3.8-27B (released 2026-08-14) is the only candidate that could beat Qwen3.6-35B-A3B in the
   ~25.6GB envelope. **Weights are public and ungated** — `Qwen/Qwen3.8-27B` on HF is `private:false`,
