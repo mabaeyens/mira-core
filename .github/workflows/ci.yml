@@ -13,6 +13,12 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       HF_HOME: ${{ github.workspace }}/.hf-cache
       HF_HUB_DOWNLOAD_TIMEOUT: "60"   # fail a stuck download fast instead of hanging
+      # conftest.py neutralizes a stray local mira.yaml by pointing the loader at
+      # /dev/null via setdefault("MIRA_CONFIG", ...). Setting it explicitly here is
+      # exactly the escape hatch that setdefault leaves open: it makes the loader read
+      # the mira.yaml this job writes below (crossencoder reranker + shell_sandbox off),
+      # instead of the empty /dev/null, so those two Linux-only overrides take effect.
+      MIRA_CONFIG: ${{ github.workspace }}/mira.yaml
     steps:
       - uses: actions/checkout@v7
         with:
