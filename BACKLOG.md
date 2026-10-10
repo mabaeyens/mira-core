@@ -2,6 +2,12 @@
 
 ## Pending
 
+### omlx 0.7.0 installed + truncated-thinking PR — follow-ups (2026-10-10)
+- omlx backup backend upgraded 0.5.1 → 0.7.0 (app + `~/.omlx/bin/omlx`). Streaming truncated-thinking leak is fixed upstream; non-streaming still leaks (jundot/omlx#3796). Mira is not materially affected: the only non-streaming call whose output is used is `_llm_chat_sync` (titles/summaries, thinking off).
+- Not yet re-checked: the `omlx-*` presets in `mira.yaml` against 0.7.0 (switch to one and confirm it serves).
+- PR jundot/omlx#4414 open (non-streaming fix, unit-tested only). Stale bot closes after 60 days without commits, so rebase onto `main` by early December if unreviewed.
+- Cleanup, once decided: delete `fix/streaming-truncated-thinking` on the `mabaeyens/omlx` fork; delete `~/Downloads/omlx-0.7.0-dmg/` (0.5.1 rollback app + DMG); delete the `~/Projects/omlx` clone after #4414 is merged or closed.
+
 ### ~~Cut v1.5.0~~ — SHIPPED 2026-08-19
 - Tag `v1.5.0` + GitHub release with wheel attached. Packages the native-MTP engine work
   documented below (self-speculation now runs in mira-mlx, off by default, needs a
