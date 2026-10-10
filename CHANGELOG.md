@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Moved to `mlx` 0.32.3 and `mlx-metal` 0.32.3.** Measured against 0.32.0 on the same Mac with a freshly started engine: the test suite is unchanged (831 passed) and the GPQA proxy score is unchanged at 45.0% (n=100), while proxy throughput rises from 93.5 to 110.8 questions per minute and a ~20k-token prompt goes from 8.9 to 10.2 tok/s wall-clock (prefill included, one run each). Individual answers can flip between runs (8 of 100 did), as with any kernel change under batching. The fused attention kernels in 0.32.1–0.32.3 do not apply to the default setup, since the 4-bit KV cache uses the quantized attention path, so the speedup most likely comes from the quantized MoE matmul changes (not isolated). 0.32.3 also carries a fix for a quantized MoE row overflow above 32K tokens.
+
 ## v1.5.0 — August 2026
 
 The release where the engine learned to speculate on its own. v1.4.0 made Mira distributable; this one makes the bundled engine fast without an external app, and builds the eval discipline to prove a change is worth shipping before it ships.
