@@ -2,6 +2,13 @@
 
 ## Pending
 
+### mlx 0.32.3 bump shipped; fused quantized SDPA and smaller-model options parked (2026-10-10)
+- Done: `mlx`/`mlx-metal` 0.32.0 → 0.32.3 (`8614c8a`, CHANGELOG under Unreleased `54ce5b0`). Same-machine A/B on fresh engines, `MLX_ENABLE_TF32=0`: 831 tests pass, GPQA proxy n=100 unchanged at 45.0%, 93.5 → 110.8 q/min, ~20k-token prompt 8.9 → 10.2 tok/s wall (prefill included, one run each). 8 of 100 picks flipped with equal accuracy (batched-kernel effect). The fused-attention kernels in 0.32.1–0.32.3 are not on the prod path (kv4 uses the quantized SDPA composition); the speedup is most likely the quantized MoE matmul changes, not isolated.
+- Deferred: local build of mlx PR #3026 (fused quantized SDPA, the lever against the 73 → 11 t/s decode collapse from 2k to 64k). It does not apply to v0.32.3 (7 of 15 files conflict, base is 521 commits behind) and the Metal toolchain is not installed. Recheck its status at the next mlx bump. Spec in `specs/mlx-pr3026-quantized-sdpa-local-build.md` (local).
+- Headroom options if the 32GB budget gets tight (nothing benched today): Ministral-3-14B 4bit (7.9GB, known good in Mira), Qwen3.8-27B 4bit (15.8GB, 8.3 t/s plain, zero-fail on 4 prompts), gemma-4-26B-A4B REAP-14B (11.2GB, pruning risk unmeasured). Qwen3.8-Flash-Next (111GB at 4-bit) and GLM-5.3-Flash (204GB) do not fit.
+- Unmeasured idea: stop an MTP draft chain early on low draft confidence. `_DepthController` already prices expert-union cost per depth from measured wall-clock but ignores draft probability; expected gain looks small at accept ~0.77.
+- Prod restarted on 0.32.3 after the A/B; I saw `backend_ready: false` right after restart and `true` in a later `/health` check.
+
 ### omlx 0.7.0 installed + truncated-thinking PR — follow-ups (2026-10-10)
 - omlx backup backend upgraded 0.5.1 → 0.7.0 (app + `~/.omlx/bin/omlx`). Streaming truncated-thinking leak is fixed upstream; non-streaming still leaks (jundot/omlx#3796). Mira is not materially affected: the only non-streaming call whose output is used is `_llm_chat_sync` (titles/summaries, thinking off).
 - Done 2026-10-10: all four `omlx-*` presets in `mira.yaml` load and answer on 0.7.0; MTP settings in `~/.omlx/model_settings.json` survived the upgrade. Only load + one-token reply checked, MTP speed and accept rate not re-measured. Prod `/health` ok after the restart.
