@@ -2,6 +2,13 @@
 
 ## Pending
 
+### Gemma4-26B vs Qwen3.6 on the GPQA proxy, memory pick-up (2026-10-13)
+- Measured 2026-10-10, fresh engine each, `MLX_ENABLE_TF32=0`, thinking off, n=100, kv4: gemma4-26b 48.0% (136 q/min) vs Qwen3.6-35B-A3B-MTP with prod flags 45.0% (120 q/min). 0 empty/no-letter/truncated on both. Chem 38% vs 34%, Phys 51% vs 53.5%, Bio 80% vs 60% (n=10). The 3-point gap is inside proxy noise; the proxy shows gemma4 no worse, nothing more. Raw runs in `scripts/eval_runs/*proxy_{qwen36-mtp,gemma4-26b}.jsonl`.
+- Not measured: peak memory (the reason to consider gemma4), tool-calling, long context, and the thinking-on gate. The earlier "gemma4 is worse" results were tool-calling and 24K-context OOM, which the proxy does not touch. Next: bench_compare tool-calling run and a peak-RAM reading before any default change.
+- The proxy fixture printed `subset_sha` 35be7d860593; the eval-contract notes record af3777f46584. Qwen's 45.0% matches the old baseline, but find out why the hash differs.
+- The MLX Model Explorer Space (mlx-community) is a static finder; its `bench/mlx_explorer_bench.py` (speed, peak memory, wikitext perplexity, plain mlx-lm, no MTP) lives in `codelion/mlx-model-explorer`. Not run. Perplexity is a coarse signal, and the Gemma BOS handling needs `mlxbench-2`.
+- Prod LaunchAgent is unloaded (stopped for the bench) and was not restarted. Run `/mira-server start`.
+
 ### mlx 0.32.3 bump shipped; fused quantized SDPA and smaller-model options parked (2026-10-10)
 - Done: `mlx`/`mlx-metal` 0.32.0 → 0.32.3 (`8614c8a`, CHANGELOG under Unreleased `54ce5b0`). Same-machine A/B on fresh engines, `MLX_ENABLE_TF32=0`: 831 tests pass, GPQA proxy n=100 unchanged at 45.0%, 93.5 → 110.8 q/min, ~20k-token prompt 8.9 → 10.2 tok/s wall (prefill included, one run each). 8 of 100 picks flipped with equal accuracy (batched-kernel effect). The fused-attention kernels in 0.32.1–0.32.3 are not on the prod path (kv4 uses the quantized SDPA composition); the speedup is most likely the quantized MoE matmul changes, not isolated.
 - Deferred: local build of mlx PR #3026 (fused quantized SDPA, the lever against the 73 → 11 t/s decode collapse from 2k to 64k). It does not apply to v0.32.3 (7 of 15 files conflict, base is 521 commits behind) and the Metal toolchain is not installed. Recheck its status at the next mlx bump. Spec in `specs/mlx-pr3026-quantized-sdpa-local-build.md` (local).
