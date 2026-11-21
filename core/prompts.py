@@ -16,7 +16,7 @@ def current_datetime_str(now: Optional[datetime] = None) -> str:
     offset = now_local.strftime("%z")                      # +0100
     offset = f"{offset[:3]}:{offset[3:]}" if offset else ""
     utc = now_local.astimezone(timezone.utc).strftime("%H:%M")
-    return f"{now_local.strftime('%B %d, %Y, %H:%M %Z')} (UTC{offset}; UTC time {utc})"
+    return f"{now_local.strftime('%A, %B %d, %Y, %H:%M %Z')} (UTC{offset}; UTC time {utc})"
 
 
 # Per-process nonce for the untrusted-content trust boundary (RULE 10). Generated
