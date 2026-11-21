@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## v1.5.1 — November 2026
+
+The release that makes the server installable and updatable as a Mac app, and tightens access control for it. The menu-bar app (separate repo) bundles this version.
+
+- **Loopback needs no token.** A request from this Mac to `localhost`, `127.0.0.1` or `[::1]` skips the bearer token even when remote access is on, so the Mac apps work without a secret. Requests from the tailnet, or through a proxy that forwards another Host, still need the token. Any local process can therefore call the API; that trade-off is documented in `docs/remote-access.md`.
+- **The Origin check compares the port, and forwarded headers are ignored.** A web page served from another local port can no longer post to Mira, and `X-Forwarded-For` cannot make a remote request look like loopback.
+- **PDFs are read with pypdfium2, not PyMuPDF.** PyMuPDF is AGPL-3.0 and cannot ship inside the notarized app. Text extraction, the OCR fallback for scanned pages and PDF detection by file contents behave as before.
+- **Time questions are answered correctly.** Each turn's time stamp now carries the weekday, the UTC offset and the UTC time, and auto thinking mode reasons through clock and calendar arithmetic ("what time is it in UTC+1", "what day was it 10 days ago") instead of guessing.
+- **The engine can unload when idle and wake on request** (`engine_idle_unload_minutes`, off by default), and the web UI shows the asleep and waking state with click to wake.
+- **Web UI:** memories, conversation rename and search, a new logo and favicon, and a short model name in the badge.
+- **Install:** `--recommended` installs in one step, fetches the MTP head, and waits for engine readiness before reporting success. `mira doctor` checks local model directories.
+- **Inkling 2 Mini message framing** in mira-mlx.
 
 - **Moved to `mlx` 0.32.3 and `mlx-metal` 0.32.3.** Measured against 0.32.0 on the same Mac with a freshly started engine: the test suite is unchanged (831 passed) and the GPQA proxy score is unchanged at 45.0% (n=100), while proxy throughput rises from 93.5 to 110.8 questions per minute and a ~20k-token prompt goes from 8.9 to 10.2 tok/s wall-clock (prefill included, one run each). Individual answers can flip between runs (8 of 100 did), as with any kernel change under batching. The fused attention kernels in 0.32.1–0.32.3 do not apply to the default setup, since the 4-bit KV cache uses the quantized attention path, so the speedup most likely comes from the quantized MoE matmul changes (not isolated). 0.32.3 also carries a fix for a quantized MoE row overflow above 32K tokens.
 
