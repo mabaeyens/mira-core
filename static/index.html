@@ -219,6 +219,31 @@
     .conv-item:hover .conv-delete { display: inline; }
     .conv-delete:hover { color: #ef4444; }
 
+    #convSearch, #memText {
+      margin: 6px 10px; width: calc(100% - 20px); box-sizing: border-box;
+      background: #1f2937; border: 1px solid #374151; border-radius: var(--radius-sm);
+      color: #e5e7eb; font-size: 12px; padding: 5px 8px; outline: none;
+    }
+    .conv-snippet { font-size: 11px; color: #9ca3af; margin-top: 2px; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; }
+    .conv-edit { float: right; display: none; background: none; border: none; color: #6b7280;
+      cursor: pointer; font-size: 12px; padding: 0 4px; }
+    .conv-item:hover .conv-edit { display: inline; }
+    .conv-edit:hover { color: #93c5fd; }
+    .conv-rename { width: 100%; box-sizing: border-box; background: #111827; color: #e5e7eb;
+      border: 1px solid #3b82f6; border-radius: 4px; font-size: 13px; padding: 2px 4px; }
+    #memSection { border-top: 1px solid #1f2937; font-size: 12px; color: #9ca3af; }
+    #memHeader { display: flex; justify-content: space-between; padding: 8px 12px 6px; cursor: pointer;
+      font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; }
+    #memBody { display: none; padding-bottom: 8px; max-height: 40vh; overflow-y: auto; }
+    .mem-item { display: flex; gap: 6px; padding: 4px 12px; align-items: flex-start; }
+    .mem-item span { flex: 1; word-break: break-word; color: #e5e7eb; }
+    .mem-item button { background: none; border: none; color: #6b7280; cursor: pointer; }
+    .mem-item button:hover { color: #ef4444; }
+    #memErr { color: #f87171; padding: 0 12px; min-height: 0; }
+    #appsOnly { border-top: 1px solid #1f2937; padding: 8px 12px; font-size: 11px; color: #6b7280; line-height: 1.4; }
+    #appsOnly b { color: #9ca3af; }
+
     /* ── Main area (header + chat + footer) ── */
     .main-area {
       flex: 1;
@@ -1060,8 +1085,19 @@
   <!-- Conversations section -->
   <div id="convSection">
     <button id="newConvBtn">＋ New conversation</button>
+    <input id="convSearch" type="search" placeholder="Search conversations" autocomplete="off">
     <div id="convList"></div>
   </div>
+  <div id="memSection">
+    <div id="memHeader"><span>Memories</span><span id="memCount"></span></div>
+    <div id="memBody">
+      <div id="memList"></div>
+      <input id="memText" type="text" maxlength="2000" placeholder="Remember something, then Enter" autocomplete="off">
+      <div id="memErr"></div>
+    </div>
+  </div>
+  <div id="appsOnly"><b>Only in the Mira apps (Desktop, iPhone, iPad):</b> reminders, switching models and
+    backends, freeing memory, and moving a conversation into a project.</div>
 </nav>
 
 <div class="main-area">
@@ -1267,11 +1303,49 @@
       titleEl.className = 'conv-title';
       titleEl.textContent = conv.title || 'New conversation';
 
+      const editBtn = document.createElement('button');
+      editBtn.className = 'conv-edit';
+      editBtn.title = 'Rename';
+      editBtn.textContent = '✎';
+      const startRename = (e) => {
+        e.stopPropagation();
+        if (isStreaming) return;
+        const input = document.createElement('input');
+        input.className = 'conv-rename';
+        input.value = conv.title || '';
+        input.maxLength = 200;
+        titleEl.replaceWith(input);
+        input.focus(); input.select();
+        let done = false;
+        const finish = async (save) => {
+          if (done) return; done = true;
+          const t = input.value.trim();
+          if (save && t && t !== conv.title) {
+            try {
+              const r = await fetch(`/conversations/${conv.id}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: t }) });
+              if (r.ok) conv.title = t;
+            } catch {}
+          }
+          loadConvList();
+        };
+        input.addEventListener('keydown', ev => {
+          if (ev.key === 'Enter') finish(true);
+          else if (ev.key === 'Escape') finish(false);
+        });
+        input.addEventListener('blur', () => finish(true));
+        input.addEventListener('click', ev => ev.stopPropagation());
+      };
+      editBtn.addEventListener('click', startRename);
+      titleEl.addEventListener('dblclick', startRename);
+
       const timeEl = document.createElement('div');
       timeEl.className = 'conv-time';
       timeEl.textContent = fmtRelTime(conv.updated_at);
 
       item.appendChild(delBtn);
+      item.appendChild(editBtn);
       item.appendChild(titleEl);
       item.appendChild(timeEl);
 
@@ -1283,6 +1357,91 @@
       convListEl.appendChild(item);
     }
   }
+
+  // ── Conversation search ──────────────────────────────────────────────────
+  const convSearchEl = document.getElementById('convSearch');
+  let _searchTimer = null;
+  convSearchEl.addEventListener('input', () => {
+    clearTimeout(_searchTimer);
+    _searchTimer = setTimeout(runConvSearch, 250);
+  });
+  async function runConvSearch() {
+    const q = convSearchEl.value.trim();
+    if (!q) { loadConvList(); return; }
+    try {
+      const r = await fetch('/conversations/search?q=' + encodeURIComponent(q));
+      const data = await r.json();
+      if (convSearchEl.value.trim() !== q) return;   // a newer query is in flight
+      convListEl.innerHTML = '';
+      for (const hit of data.results || []) {
+        const item = document.createElement('div');
+        item.className = 'conv-item' + (hit.conversation_id === currentConvId ? ' active' : '');
+        const t = document.createElement('div'); t.className = 'conv-title'; t.textContent = hit.title || 'New conversation';
+        const sn = document.createElement('div'); sn.className = 'conv-snippet'; sn.textContent = hit.snippet || '';
+        item.appendChild(t); item.appendChild(sn);
+        item.addEventListener('click', async () => {
+          if (isStreaming) return;
+          try { await switchConversation(hit.conversation_id); } catch { loadConvList(); }
+        });
+        convListEl.appendChild(item);
+      }
+      if (!(data.results || []).length) {
+        const none = document.createElement('div'); none.className = 'conv-time';
+        none.style.padding = '8px 12px'; none.textContent = 'No matches'; convListEl.appendChild(none);
+      }
+    } catch {}
+  }
+
+  // ── Memories ─────────────────────────────────────────────────────────────
+  const memHeader = document.getElementById('memHeader');
+  const memBody = document.getElementById('memBody');
+  const memList = document.getElementById('memList');
+  const memText = document.getElementById('memText');
+  const memErr = document.getElementById('memErr');
+  const memCount = document.getElementById('memCount');
+  async function loadMemories() {
+    try {
+      const r = await fetch('/memories');
+      const data = await r.json();
+      const mems = data.memories || [];
+      memCount.textContent = mems.length ? `${mems.length}/30` : '';
+      memList.innerHTML = '';
+      for (const m of mems) {
+        const row = document.createElement('div'); row.className = 'mem-item';
+        const tx = document.createElement('span'); tx.textContent = m.text;
+        const del = document.createElement('button'); del.textContent = '✕'; del.title = 'Forget';
+        del.addEventListener('click', async () => {
+          await fetch(`/memories/${m.id}`, { method: 'DELETE' }); loadMemories();
+        });
+        row.appendChild(tx); row.appendChild(del); memList.appendChild(row);
+      }
+    } catch {}
+  }
+  memHeader.addEventListener('click', () => {
+    const open = memBody.style.display !== 'block';
+    memBody.style.display = open ? 'block' : 'none';
+    if (open) loadMemories();
+  });
+  memText.addEventListener('keydown', async e => {
+    if (e.key !== 'Enter') return;
+    const text = memText.value.trim();
+    if (!text) return;
+    memErr.textContent = '';
+    try {
+      const r = await fetch('/memories', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }) });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        memErr.textContent = typeof err.detail === 'string' ? err.detail : 'Could not save (too long?)';
+        return;
+      }
+      memText.value = '';
+      loadMemories();
+    } catch (ex) { memErr.textContent = 'Could not reach the server'; }
+  });
+  fetch('/memories').then(r => r.json()).then(d => {
+    const n = (d.memories || []).length; memCount.textContent = n ? `${n}/30` : '';
+  }).catch(() => {});
 
   async function loadConvList() {
     const resp = await fetch('/conversations');
@@ -1530,10 +1689,8 @@
     updateStats(s.input_tokens || 0, s.output_tokens || 0, s.context_pct || 0);
     if (s.home_dir) folderCurPath = s.home_dir;
     const savedConvId = localStorage.getItem('mira_conv_id') || s.conv_id;
-    if (savedConvId) {
-      currentConvId = savedConvId;
-      loadConvList();
-    }
+    if (savedConvId) currentConvId = savedConvId;
+    loadConvList();
   }).catch(() => {});
 
   // Check backend readiness; start polling if not yet ready

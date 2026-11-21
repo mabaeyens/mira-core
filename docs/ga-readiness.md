@@ -88,12 +88,13 @@ and verbose are all handled.
 |---|---|---|---|
 | G1 | Engine asleep/waking state and click-to-wake | done (2026-11-21) | Header badge, polls `/health`. Click-to-wake verified against a stub; hiding after wake not seen on screen. |
 | G2 | Model badge showed a filesystem path and a stale `gemma4:26b` placeholder | done (2026-11-21) | Shows the last path component |
-| G3 | Memories: list, add, delete (`/memories`) | open | In the native apps, absent in the web UI |
-| G4 | Conversation rename, search and move to project (`PATCH /conversations/{id}`, `/conversations/search`) | open | Only create, open and delete exist |
-| G5 | Reminders list and delete (`/reminders`) | open | |
-| G6 | Backend and model switching, model pull (`/backends /backend /models /models/switch /models/pull`) | open | CLI and mira.yaml only; decide whether the web UI should expose it |
-| G7 | Free memory now (`/engine/unload`) | open | Needs the 409 busy case handled, as in the native apps |
+| G3 | Memories: list, add, delete (`/memories`) | done (2026-11-21) | Collapsible sidebar section, 30 max shown inline |
+| G4 | Conversation rename and search | done (2026-11-21) | Pencil or double-click to rename, search box over message text. Move to project stays app-only |
+| G5 | Reminders list and delete (`/reminders`) | app-only | |
+| G6 | Backend and model switching, model pull (`/backends /backend /models /models/switch /models/pull`) | app-only | CLI and mira.yaml only; decide whether the web UI should expose it |
+| G7 | Free memory now (`/engine/unload`) | app-only | Needs the 409 busy case handled, as in the native apps |
 | G8 | `divergence_guard` stream event is ignored | open | Harmless; no user-visible notice |
+| G10 | Sidebar note "Only in the Mira apps" lists what the web UI deliberately lacks | done (2026-11-21) | Visual check of the lower sidebar was blocked by overlapping windows; JS syntax checked only |
 | G9 | Bundled copy: the web UI served by the menu-bar app is the mira-core inside the app, so web changes reach users only after a rebuild | noted | |
 
 ## Found by the clean-account install test (2026-11-21)
