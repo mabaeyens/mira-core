@@ -54,7 +54,7 @@ afterwards, not something you need in order to start.
 
 | # | Item | Status | Proof |
 |---|---|---|---|
-| E1 | Monthly `/security-review` run on the release candidate | open | Date recorded; findings stay local |
+| E1 | Monthly `/security-review` run on the release candidate | done (2026-11-21) | Two independent reviews of mira-core v1.5.0..HEAD and mira-menubar v0.1.1..HEAD. Fixes shipped in core v1.5.1 and menu-bar 0.1.2; findings stay local. |
 | E2 | Licences and attribution complete | in progress (2026-11-21) | PyMuPDF (AGPL-3.0) replaced by pypdfium2 (BSD/Apache) in `core/file_handler.py`; the lock no longer has it. A scan of installed dist-info found no other strong copyleft; `tld` is offered under MPL-1.1 OR GPL OR LGPL and is used under MPL-1.1. Still to check: the built app's site-packages has no pymupdf, and a `THIRD_PARTY` list matches the bundle. |
 | E3 | README quick start matches what the installer really does | open | A reader follows only the README on a clean machine |
 | E4 | CHANGELOG current; version bumped (0.3 or 1.0) and tagged | open | `/core-release` run |
@@ -75,7 +75,7 @@ Supervises the embedded server, runs first-run setup, ships as the notarized DMG
 | F7 | Open at Login via `SMAppService` | open | Toggle on an installed copy, log out and in |
 | F8 | Isolated-run support | done (2026-11-21) | `MIRA_MENUBAR_HOME=<dir>` redirects config, logs, data, the Hugging Face cache and the child's HOME. Unit-tested, and a real launch wrote only under the temp home. Only in builds after 0.1.1. |
 | F9 | Pairing the iPhone app (QR or paste of URL and token) | done | An iPhone paired and connected over Tailscale HTTPS (2026-11-21, build 0.1.2 not notarized). Mac side: remote access on/off, QR and copy-link in the Pair iPhone window, certificate renewal at 60 days (written, not yet observed running). Loopback needs no token (mira-core 78e7e8d, documented). Mira Desktop keeps its own token and needs none locally. LAN without Tailscale is not offered, by design. Still to do: ship it in a notarized build. |
-| F10 | Updates (Sparkle) | done (2026-11-21) | Installed 0.1.0 found 0.1.1 from the public appcast, downloaded, verified, extracted and relaunched into 0.1.1; signature valid, Gatekeeper accepted, server running again. Releases: v0.1.0, v0.1.1 on `mabaeyens/mira-menubar`. Not tried: a failed or tampered update, a read-only install location. |
+| F10 | Updates (Sparkle) | done (2026-11-21) | Installed 0.1.0 found 0.1.1 from the public appcast, downloaded, verified, extracted and relaunched into 0.1.1; signature valid, Gatekeeper accepted, server running again. Releases: v0.1.0, v0.1.1 on `mabaeyens/mira-menubar`. Not tried: a failed or tampered update, a read-only install location. Also verified 0.1.1 to 0.1.2 on the notarized public release (2026-11-21). |
 
 ## G. Web UI parity (`static/index.html`)
 
