@@ -27,6 +27,8 @@ With an `auth_token` set (see the README's *Access control*):
   reaches the server from `127.0.0.1` but with your tailnet name as `Host`, so it needs
   the token. The consequence: any program running as a user on this Mac can call the API
   without a token, exactly as in the default tokenless install.
+  The `Origin` check compares host and port, and uvicorn's forwarded-header handling is off
+  (`proxy_headers=False`), so the peer address is always the real socket peer.
 
 **One thing you must configure: `allowed_hosts`.** Before the token or the source-IP
 allowlist, the server checks the `Host` header (this is what blocks DNS rebinding). It

@@ -169,3 +169,21 @@ def test_loopback_skips_the_token_but_remote_does_not(monkeypatch):
     with TestClient(server.app, base_url="http://mac.tail1.ts.net", client=("127.0.0.1", 5000)) as proxied:
         monkeypatch.setattr(server, "_ALLOWED_HOST_NAMES", {"mac.tail1.ts.net"})
         assert proxied.get("/status").status_code == 401
+
+
+# ── Origin check compares the port too ─────────────────────────────────────────
+
+def test_origin_on_another_port_is_rejected():
+    """An Origin is host plus port: the same host on another port is a different origin."""
+    assert server._origin_allowed("http://127.0.0.1:8000", "127.0.0.1:8000")
+    assert not server._origin_allowed("http://127.0.0.1:8001", "127.0.0.1:8000")
+    assert not server._origin_allowed("http://localhost:3000", "localhost:8000")
+    assert server._origin_allowed(None, "127.0.0.1:8000")          # native clients send none
+    assert not server._origin_allowed("null", "127.0.0.1:8000")
+
+
+def test_cross_port_post_is_refused_end_to_end(monkeypatch):
+    monkeypatch.setattr(server, "AUTH_TOKEN", "s3cret")
+    with TestClient(server.app, base_url="http://127.0.0.1:8000", client=("127.0.0.1", 5000)) as local:
+        r = local.post("/conversations/x/cancel", headers={"Origin": "http://127.0.0.1:8001"})
+        assert r.status_code == 403

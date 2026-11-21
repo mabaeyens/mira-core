@@ -274,8 +274,9 @@ def _origin_allowed(origin: str | None, host_header: str | None) -> bool:
     parsed = urlparse(origin)
     if parsed.scheme not in ("http", "https"):
         return False
+    # The port is part of an origin, so compare host and port, not the host alone.
     return _host_allowed(parsed.netloc) and (
-        not host_header or _split_host(parsed.netloc) == _split_host(host_header)
+        not host_header or parsed.netloc.strip().lower() == host_header.strip().lower()
     )
 
 
@@ -1453,7 +1454,8 @@ if __name__ == "__main__":
 
     async def _run():
         http_server = uvicorn.Server(
-            uvicorn.Config("server:app", host=http_host, port=8000, log_level="info")
+            uvicorn.Config("server:app", host=http_host, port=8000, log_level="info",
+                           proxy_headers=False)  # request.client is the real socket peer
         )
 
         async def _serve_https():
@@ -1479,6 +1481,7 @@ if __name__ == "__main__":
             https_server = uvicorn.Server(uvicorn.Config(
                 "server:app", host=https_host, port=8443,
                 ssl_certfile=ssl_certfile, ssl_keyfile=ssl_keyfile, log_level="info",
+                proxy_headers=False,  # request.client is the real socket peer
             ))
             https_server.install_signal_handlers = lambda: None
             try:
