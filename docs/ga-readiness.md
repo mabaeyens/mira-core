@@ -77,6 +77,25 @@ Supervises the embedded server, runs first-run setup, ships as the notarized DMG
 | F9 | Pairing the iPhone app and the Mac client (QR or keychain with URL and token) | open | D1. The menu-bar app generates no token today (loopback needs none). The Mac client reads its token from the keychain (`com.mab.mira.apitoken`, sandboxed), so a token the menu-bar app creates reaches it only through a shared access group or a paste. Decide before adding token generation. |
 | F10 | Updates (Sparkle) | open | B4 |
 
+## G. Web UI parity (`static/index.html`)
+
+Reviewed 2026-11-21 against the server routes and the mira-apps client. The web UI calls
+`/chat /cancel /compact /reset /verbose /status /health /browse /conversations /projects
+/rag/documents`. Streaming events and file attach, folder browse, projects, approvals, think
+and verbose are all handled.
+
+| # | Gap | Status | Notes |
+|---|---|---|---|
+| G1 | Engine asleep/waking state and click-to-wake | done (2026-11-21) | Header badge, polls `/health`. Click-to-wake verified against a stub; hiding after wake not seen on screen. |
+| G2 | Model badge showed a filesystem path and a stale `gemma4:26b` placeholder | done (2026-11-21) | Shows the last path component |
+| G3 | Memories: list, add, delete (`/memories`) | open | In the native apps, absent in the web UI |
+| G4 | Conversation rename, search and move to project (`PATCH /conversations/{id}`, `/conversations/search`) | open | Only create, open and delete exist |
+| G5 | Reminders list and delete (`/reminders`) | open | |
+| G6 | Backend and model switching, model pull (`/backends /backend /models /models/switch /models/pull`) | open | CLI and mira.yaml only; decide whether the web UI should expose it |
+| G7 | Free memory now (`/engine/unload`) | open | Needs the 409 busy case handled, as in the native apps |
+| G8 | `divergence_guard` stream event is ignored | open | Harmless; no user-visible notice |
+| G9 | Bundled copy: the web UI served by the menu-bar app is the mira-core inside the app, so web changes reach users only after a rebuild | noted | |
+
 ## Found by the clean-account install test (2026-11-21)
 
 Fixed: prompts swallowed under `curl | bash`, model silently skipped, README `fetch-model`
