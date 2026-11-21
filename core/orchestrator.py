@@ -6,7 +6,6 @@ import os
 import re
 import shutil
 import tempfile
-import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -393,23 +392,6 @@ class ChatOrchestrator:
             return {"chat_template_kwargs": ckwargs}
         return {"enable_thinking": False}
 
-    def _prefill_system_prompt(self) -> None:
-        """Send the current system prompt to the LLM in a background thread to warm the prefix cache."""
-        if not self.conversation_history or self.conversation_history[0]["role"] != "system":
-            return
-        system_msg = self.conversation_history[0]
-        try:
-            self.client.chat.completions.create(
-                model=self.model,
-                messages=[system_msg, {"role": "user", "content": "Hi"}],
-                max_tokens=1,
-                stream=False,
-                extra_body=self._thinking_off_extra(),
-            )
-            logger.debug("prefix cache warm for new conversation")
-        except Exception as exc:
-            logger.debug("background prefill failed (non-fatal): %s", exc)
-
     # ── Conversation lifecycle ────────────────────────────────────────────────
 
     def new_conversation(self, conv_id: str, project: Optional[Dict] = None) -> None:
@@ -423,7 +405,6 @@ class ChatOrchestrator:
         self.last_prompt_tokens = 0
         self._add_system_prompt()
         self.rag_engine.load_project(project["id"] if project else None)
-        threading.Thread(target=self._prefill_system_prompt, daemon=True).start()
 
     def load_conversation(self, conv_id: str, project: Optional[Dict] = None) -> None:
         from . import db
