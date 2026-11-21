@@ -199,7 +199,11 @@ def _hf_hub_cache() -> Path:
 
 
 def _hf_model_cached(repo_id: str) -> bool:
-    """True if `repo_id` has a populated snapshot in the HF hub cache."""
+    """True if `repo_id` is usable: a local model directory (e.g. the assembled MTP dir)
+    or a populated snapshot in the HF hub cache."""
+    if repo_id.startswith(("/", "~", ".")):
+        d = Path(repo_id).expanduser()
+        return d.is_dir() and (d / "config.json").exists()
     snap = _hf_hub_cache() / ("models--" + repo_id.replace("/", "--")) / "snapshots"
     try:
         return snap.is_dir() and any(any(d.iterdir()) for d in snap.iterdir() if d.is_dir())
@@ -421,12 +425,19 @@ def _build_mtp_model(repo: str, snapshot: Path, write_config: bool) -> "Path | N
     dest = models / (repo.split("/")[-1] + "-MTP")
     print(f"{YELLOW}Fetching the MTP head{RESET} (~1.7 GB, only the mtp.* tensors)")
 
+    step = {"next": 0.0}
+
     def progress(done: int, total: int) -> None:
-        print(f"\r{DIM}  {done / 1e9:5.2f} / {total / 1e9:.2f} GB{RESET}", end="", flush=True)
+        if sys.stdout.isatty():
+            print(f"\r{DIM}  {done / 1e9:5.2f} / {total / 1e9:.2f} GB{RESET}", end="", flush=True)
+        elif done / total >= step["next"]:  # piped (curl | bash, logs): a line per 10%
+            print(f"{DIM}  {done / 1e9:5.2f} / {total / 1e9:.2f} GB{RESET}", flush=True)
+            step["next"] = (done / total) // 0.1 * 0.1 + 0.1
 
     try:
         fetch_mtp_sidecar(sidecar, progress=progress)
-        print()
+        if sys.stdout.isatty():
+            print()
         assemble_mtp_model_dir(snapshot, sidecar, dest)
     except Exception as e:  # noqa: BLE001
         print(f"\n{RED}MTP setup failed:{RESET} {e}")

@@ -113,6 +113,16 @@ if [ "$WITH_OCR" = "1" ]; then
   command -v tesseract >/dev/null 2>&1 && ok "tesseract ready ($(tesseract --version 2>&1 | head -1))"
 fi
 
+# launchctl load/unload are deprecated and fail with a bare "Input/output error" when the
+# label is disabled. bootstrap/bootout plus an explicit enable give a real error and work.
+LA_LABEL="com.mab.mira"
+LA_DOMAIN="gui/$(id -u)"
+la_unload() { launchctl bootout "$LA_DOMAIN/$LA_LABEL" 2>/dev/null || true; }
+la_load() {
+  launchctl enable "$LA_DOMAIN/$LA_LABEL" 2>/dev/null || true
+  launchctl bootstrap "$LA_DOMAIN" "$1"
+}
+
 # ── optional: LaunchAgent ────────────────────────────────────────────────────
 if [ "$WITH_LAUNCHAGENT" = "1" ]; then
   info "Installing macOS LaunchAgent"
@@ -135,12 +145,12 @@ if [ "$WITH_LAUNCHAGENT" = "1" ]; then
   sed -e "s|<MIRA_DIR>|$REPO_ROOT|g" "$WRAP_SRC" > "$WRAP_OUT"
   chmod +x "$WRAP_OUT"
 
-  launchctl unload "$PLIST_DST" 2>/dev/null || true
+  la_unload
   cp "$PLIST_OUT" "$PLIST_DST"
   if [ "$RECOMMENDED" = "1" ]; then
     ok "LaunchAgent installed (loaded after the model is ready)"
   else
-    launchctl load "$PLIST_DST"
+    la_load "$PLIST_DST" || { warn "could not load the LaunchAgent (see the launchctl error above)"; exit 1; }
     ok "LaunchAgent loaded (server starts at login; logs at /tmp/com.mab.mira.log)"
   fi
 fi
@@ -216,12 +226,17 @@ echo
 if [ "$RECOMMENDED" = "1" ] && [ "$WITH_LAUNCHAGENT" = "1" ]; then
   info "Starting Mira (first start loads the model, this can take a minute)"
   # Reload so the server picks up the final config written above.
-  launchctl unload "$HOME/Library/LaunchAgents/com.mab.mira.plist" 2>/dev/null || true
+  la_unload
   sleep 2
-  launchctl load "$HOME/Library/LaunchAgents/com.mab.mira.plist" || true
+  if ! la_load "$HOME/Library/LaunchAgents/com.mab.mira.plist"; then
+    warn "could not start Mira (launchctl error above). Start it by hand: cd $REPO_ROOT && make serve"
+    exit 1
+  fi
   UP=0
   for _ in $(seq 1 120); do
     if curl -fs --max-time 3 http://localhost:8000/health >/dev/null 2>&1; then UP=1; break; fi
+    # Fail fast if launchd gave up on the job instead of waiting out the full timeout.
+    if ! launchctl print "$LA_DOMAIN/$LA_LABEL" >/dev/null 2>&1; then break; fi
     sleep 3
   done
   if [ "$UP" = "1" ]; then
