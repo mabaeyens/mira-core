@@ -1,31 +1,25 @@
-# Mira Core — Claude Code Reference
+# Mira Core
 
-FastAPI backend for Mira.
+FastAPI backend for Mira (Python `>=3.12,<3.14`, `.python-version` pins 3.13, CI tests the 3.12 floor).
 
-## Project Stack
+## Stack facts that are easy to get wrong
 
-- **Framework:** FastAPI (Python `>=3.12,<3.14`; `.python-version` pins 3.13, CI tests the 3.12 floor)
-- **LLM Engine:** mira-mlx (Mira-owned MLX server, `core/inference/mira_mlx_server.py`; default backend as of 2026-07-09) — Qwen3.6-35B-A3B is the normal default model, 64k+ context; Mistral-family models (Ministral 3 14B) also fully supported, including tool-calling. omlx (~0ms TTFT after warm-up) is the backup backend; mlx-lm and vllm-mlx are also selectable via `mira.yaml`. dflash and ollama were retired 2026-08-01. Optional vision on mira-mlx via `mira_mlx_vision`, off by default
-- **Embeddings:** sentence-transformers (`nomic-ai/nomic-embed-text-v1.5`, local, 768 dims)
-- **Vector DB:** ChromaDB (ephemeral, for RAG)
-- **Server:** Port 8000 (HTTP) / 8443 (HTTPS)
-
-## Key Files
-
-- `server.py` — FastAPI entry point, SSE streaming, backend/model switch endpoints
-- `core/orchestrator.py` — `stream_chat()`, `_call_llm()`, tool dispatch loop
-- `core/inference/mira_mlx_server.py` — mira-mlx: Mira-owned MLX inference server (continuous batching, RAM-aware sizing, disk-backed prompt cache, `/v1/stats`)
-- `core/inference/disk_prompt_cache.py` — mira-mlx's disk-overflow prompt cache
-- `core/hardware.py` — RAM-aware sizing (context window, prompt-cache/disk-cache budgets) shared by mira-mlx
-- `core/backend_manager.py` — starts/stops/switches all inference backends (`KNOWN_BACKENDS`: mira-mlx, omlx, mlx-lm, vllm-mlx)
-- `core/rag_engine.py` — embedding (sentence-transformers), ChromaDB (PersistentClient per project), reranker: Qwen3-Reranker via mlx by default, CrossEncoder optional
-- `core/config.py` — all tunables (`EMBED_MODEL`, `CONTEXT_WINDOW`, `RAG_*`, etc.)
+- The default backend is mira-mlx (`core/inference/mira_mlx_server.py`), a child of `server.py`. omlx is the backup; mlx-lm and vllm-mlx are selectable. dflash and ollama are retired. `KNOWN_BACKENDS` in `core/backend_manager.py` is the list
+- The default model and every tunable live in `mira.yaml` (`docs/configuration.md` has defaults, `core/config.py`'s `_get()` calls are the source of truth). Switching models: edit `mira.yaml`, `--model` is a label only
+- Mistral-family models (Ministral) are the small-Mac model and must keep working, including tool calls
+- Ports 8000 (HTTP) and 8443 (HTTPS) are hard-coded
 
 ## Constraints
 
 - Always validate user input (command injection, path traversal)
-- Connection resilience is critical — check mira-apps for UI patterns
-- Shell operations must use `subprocess` with explicit args list, never shell=True
+- Connection resilience is critical, check mira-apps for UI patterns
+- Shell operations use `subprocess` with an explicit args list, never `shell=True`
+- Add dependencies with `uv add`, never `uv sync`
+- The production server on :8000 and its engine may be in use by another session (mira-apps device tests). Check before starting, stopping or loading anything
+- Never put a security finding about Mira's own code in a tracked file. It goes in the gitignored `SECURITY_AUDIT.md` or `notes/`
+- Run the full pytest suite in two halves with production stopped. All 60+ files collected at once exits with no output
+- Tests that touch mlx start with `pytest.importorskip("mlx.core")`, imports below it
+- Precision and numerics tests run with `MLX_ENABLE_TF32=0`
 
 ## Reference docs
 
@@ -34,9 +28,9 @@ FastAPI backend for Mira.
 | `BACKLOG.md` | What's pending, known bugs |
 | `CHANGELOG.md` | What shipped in each version |
 | `mira.yaml` | Active backend/model and all runtime tunables |
-| `docs/configuration.md` | Every setting with its default. `mira.yaml.example` carries the reasoning; `core/config.py`'s `_get()` calls are the source of truth |
-| `SECURITY_AUDIT.md` | Findings from the monthly `/security-review`. **Gitignored, local only** — findings about Mira's own code are never published |
-| `docs/` | Architecture and design notes |
+| `docs/configuration.md` | Every setting with its default. `mira.yaml.example` carries the reasoning |
+| `docs/ga-readiness.md` | The 0.3 / 1.0 go-public checklist and its proofs |
+| `SECURITY_AUDIT.md` | Findings from the monthly `/security-review`. Gitignored, local only |
 
 ## Commands
 
@@ -47,14 +41,8 @@ make doctor     # health check the install
 make install    # deps + config (ARGS="--with-ocr --with-launchagent")
 ```
 
-`/mira-server` manages the LaunchAgent (start | stop | install | reload | restart | logs | status).
-It, `/core-release` and `/security-review` are local Claude Code skills on the maintainer's
-machine, not part of this repo.
+`/mira-server` manages the LaunchAgent (start | stop | install | reload | restart | logs | status). It, `/core-release` and `/security-review` are local skills on the maintainer's machine, not part of this repo.
 
 ## Release
 
-Run `/core-release` — updates CHANGELOG.md, commits, tags, and publishes a GitHub release.
-SemVer. Run after a batch of features lands on main.
-
-This is a Python backend: `/mira-validate` and `/mira-release` are **mira-apps** commands and do
-not apply here. Spec format and release cadence live in the root `CLAUDE.md`.
+Run `/core-release`: updates CHANGELOG.md, commits, tags, publishes a GitHub release. SemVer, run after a batch of features lands on main. `/mira-validate` and `/mira-release` are mira-apps commands and do not apply here. Spec format and release cadence are in the root `CLAUDE.md`.
