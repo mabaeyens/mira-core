@@ -676,6 +676,30 @@ def estimate_kv_bytes_per_token(
         if kv_layers > 0:
             num_layers = kv_layers
 
+    # Looped models (Inkling 2: the layers in [core_start, core_end) run
+    # num_passes times, each pass with a cache of its own). Only the full-attention
+    # layers grow with context; sliding-window layers stop at the window, so they
+    # are a constant, not a per-token term. Inkling 2 Mini: layers 5 and 23 run
+    # once, 11 and 17 run in the loop = 1 + 3 + 3 + 1 = 8 growing caches (32KiB/token)
+    # instead of the 24 a plain layer count would give.
+    loop = cfg.get("loop_config")
+    local_ids = cfg.get("local_layer_ids")
+    if isinstance(loop, dict) and isinstance(local_ids, list):
+        try:
+            core = range(loop["core_start"], loop["core_end"])
+            passes = loop["num_passes"]
+            local = set(local_ids)
+            num_layers = sum(
+                passes if i in core else 1
+                for i in range(cfg["num_hidden_layers"])
+                if i not in local
+            )
+        except KeyError:
+            pass
+        # Its per-layer cache is a CacheList, which mlx-lm never quantizes, so
+        # kv_bits would make this estimate too small by 2-4x.
+        kv_bits = None
+
     if kv_bits is not None:
         bytes_per_element = kv_bits / 8 + (2 * KV_DTYPE_BYTES) / kv_group_size
     else:

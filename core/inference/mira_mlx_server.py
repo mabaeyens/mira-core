@@ -43,6 +43,7 @@ from mlx_lm.server import ToolCallFormatter
 from mlx_lm.utils import load
 
 from core.inference.disk_prompt_cache import DiskBackedPromptCache, DiskPromptCacheStore
+from core.inference.inkling_stream import InklingStreamFilter, is_inkling_tokenizer
 
 logger = logging.getLogger("mira_mlx_server")
 
@@ -498,6 +499,39 @@ class ChatJob:
 
 
 class GenerationEngine:
+    # Set at load time from the tokenizer; a class default so an engine that was
+    # never loaded (tests) behaves like any non-Inkling model.
+    _inkling = False
+
+    def _warn_if_kv_quant_is_inert(self) -> None:
+        """Say so when kv_bits cannot apply, instead of silently doing nothing.
+
+        mlx-lm only quantizes top-level caches that have ``to_quantized``. A model
+        whose layers hold a ``CacheList`` (Inkling 2: a KV cache plus a conv-state
+        cache per layer) is skipped without a word, so ``mira_mlx_kv_bits`` would
+        look enabled and save nothing.
+        """
+        if not self.kv_bits:
+            return
+        try:
+            from mlx_lm.models.cache import make_prompt_cache
+
+            caches = make_prompt_cache(self.model)
+        except Exception:  # noqa: BLE001 - a diagnostic must never block startup
+            return
+        # Only CacheList hides KV from mlx-lm. A bare ArraysCache (Qwen3.6's
+        # linear-attention state) is fixed-size, so skipping it is correct and
+        # warning about it would be a false alarm on the default model.
+        inert = sum(1 for c in caches if type(c).__name__ == "CacheList")
+        if inert:
+            logger.warning(
+                "kv_bits=%s is inert for %d of %d cache entries of this model "
+                "(CacheList): they have no to_quantized(), so mlx-lm leaves the "
+                "KV inside them unquantized. Size the context as if kv_bits "
+                "were off.",
+                self.kv_bits, inert, len(caches),
+            )
+
     def __init__(
         self,
         model_path: str,
@@ -795,6 +829,12 @@ class GenerationEngine:
                 )
             self.state_machine = _build_state_machine(self.tokenizer)
             self._eos_ids = set(self.tokenizer.eos_token_ids)
+            # Inkling 2 frames every message with special tokens instead of
+            # <think>/<tool_call>; see core/inference/inkling_stream.py.
+            self._inkling = is_inkling_tokenizer(self.tokenizer)
+            if self._inkling:
+                logger.info("Inkling message framing detected; stream filter on")
+            self._warn_if_kv_quant_is_inert()
             # Capture this thread's stream so every later insert/next call is
             # pinned to it — this is the fix for the MLX cross-thread hang class.
             generation_stream = mx.default_stream(mx.default_device())
@@ -1799,6 +1839,12 @@ class GenerationEngine:
         # Pop it: Qwen3.6's template ignores unknown kwargs, but a future
         # template that errors on them would break every request.
         thinking_budget = ckwargs.pop("thinking_budget", 0)
+        if self._inkling and "reasoning_effort" not in ckwargs:
+            # Inkling's template has no enable_thinking switch; reasoning depth is
+            # a number in the system prompt. Map the switch Mira already sends.
+            ckwargs["reasoning_effort"] = (
+                "none" if ckwargs.get("enable_thinking") is False else "high"
+            )
         messages, images = _prepare_messages(job.messages, vision=self.vision)
         prompt_tokens = self.tokenizer.apply_chat_template(
             messages, tools=job.tools, add_generation_prompt=True,
@@ -1938,6 +1984,7 @@ class GenerationEngine:
             "think_end": think_end,
             "tail": [],
             "detokenizer": self.tokenizer.detokenizer,
+            "inkling": InklingStreamFilter(self.tokenizer) if self._inkling else None,
             "tool_formatter": ToolCallFormatter(self.tokenizer.tool_parser, job.tools, streaming=job.stream),
             "tool_text": "",
             "tool_calls_raw": [],
@@ -2005,8 +2052,15 @@ class GenerationEngine:
             state["tool_text"] += state["detokenizer"].last_segment
         # EOS/stop tokens decode to literal special-token text (e.g. "</s>") —
         # never part of the visible message, regardless of state.
+        inkling = state.get("inkling")
         if in_tool_text or r.token in self._eos_ids:
             text_delta = ""
+            if inkling is not None:
+                # Keep the filter's message mode in step even for tokens whose
+                # text is dropped here (a tool call's closing <|end_message|>).
+                inkling.feed(r.token, "")
+        elif inkling is not None:
+            text_delta = inkling.feed(r.token, state["detokenizer"].last_segment)
         else:
             text_delta = state["detokenizer"].last_segment
         state["prev_state"] = r.current_state or state["prev_state"]
@@ -2022,7 +2076,10 @@ class GenerationEngine:
                 if in_tool_text:
                     state["tool_text"] += trailing
                 elif r.token not in self._eos_ids:
-                    text_delta += trailing
+                    # Leftover bytes belong to the current message; the filter
+                    # still hides them in a header or between messages.
+                    if inkling is None or inkling.mode in ("think", "text"):
+                        text_delta += trailing
             # Flush any buffered tool call unconditionally — this is the
             # ml-explore/mlx-lm#1373 fix: with no tool-call end marker (Mistral),
             # EOS is the only way out of "tool" state and it clears prev_state,
