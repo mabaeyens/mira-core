@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -285,6 +286,51 @@ def stop_mira_mlx() -> None:
         except subprocess.TimeoutExpired:
             _mira_mlx_proc.kill()
         _mira_mlx_proc = None
+
+
+def _listener_pids(port: int) -> list:
+    """PIDs listening on a local TCP port (empty on any failure)."""
+    try:
+        out = subprocess.run(
+            ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [int(t) for t in out.split() if t.isdigit()]
+
+
+def stop_mira_mlx_any() -> None:
+    """Stop the mira-mlx engine even when this process did not spawn it.
+
+    `stop_mira_mlx` only knows the Popen handle it created, so an engine adopted after
+    a server restart (or started by hand) survived it. The engine lifecycle must be able
+    to unload those too. Only a listener whose command line is the mira-mlx server is
+    ever signalled; anything else on the port is left alone."""
+    stop_mira_mlx()
+    for pid in _listener_pids(MIRA_MLX_PORT):
+        try:
+            cmd = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if "core.inference.mira_mlx_server" not in cmd:
+            logger.warning("port %d is held by pid %d which is not mira-mlx; not stopping it", MIRA_MLX_PORT, pid)
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            continue
+        deadline = time.time() + 10
+        while time.time() < deadline and pid in _listener_pids(MIRA_MLX_PORT):
+            time.sleep(0.5)
+        if pid in _listener_pids(MIRA_MLX_PORT):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
 
 
 def start_vllm_mlx(model: str = VLLM_MLX_MODEL) -> None:

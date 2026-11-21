@@ -123,6 +123,26 @@ def _warn_orphaned_prompt_cache() -> None:
         logger.debug("could not check for orphaned prompt cache (%s)", exc)
 
 
+def _start_engine_lifecycle() -> None:
+    """Turn on idle unload / wake-on-request for the mira-mlx engine (off unless
+    engine_idle_unload_minutes > 0). See core/engine_lifecycle.py."""
+    from core import engine_lifecycle as _el
+    from core.config import ENGINE_IDLE_UNLOAD_MINUTES
+
+    if ENGINE_IDLE_UNLOAD_MINUTES <= 0:
+        return
+    if BACKEND != "mira-mlx":
+        logger.info("engine_idle_unload_minutes ignored: only the mira-mlx backend is supported (backend is %s)", BACKEND)
+        return
+    lc = _el.configure(_el.EngineLifecycle(
+        ENGINE_IDLE_UNLOAD_MINUTES,
+        start_fn=lambda: _bm.ensure_backend_running(_rt["backend"], _rt["model"]),
+        stop_fn=_bm.stop_mira_mlx_any,
+        is_up_fn=lambda: _bm.is_backend_ready("mira-mlx"),
+    ))
+    lc.start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global sessions, _initialized, _backend_ready
@@ -169,6 +189,8 @@ async def lifespan(app: FastAPI):
                 ).start()
             from core import scheduler as _scheduler
             _scheduler.start()
+            if not os.getenv("MIRA_TESTING"):
+                _start_engine_lifecycle()
             # Same guard as the backend thread above: without a backend running
             # there is nothing to watch, and under pytest it would poll a dead
             # port for the life of the suite.
@@ -341,10 +363,61 @@ async def index():
 async def health():
     if not _backend_ready:
         return JSONResponse({"status": "starting"}, status_code=503)
+    from core import engine_lifecycle as _el
+    lc = _el.get()
     backend_ready = await asyncio.get_event_loop().run_in_executor(
         None, _bm.is_backend_ready, _rt["backend"]
     )
-    return {"status": "ok", "backend_ready": backend_ready}
+    out = {"status": "ok", "backend_ready": backend_ready}
+    if lc.enabled:
+        # A sleeping engine is deliberate and wakes on the next request, so it counts as
+        # ready: apps that predate engine_state keep working (they send, the server wakes
+        # it). Only an engine that is mid-transition is "not ready". Newer clients read
+        # engine_state to show sleeping / waking instead.
+        state = lc.state
+        out["engine_state"] = state
+        if state == _el.SLEEPING:
+            out["backend_ready"] = True
+        elif state in (_el.WAKING, _el.UNLOADING):
+            out["backend_ready"] = False
+        # RUNNING keeps the real probe: an engine that crashed is still "not ready"
+    return out
+
+
+@app.get("/engine")
+async def engine_state(_=Depends(_ready)):
+    """Lifecycle state for clients: enabled, state (running/unloading/sleeping/waking),
+    idle seconds and the configured idle window."""
+    from core import engine_lifecycle as _el
+    return _el.get().snapshot()
+
+
+@app.post("/engine/wake")
+async def engine_wake(_=Depends(_ready)):
+    """Wake a sleeping engine now, so the first message does not pay the load. Returns
+    when it is up (or 503 if the wake failed)."""
+    from core import engine_lifecycle as _el
+    lc = _el.get()
+    try:
+        await asyncio.get_event_loop().run_in_executor(None, lc.ensure_awake)
+    except _el.EngineWakeError as exc:
+        logger.error("engine wake request failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Engine wake failed — see server logs")
+    return lc.snapshot()
+
+
+@app.post("/engine/unload")
+async def engine_unload(_=Depends(_ready)):
+    """Unload the engine now to free its RAM. 409 if a request is in flight or the
+    lifecycle is off."""
+    from core import engine_lifecycle as _el
+    lc = _el.get()
+    if not lc.enabled:
+        raise HTTPException(status_code=409, detail="engine_idle_unload_minutes is 0: lifecycle is off")
+    done = await asyncio.get_event_loop().run_in_executor(None, lc.unload_now)
+    if not done:
+        raise HTTPException(status_code=409, detail="Engine is busy or not running")
+    return lc.snapshot()
 
 
 @app.get("/info")
@@ -360,6 +433,9 @@ async def info():
         "compress_keep_recent": COMPRESS_KEEP_RECENT,
         "hardware": hardware,
     }
+    from core import engine_lifecycle as _el
+    if _el.get().enabled:
+        result["engine_state"] = _el.get().state
     return result
 
 
@@ -476,7 +552,12 @@ async def switch_backend(request: Request, _=Depends(_ready)):
     _backend_ready = False
     try:
         loop = asyncio.get_event_loop()
-        preset = await loop.run_in_executor(None, _bm.switch_to, target)
+        from core import engine_lifecycle as _el
+        await loop.run_in_executor(None, _el.get().begin_switch)
+        try:
+            preset = await loop.run_in_executor(None, _bm.switch_to, target)
+        finally:
+            _el.get().end_switch()
         await sessions.reinitialize_all(
             backend=preset["backend"],
             model=preset["model"],
@@ -543,7 +624,12 @@ async def switch_model(request: Request, _=Depends(_ready)):
     _backend_ready = False
     try:
         loop = asyncio.get_event_loop()
-        preset = await loop.run_in_executor(None, _bm.switch_to_model, backend, model_id)
+        from core import engine_lifecycle as _el
+        await loop.run_in_executor(None, _el.get().begin_switch)
+        try:
+            preset = await loop.run_in_executor(None, _bm.switch_to_model, backend, model_id)
+        finally:
+            _el.get().end_switch()
         await sessions.reinitialize_all(
             backend=preset["backend"],
             model=preset["model"],

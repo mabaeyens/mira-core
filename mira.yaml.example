@@ -365,6 +365,13 @@ mira_mlx_kv_group_size: 64
 # would have paid the fault-in itself, but it is not free either.
 # proactive_decompress: true
 
+# engine_idle_unload_minutes: stop the mira-mlx engine after this many idle minutes
+# and start it again on the next request, freeing ~20GB while Mira is unused. The
+# first message after a sleep waits for the load (about 9 to 14 s measured) and
+# re-prefills its context. 0 (the default) keeps the engine resident as before.
+# Applies to the mira-mlx backend only; apps that know engine_state show "sleeping".
+# engine_idle_unload_minutes: 15
+
 # disk_prompt_cache: overflow evicted prompt-cache entries to disk. Off, and it
 # is not merely unproven — it cannot work as built. A lookup is an exact match
 # on a hash of the whole prompt, while an entry is keyed on the prompt plus

@@ -27,6 +27,7 @@ from .config import (
     PRESENCE_PENALTY, PRESENCE_CONTEXT_SIZE,
     FREQUENCY_PENALTY, FREQUENCY_CONTEXT_SIZE,
 )
+from . import engine_lifecycle as _engine_lifecycle
 from .tools import TOOLS, GITHUB_TOOLS, _LOCAL_TOOLS, _TEMP_WORKSPACE_TOOLS
 from .prompts import build_system_prompt, current_time_note, SEARCH_RESULT_TEMPLATE, wrap_untrusted
 from .search_engine import SearchEngine
@@ -453,15 +454,16 @@ class ChatOrchestrator:
         extra = self._thinking_off_extra()
         kwargs = {"response_format": {"type": "json_object"}} if format else {}
         if True:
-            try:
-                resp = self._oai.chat.completions.create(
-                    model=self.model, messages=messages, extra_body=extra, **kwargs
-                )
-            except Exception:
-                # Backend doesn't support response_format — retry without it
-                resp = self._oai.chat.completions.create(
-                    model=self.model, messages=messages, extra_body=extra
-                )
+            with _engine_lifecycle.get().request():
+                try:
+                    resp = self._oai.chat.completions.create(
+                        model=self.model, messages=messages, extra_body=extra, **kwargs
+                    )
+                except Exception:
+                    # Backend doesn't support response_format — retry without it
+                    resp = self._oai.chat.completions.create(
+                        model=self.model, messages=messages, extra_body=extra
+                    )
             return bc.strip_think((resp.choices[0].message.content or "").strip())
 
     def generate_title(self, first_user_message: str) -> str:
@@ -1344,16 +1346,18 @@ class ChatOrchestrator:
                     body[f"{name}_context_size"] = ctx_size
             if SEED is not None:
                 extra.setdefault("extra_body", {})["seed"] = SEED
-            return bc.normalize_oai_stream(
-                self._oai.chat.completions.create(
-                    model=self.model,
-                    messages=bc.normalize_messages_for_oai(messages),
-                    tools=tools or None,
-                    stream=True,
-                    stream_options={"include_usage": True},
-                    temperature=TEMPERATURE,
-                    top_p=TOP_P,
-                    **extra,
+            return _engine_lifecycle.get().guard_stream(
+                lambda: bc.normalize_oai_stream(
+                    self._oai.chat.completions.create(
+                        model=self.model,
+                        messages=bc.normalize_messages_for_oai(messages),
+                        tools=tools or None,
+                        stream=True,
+                        stream_options={"include_usage": True},
+                        temperature=TEMPERATURE,
+                        top_p=TOP_P,
+                        **extra,
+                    )
                 )
             )
 

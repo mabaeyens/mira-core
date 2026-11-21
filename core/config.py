@@ -353,6 +353,12 @@ MEMORY_ADVISORY_NOTIFICATIONS: bool = _get("memory_advisory_notifications", True
 # per-process eviction signal only, availability floor, not on battery, not at
 # critical pressure, once per eviction event.
 PROACTIVE_DECOMPRESS: bool = _get("proactive_decompress", False)
+# Unload the mira-mlx engine after this many idle minutes and wake it on the next request
+# (core/engine_lifecycle.py, specs/engine-on-demand-lifecycle.md). 0 = off: the engine stays
+# resident from startup, exactly as before. Measured wake cost 2026-11-21: ~9 to 14 s from
+# spawn to first token, plus a full prefill of the first turn since no prompt cache
+# survives the process. Applies to the mira-mlx backend only.
+ENGINE_IDLE_UNLOAD_MINUTES: float = float(_get("engine_idle_unload_minutes", 0))
 # Off by default while it proves itself in real use, like proactive_decompress
 # before it: it changes the prefill path of every request.
 BOUNDARY_SNAPSHOT: bool = _get("boundary_snapshot", False)
