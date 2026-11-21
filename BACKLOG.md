@@ -5,6 +5,7 @@
 ### NEXT: fit Qwen3.6 better on 32GB, context is the limit (2026-11-21)
 - Short zero-shot prompts are fine; longer tasks trail mostly because served context is too low. Wall is prefill transient + Metal ceiling, not KV (see long-ctx ceiling work).
 - REAP lead: many Qwen3.6-35B-A3B REAP checkpoints exist on HF, none checked yet. MLX-ready candidate: `mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit-REAP-19B`. Others: `inference-optimization/Qwen3.6-35B-A3B-REAP20`, `DJLougen/Qwen3.6-35B-A3B-REAP-90pct`, `IAmTheRealGumbo/*-REAP-{64,128,192,231}-experts`. Base has 256 experts, top-8, 40 layers.
+- REAP-19B result (2026-11-21): `mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit-REAP-19B` scores 28.0% on the GPQA proxy n=100 vs 45.0% for stock Qwen3.6-35B-A3B 4-bit, same apparatus back to back (fresh engine, TF32=0, kv4, no MTP either side; control reproduced 45.0% exactly). Near chance (25%), Biology 1/10, Chemistry 11/47. 0 empty/truncated, so it is capability loss, not an apparatus fault. Rejected; the other REAP checkpoints (REAP20, 90pct, expert-count variants) prune less or similarly and are unchecked. Raw runs in `scripts/eval_runs/`.
 - REAP only frees memory (weights), it does not cut active compute, so the payoff is more context/headroom, not speed. Measure quality loss first: GPQA proxy n=100 vs 45.0% baseline, plus a long-context task, same apparatus, fresh engine, `MLX_ENABLE_TF32=0`. Third-party repos: read the card, no `trust_remote_code`.
 - Add any downloaded model to `MODEL_REGISTRY.md`.
 
