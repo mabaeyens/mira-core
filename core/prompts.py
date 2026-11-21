@@ -1,13 +1,22 @@
 """System prompts and templates."""
 
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 
-def current_datetime_str() -> str:
-    now_local = datetime.now().astimezone()
-    return now_local.strftime("%B %d, %Y, %H:%M %Z")
+def current_datetime_str(now: Optional[datetime] = None) -> str:
+    """Local time with its numeric UTC offset and the same instant in UTC.
+
+    A bare abbreviation ("CET") is not enough: asked for "the time in UTC+1" the model
+    took the stamp as UTC and added an hour (answered 20:49 at 19:49 CET, which already
+    is UTC+1). The offset and the UTC time are given outright so no zone arithmetic is
+    needed for the common questions."""
+    now_local = now if (now is not None and now.tzinfo) else (now or datetime.now()).astimezone()
+    offset = now_local.strftime("%z")                      # +0100
+    offset = f"{offset[:3]}:{offset[3:]}" if offset else ""
+    utc = now_local.astimezone(timezone.utc).strftime("%H:%M")
+    return f"{now_local.strftime('%B %d, %Y, %H:%M %Z')} (UTC{offset}; UTC time {utc})"
 
 
 # Per-process nonce for the untrusted-content trust boundary (RULE 10). Generated
