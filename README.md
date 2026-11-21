@@ -335,9 +335,9 @@ Mira is built on a lot of other people's work. This is what it leans on, what it
 
 **Retrieval and serving.** ChromaDB, sentence-transformers, transformers and python-multipart (Apache-2.0), PyTorch (BSD-3-Clause), FastAPI (MIT), and Starlette, uvicorn and sse-starlette (BSD-3-Clause).
 
-**Documents and the web.** PyMuPDF (AGPL-3.0 or Artifex commercial, see below), trafilatura (Apache-2.0), Markdown (BSD-3-Clause), and beautifulsoup4, markdownify, ddgs, curl_cffi, httpx and rich (MIT).
+**Documents and the web.** pypdfium2 (BSD-3-Clause or Apache-2.0), trafilatura (Apache-2.0), Markdown (BSD-3-Clause), and beautifulsoup4, markdownify, ddgs, curl_cffi, httpx and rich (MIT).
 
-> **A note on PyMuPDF.** It is dual licensed, AGPL-3.0 or a commercial licence from Artifex, and it is the only strong copyleft in Mira's dependency tree. Mira does not redistribute it: the wheel declares it as a dependency and pip fetches it from Artifex directly, so hosting Mira yourself changes nothing. It is worth knowing about if you fork Mira into something closed or build a hosted product on top of it. `pypdfium2` (BSD) is the usual escape hatch.
+> **PDF text** is read with pypdfium2 (the PDFium engine from Chromium, BSD-3-Clause / Apache-2.0). Mira used PyMuPDF up to v1.5, which is AGPL-3.0 and could not be bundled in the notarized app under the MIT licence; no strong copyleft remains in the dependency tree.
 
 ## License
 

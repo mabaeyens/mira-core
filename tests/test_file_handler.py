@@ -5,24 +5,18 @@ import pytest
 
 from core import file_handler
 
-fitz = pytest.importorskip("fitz")  # PyMuPDF — required for PDF support
+pytest.importorskip("pypdfium2")  # required for PDF support
+
+from tests.pdf_helpers import make_pdf
 
 
 def _text_pdf() -> bytes:
-    doc = fitz.open()
-    doc.new_page().insert_text((72, 72), "Hello OCR world")
-    data = doc.tobytes()
-    doc.close()
-    return data
+    return make_pdf(["Hello OCR world"])
 
 
 def _blank_pdf() -> bytes:
     """A page with no text layer — stands in for a scanned page."""
-    doc = fitz.open()
-    doc.new_page()
-    data = doc.tobytes()
-    doc.close()
-    return data
+    return make_pdf([None])
 
 
 def test_text_pdf_extracts_without_ocr(monkeypatch):

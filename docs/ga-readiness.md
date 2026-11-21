@@ -55,7 +55,7 @@ afterwards, not something you need in order to start.
 | # | Item | Status | Proof |
 |---|---|---|---|
 | E1 | Monthly `/security-review` run on the release candidate | open | Date recorded; findings stay local |
-| E2 | Licences and attribution complete (open: PyMuPDF AGPL-3.0) | open | `THIRD_PARTY` or equivalent matches installed dist-info |
+| E2 | Licences and attribution complete | in progress (2026-11-21) | PyMuPDF (AGPL-3.0) replaced by pypdfium2 (BSD/Apache) in `core/file_handler.py`; the lock no longer has it. A scan of installed dist-info found no other strong copyleft; `tld` is offered under MPL-1.1 OR GPL OR LGPL and is used under MPL-1.1. Still to check: the built app's site-packages has no pymupdf, and a `THIRD_PARTY` list matches the bundle. |
 | E3 | README quick start matches what the installer really does | open | A reader follows only the README on a clean machine |
 | E4 | CHANGELOG current; version bumped (0.3 or 1.0) and tagged | open | `/core-release` run |
 | E5 | No secrets or personal paths in tracked files or default config | open | Scan of tracked files and the generated `mira.yaml` |

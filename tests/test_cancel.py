@@ -211,16 +211,12 @@ def test_browse_ext_field_is_lowercase_with_dot(client, home_dir):
 
 def test_pdf_with_wrong_extension_detected_and_warned(tmp_path):
     """A file with .bump extension whose bytes start with %PDF is detected as PDF."""
-    import fitz
     from core.file_handler import load_file
+    from tests.pdf_helpers import make_pdf
 
     # Create a minimal real PDF
-    doc = fitz.open()
-    page = doc.new_page()
-    page.insert_text((72, 72), "Hello magic bytes test")
     bump_path = tmp_path / "strangeextensions.Bump"
-    doc.save(str(bump_path))
-    doc.close()
+    bump_path.write_bytes(make_pdf(["Hello magic bytes test"]))
 
     att = load_file(str(bump_path))
     assert att["type"] == "rag", "Detected-as-PDF file must use RAG path"

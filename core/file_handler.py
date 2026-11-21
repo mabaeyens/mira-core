@@ -192,9 +192,11 @@ def _run_tesseract_on_bytes(image_bytes: bytes, suffix: str, timeout: float) -> 
 
 
 def _ocr_page(page) -> str:
-    """OCR a single fitz page via the system tesseract binary. Returns text or ''."""
-    pix = page.get_pixmap(dpi=_OCR_DPI)
-    return _run_tesseract_on_bytes(pix.tobytes("png"), suffix=".png", timeout=_OCR_PER_PAGE_TIMEOUT)
+    """OCR a single pypdfium2 page via the system tesseract binary. Returns text or ''."""
+    image = page.render(scale=_OCR_DPI / 72).to_pil()
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return _run_tesseract_on_bytes(buf.getvalue(), suffix=".png", timeout=_OCR_PER_PAGE_TIMEOUT)
 
 
 def ocr_image_from_base64(b64_content: str) -> Optional[str]:
@@ -220,13 +222,20 @@ def ocr_image_from_base64(b64_content: str) -> Optional[str]:
 
 def _extract_pdf(name: str, data: bytes) -> Dict:
     try:
-        import fitz  # PyMuPDF
+        import pypdfium2 as pdfium  # BSD-3 / Apache-2.0 (replaced PyMuPDF, AGPL-3.0)
     except ImportError:
-        raise ImportError("pymupdf is required for PDF support: uv add pymupdf")
+        raise ImportError("pypdfium2 is required for PDF support: uv add pypdfium2")
 
-    doc = fitz.open(stream=data, filetype="pdf")
+    doc = pdfium.PdfDocument(data)
     try:
-        page_texts = [page.get_text() for page in doc]
+        page_texts = []
+        for page in doc:
+            textpage = page.get_textpage()
+            try:
+                # pdfium separates lines with CRLF; the rest of Mira expects plain LF.
+                page_texts.append(textpage.get_text_range().replace("\r\n", "\n"))
+            finally:
+                textpage.close()
 
         # OCR fallback: pages with no extractable text layer (scanned PDFs). Only triggers
         # on empty pages and only when tesseract is installed; text pages are left untouched
