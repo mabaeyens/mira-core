@@ -70,7 +70,7 @@ Supervises the embedded server, runs first-run setup, ships as the notarized DMG
 | F2 | First-run flow: RAM and disk checks, model download with progress, then the server starts | in progress | Logic unit-tested; the window renders on the notarized build. Not run: the real download from the app |
 | F3 | Quitting the app (menu, SIGTERM, logout) stops the server it started and leaves one it did not start | done (2026-11-21) | First build hung on SIGTERM (found by launching it); fixed, the rebuilt notarized app exits in 1 s and a stub server plus child both die |
 | F4 | Build, sign, notarize, staple and DMG in one command | done (2026-11-21) | `scripts/release.sh`; both submissions Accepted twice |
-| F5 | The menu itself works: status, Open, Wake, Free Memory, Start, Stop, Restart, Open at Login | open | Not looked at yet (a screenshot did not capture the menu bar) |
+| F5 | The menu itself works: status, Open, Wake, Free Memory, Start, Stop, Restart, Open at Login | done (2026-11-21) | Menu opens Mira Web from the installed `~/Applications` copy; asking questions and seeing conversations works. Checked by hand. Wake, Free Memory and Open at Login not individually confirmed. |
 | F6 | The app adopts a server that is already running without restarting it | open | Unit-tested in the status logic only; run against a live server |
 | F7 | Open at Login via `SMAppService` | open | Toggle on an installed copy, log out and in |
 | F8 | Isolated-run support: the app ignores `HOME`, so a test run uses the real `~/Library/Application Support/Mira` | open | A path override, then a test run that touches nothing real |
