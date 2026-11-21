@@ -31,7 +31,7 @@ afterwards, not something you need in order to start.
 | B1 | A packaging path is chosen for 1.0 (formula, notarized menu-bar app, or app-managed) | decided: notarized DMG with a menu-bar app (2026-11-21) | Spec in `specs/mira-menubar-app.md` (local) |
 | B2 | Homebrew tap formula tracks the latest tag (`/brew-release`) | open | `brew install mabaeyens/tap/mira` on a clean machine, then A1 to A4 |
 | B3 | Release artifacts are signed and notarized if a non-brew download is offered | done on this Mac (2026-11-21) | `mira-menubar/scripts/release.sh` built, signed, notarized (app and DMG both Accepted) and stapled `Mira-0.1.0.dmg` (609 MB); Gatekeeper accepts it as Notarized Developer ID. Open: a Mac that is not the build machine, and the update path (B4). | `spctl -a -vv` accepts the artifact on a clean Mac |
-| B4 | Update path exists and is tested | in progress | Old version to new version without losing config or data |
+| B4 | Update path exists and is tested | done for the menu-bar app (2026-11-21) | See F10. Config and data live outside the bundle, so they survive a swap. The Homebrew and `install.sh` paths are not covered. |
 
 ## C. Engine behaviour on a user's Mac
 
@@ -75,7 +75,7 @@ Supervises the embedded server, runs first-run setup, ships as the notarized DMG
 | F7 | Open at Login via `SMAppService` | open | Toggle on an installed copy, log out and in |
 | F8 | Isolated-run support: the app ignores `HOME`, so a test run uses the real `~/Library/Application Support/Mira` | open | A path override, then a test run that touches nothing real |
 | F9 | Pairing the iPhone app (QR or paste of URL and token) | open | D1. The menu-bar app generates no token today (loopback needs none) and opens the web UI. Mira Desktop needs its own API token like the iOS apps; the two do not share one. |
-| F10 | Updates (Sparkle) | in progress | Built and launched 2026-11-21: framework embedded and signed, menu item, feed and EdDSA key in Info.plist, `scripts/publish.sh`. Open: publish 0.1.0 then 0.1.1 and update an installed copy through the menu. Back up the EdDSA private key. |
+| F10 | Updates (Sparkle) | done (2026-11-21) | Installed 0.1.0 found 0.1.1 from the public appcast, downloaded, verified, extracted and relaunched into 0.1.1; signature valid, Gatekeeper accepted, server running again. Releases: v0.1.0, v0.1.1 on `mabaeyens/mira-menubar`. Not tried: a failed or tampered update, a read-only install location. |
 
 ## G. Web UI parity (`static/index.html`)
 
