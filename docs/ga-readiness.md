@@ -28,9 +28,9 @@ afterwards, not something you need in order to start.
 
 | # | Item | Status | Proof |
 |---|---|---|---|
-| B1 | A packaging path is chosen for 1.0 (formula, notarized menu-bar app, or app-managed) | open | Decision recorded here with the reason |
+| B1 | A packaging path is chosen for 1.0 (formula, notarized menu-bar app, or app-managed) | decided: notarized DMG with a menu-bar app (2026-11-21) | Spec in `specs/mira-menubar-app.md` (local) |
 | B2 | Homebrew tap formula tracks the latest tag (`/brew-release`) | open | `brew install mabaeyens/tap/mira` on a clean machine, then A1 to A4 |
-| B3 | Release artifacts are signed and notarized if a non-brew download is offered | open | `spctl -a -vv` accepts the artifact on a clean Mac |
+| B3 | Release artifacts are signed and notarized if a non-brew download is offered | in progress | Spike: bundle signs and runs under the hardened runtime. Notarization blocked until the Apple Developer agreement is accepted (HTTP 403). | `spctl -a -vv` accepts the artifact on a clean Mac |
 | B4 | Update path exists and is tested | open | Old version to new version without losing config or data |
 
 ## C. Engine behaviour on a user's Mac
@@ -72,6 +72,16 @@ not on PATH. Still open:
 - `mira` is only at `.venv/bin/mira` unless installed with `uv tool install --editable .`.
 - `--with-launchagent` ignores the `launchctl load` exit code and writes generated files
   into the repo.
+
+## Signing spike result (2026-11-21)
+
+Embedded runtime (python-build-standalone 3.13 plus the locked dependencies, no venv) in an
+unsigned `Mira.app`: 1.2 GB on disk, 368 MB zipped, 322 native binaries. Signed inside-out
+with the Developer ID Application certificate, hardened runtime, timestamp, **no
+entitlements, no `--deep`**: `codesign --verify --strict` passes, and under the hardened
+runtime mlx runs a GPU matmul and torch, sentence-transformers, chromadb, PyMuPDF,
+onnxruntime and mlx-lm import. Signing 322 binaries takes 15 s. Open: Apple's notary service
+(blocked, see B3), Gatekeeper with the quarantine flag, and a full boot of the bundled server.
 
 ## Decisions
 
