@@ -30,7 +30,7 @@ afterwards, not something you need in order to start.
 |---|---|---|---|
 | B1 | A packaging path is chosen for 1.0 (formula, notarized menu-bar app, or app-managed) | decided: notarized DMG with a menu-bar app (2026-11-21) | Spec in `specs/mira-menubar-app.md` (local) |
 | B2 | Homebrew tap formula tracks the latest tag (`/brew-release`) | open | `brew install mabaeyens/tap/mira` on a clean machine, then A1 to A4 |
-| B3 | Release artifacts are signed and notarized if a non-brew download is offered | in progress | Spike: bundle signs and runs under the hardened runtime. Notarization blocked until the Apple Developer agreement is accepted (HTTP 403). | `spctl -a -vv` accepts the artifact on a clean Mac |
+| B3 | Release artifacts are signed and notarized if a non-brew download is offered | in progress | Spike 2026-11-21: bundle notarized (Accepted), stapled, Gatekeeper accepts it as Notarized Developer ID with the quarantine flag set, and the full server boots from it. Open: the real app, DMG, update path. | `spctl -a -vv` accepts the artifact on a clean Mac |
 | B4 | Update path exists and is tested | open | Old version to new version without losing config or data |
 
 ## C. Engine behaviour on a user's Mac
@@ -80,8 +80,12 @@ unsigned `Mira.app`: 1.2 GB on disk, 368 MB zipped, 322 native binaries. Signed 
 with the Developer ID Application certificate, hardened runtime, timestamp, **no
 entitlements, no `--deep`**: `codesign --verify --strict` passes, and under the hardened
 runtime mlx runs a GPU matmul and torch, sentence-transformers, chromadb, PyMuPDF,
-onnxruntime and mlx-lm import. Signing 322 binaries takes 15 s. Open: Apple's notary service
-(blocked, see B3), Gatekeeper with the quarantine flag, and a full boot of the bundled server.
+onnxruntime and mlx-lm import. Signing 322 binaries takes 15 s. Notarization: Accepted in
+5.5 min for a 368 MB zip. Stapled; `spctl --assess` accepts the quarantined copy ("Notarized
+Developer ID"). The bundled server booted with config and data outside the bundle, MTP armed,
+chat answered, zero files written inside the bundle, signature intact afterwards. Findings:
+the launcher must forward SIGTERM to the Python child (killing it orphaned the server);
+prune `test` directories from site-packages (10 joblib test archives drew warnings).
 
 ## Decisions
 
