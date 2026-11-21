@@ -234,7 +234,8 @@ if [ "$RECOMMENDED" = "1" ] && [ "$WITH_LAUNCHAGENT" = "1" ]; then
   fi
   UP=0
   for _ in $(seq 1 120); do
-    if curl -fs --max-time 3 http://localhost:8000/health >/dev/null 2>&1; then UP=1; break; fi
+    # Wait for the ENGINE (backend_ready), not just the web server answering.
+    if curl -fs --max-time 3 http://localhost:8000/health 2>/dev/null | grep -q '"backend_ready":true'; then UP=1; break; fi
     # Fail fast if launchd gave up on the job instead of waiting out the full timeout.
     if ! launchctl print "$LA_DOMAIN/$LA_LABEL" >/dev/null 2>&1; then break; fi
     sleep 3
