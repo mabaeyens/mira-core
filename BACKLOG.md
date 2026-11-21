@@ -2,6 +2,13 @@
 
 ## Pending
 
+### NEXT: engine on-demand lifecycle, the daily-use footprint lever (2026-11-21)
+- Direction is daily usability and a 0.3 then 1.0 App Store release, not speed. The engine is a child of `server.py`, started in the lifespan and never stopped, so ~20GB stays wired around the clock. No idle unload exists for the language model (only the vision tower has one). `proactive_decompress` only faults an evicted model back in and is off by default.
+- Spec: `specs/engine-on-demand-lifecycle.md` (local, gitignored). Idle watcher plus single-flight wake, default off, mira-mlx only. Build order: `core/engine_lifecycle.py` and `engine_state` on `/health`, then wire one route.
+- First step is measuring cold-start (spawn to first token) with a warm and a cold OS file cache; it decides the default idle window. mira-apps needs a separate spec for a "waking up" state.
+- Not worth pursuing as headline levers: smaller default context (already derived to ~39k, 64k OOMs), smaller prefill step, kv2 (kv4 was judged keep).
+- The independent adversarial review of these levers did not run: the context-mode hook (1.0.169, `hooks/core/routing.mjs` ~905) appends its routing block to every Agent prompt without an idempotency check, so auto mode's resubmit loop never converges. Retry it once on context-mode 2.x.
+
 ### NEXT: fit Qwen3.6 better on 32GB, context is the limit (2026-11-21)
 - Short zero-shot prompts are fine; longer tasks trail mostly because served context is too low. Wall is prefill transient + Metal ceiling, not KV (see long-ctx ceiling work).
 - REAP lead: many Qwen3.6-35B-A3B REAP checkpoints exist on HF, none checked yet. MLX-ready candidate: `mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit-REAP-19B`. Others: `inference-optimization/Qwen3.6-35B-A3B-REAP20`, `DJLougen/Qwen3.6-35B-A3B-REAP-90pct`, `IAmTheRealGumbo/*-REAP-{64,128,192,231}-experts`. Base has 256 experts, top-8, 40 layers.
