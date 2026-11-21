@@ -1,6 +1,6 @@
 """Inkling 2 message framing: what the client sees, and what it must not."""
 
-from core.inference.inkling_stream import (
+from core.inference.inkling_stream import (  # import-guard: lazy-mlx
     THINK_CLOSE,
     InklingStreamFilter,
     is_inkling_tokenizer,
