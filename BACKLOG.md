@@ -2,6 +2,20 @@
 
 ## Pending
 
+### NEXT: fit Qwen3.6 better on 32GB, context is the limit (2026-11-21)
+- Short zero-shot prompts are fine; longer tasks trail mostly because served context is too low. Wall is prefill transient + Metal ceiling, not KV (see long-ctx ceiling work).
+- REAP lead: many Qwen3.6-35B-A3B REAP checkpoints exist on HF, none checked yet. MLX-ready candidate: `mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit-REAP-19B`. Others: `inference-optimization/Qwen3.6-35B-A3B-REAP20`, `DJLougen/Qwen3.6-35B-A3B-REAP-90pct`, `IAmTheRealGumbo/*-REAP-{64,128,192,231}-experts`. Base has 256 experts, top-8, 40 layers.
+- REAP only frees memory (weights), it does not cut active compute, so the payoff is more context/headroom, not speed. Measure quality loss first: GPQA proxy n=100 vs 45.0% baseline, plus a long-context task, same apparatus, fresh engine, `MLX_ENABLE_TF32=0`. Third-party repos: read the card, no `trust_remote_code`.
+- Add any downloaded model to `MODEL_REGISTRY.md`.
+
+### Inkling 2 Mini support: built, parked, not adopted (2026-11-21)
+- Done: model ported onto the fork (`mabaeyens/mlx-lm` branch `mira-inkling`, 2 commits, pushed) and wired into mira-mlx (`7592701`): stream filter for message framing, looped-KV estimate (32KiB/token), inert-`kv_bits` warning. Works end to end: thinking, tools, streaming, boundary snapshot (TTFT 3.8s to 0.25s).
+- Verdict: not better than Qwen3.6 here. Decode 28.7 vs 57.5 t/s (gate 35 not met), prefill 0.36-0.69x, ~2.5-3x longer answers. GPQA proxy aborted at 21/100 by the RAM floor (12/21, 9 truncated at 2048), not comparable to the 45.0% baseline.
+- Revisit when upstream Inkling support (PR #2086 / new layers layout) lands. Open gaps: kv quant on CacheList, `enable_thinking=false` still reasons ~50-90 tokens, vision untested, tensor parallel stubbed, Mira pin not moved (tests used PYTHONPATH).
+- Downloads kept pending a decision: `thinkingmachines/Inkling-2-Mini` (20.2GB) and `mlx-community/Inkling-2-Mini-4bit` (17.3GB), in `MODEL_REGISTRY.md`. Do not delete without asking.
+- Untried idea: `thinkingmachines/TML-d24-varloop-research` (1-5 passes) for a speed/quality sweep; needs a conversion first.
+- Prod Mira stays DOWN by default (Safari needed); start with `/mira-server start` when wanted.
+
 ### Gemma4-26B vs Qwen3.6 on the GPQA proxy, memory pick-up (2026-10-13)
 - Measured 2026-10-10, fresh engine each, `MLX_ENABLE_TF32=0`, thinking off, n=100, kv4: gemma4-26b 48.0% (136 q/min) vs Qwen3.6-35B-A3B-MTP with prod flags 45.0% (120 q/min). 0 empty/no-letter/truncated on both. Chem 38% vs 34%, Phys 51% vs 53.5%, Bio 80% vs 60% (n=10). The 3-point gap is inside proxy noise; the proxy shows gemma4 no worse, nothing more. Raw runs in `scripts/eval_runs/*proxy_{qwen36-mtp,gemma4-26b}.jsonl`.
 - Not measured: peak memory (the reason to consider gemma4), tool-calling, long context, and the thinking-on gate. The earlier "gemma4 is worse" results were tool-calling and 24K-context OOM, which the proxy does not touch. Next: bench_compare tool-calling run and a peak-RAM reading before any default change.
