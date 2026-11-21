@@ -1070,7 +1070,8 @@
   <div class="header-left">
     <svg class="logo" viewBox="98 98 316 316" width="22" height="22" role="img" aria-label="Mira"><path fill="#f7c768" d="M256 98C258 216 296 254 414 256C296 258 258 296 256 414C254 296 216 258 98 256C216 254 254 216 256 98ZM362 292C362.5 320.4 371.6 329.5 400 330C371.6 330.5 362.5 339.6 362 368C361.5 339.6 352.4 330.5 324 330C352.4 329.5 361.5 320.4 362 292Z"/></svg>
     <span class="title">Mira</span>
-    <span class="model-badge" id="modelBadge">gemma4:26b</span>
+    <span class="model-badge" id="modelBadge">…</span>
+    <button class="model-badge" id="engineBadge" style="display:none;cursor:pointer;border:none;font-size:11px;font-family:inherit" title="">💤 Asleep</button>
     <span class="model-badge" id="projectBadge" style="display:none;background:#f0fdf4;color:#166534;border:1px solid #86efac"></span>
   </div>
   <div class="header-right">
@@ -1157,6 +1158,7 @@
   const thinkingChk   = document.getElementById('thinkingToggle');
   const welcomeEl   = document.getElementById('welcome');
   const modelBadge  = document.getElementById('modelBadge');
+  const engineBadge = document.getElementById('engineBadge');
   const tokenBadge  = document.getElementById('tokenBadge');
   const ctxBadge    = document.getElementById('ctxBadge');
   const attachBtn      = document.getElementById('attachBtn');
@@ -1475,19 +1477,55 @@
     if (!isStreaming) statusBar.style.display = 'none';
   }
 
+  // The engine may be unloaded after idle and wakes on the next request (9 to 30 s). Show it,
+  // instead of a message that silently hangs. /health never counts as activity server-side.
+  let _engineState = 'running';
+  let _healthPolling = false;
+
+  function shortModel(m) { return (m || '').split('/').filter(Boolean).pop() || '…'; }
+
+  function renderEngine(state) {
+    _engineState = state;
+    if (state === 'sleeping') {
+      engineBadge.textContent = '💤 Asleep';
+      engineBadge.title = 'The model is unloaded to free memory. Click to wake it now, or just send a message.';
+      engineBadge.style.display = '';
+    } else if (state === 'waking' || state === 'unloading') {
+      engineBadge.textContent = state === 'waking' ? '⏳ Waking…' : '⏳ Unloading…';
+      engineBadge.title = 'Loading the model takes 10 to 30 seconds.';
+      engineBadge.style.display = '';
+    } else {
+      engineBadge.style.display = 'none';
+    }
+  }
+
+  engineBadge.addEventListener('click', () => {
+    if (_engineState !== 'sleeping') return;
+    renderEngine('waking');
+    fetch('/engine/wake', { method: 'POST' }).catch(() => {});
+  });
+
   async function pollHealth() {
-    try {
-      const r = await fetch('/health');
-      if (r.ok) {
-        const data = await r.json();
-        if (data.backend_ready) { hideLoadingBanner(); return; }
-      }
-    } catch {}
-    setTimeout(pollHealth, 3000);
+    if (_healthPolling) return;
+    _healthPolling = true;
+    for (;;) {
+      let delay = 3000;
+      try {
+        const r = await fetch('/health');
+        if (r.ok) {
+          const data = await r.json();
+          renderEngine(data.engine_state || 'running');
+          if (data.backend_ready) hideLoadingBanner(); else showLoadingBanner();
+          delay = (!data.backend_ready || data.engine_state === 'waking' || data.engine_state === 'unloading') ? 1500 : 5000;
+        } else { showLoadingBanner(); }
+      } catch { showLoadingBanner(); }
+      await new Promise(res => setTimeout(res, delay));
+    }
   }
 
   fetch('/status').then(r => r.json()).then(s => {
-    modelBadge.textContent  = s.model;
+    modelBadge.textContent  = shortModel(s.model);
+    modelBadge.title        = s.model;
     verboseChk.checked      = s.verbose;
     updateStats(s.input_tokens || 0, s.output_tokens || 0, s.context_pct || 0);
     if (s.home_dir) folderCurPath = s.home_dir;
@@ -1500,7 +1538,8 @@
 
   // Check backend readiness; start polling if not yet ready
   fetch('/health').then(r => r.json()).then(data => {
-    if (!data.backend_ready) { showLoadingBanner(); pollHealth(); }
+    if (!data.backend_ready) showLoadingBanner();
+    pollHealth();
   }).catch(() => { showLoadingBanner(); pollHealth(); });
 
   loadProjectList();
@@ -1999,6 +2038,7 @@
 
   // ── Send & stream ─────────────────────────────────────────────────────────
   async function sendMessage() {
+    if (_engineState === 'sleeping') renderEngine('waking');  // the request itself wakes it
     const text = inputEl.value.trim();
     if (!text && stagedFiles.length === 0) return;
 
