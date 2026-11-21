@@ -77,16 +77,24 @@ Homebrew's sandbox has no network at build time. Details in `packaging/homebrew/
 
 </details>
 
-The installer checks/installs `uv`, runs `uv sync`, and creates `mira.yaml`. Opt into
-the extras with flags (the curl one-liner takes them after `-s --`):
+The one-liner runs the **recommended install** and ends with a running server: it
+installs `uv`, syncs the dependencies, writes a tuned `mira.yaml` (a smaller model on Macs
+under 32 GB), downloads the model with the MTP head, installs the LaunchAgent, waits until
+the server answers, and prints the URL (`http://localhost:8000`). The model unloads when
+idle and wakes on the next request. Change any setting afterwards in `mira.yaml`.
+
+To install only the software and decide the rest yourself, pass `--minimal`; other flags
+follow `-s --` on the curl one-liner:
 
 ```bash
-make install ARGS="--with-ocr --with-launchagent"
-# or:  curl -LsSf .../install.sh | bash -s -- --with-ocr --with-launchagent
+curl -LsSf .../install.sh | bash -s -- --minimal
+make install ARGS="--recommended"                   # already cloned
+make install ARGS="--with-ocr --with-launchagent"   # pick the extras yourself
 ```
 
 | Flag | Effect |
 |------|--------|
+| `--recommended` | the one-step install described above (default for the curl one-liner) |
 | `--with-ocr` | `brew install tesseract` (OCR for scanned PDFs and image attachments — see below) |
 | `--with-launchagent` | install & load the macOS LaunchAgent (server runs at login) |
 | `--with-tailscale <host>` | configure HTTPS/Tailscale cert paths in the LaunchAgent |
@@ -107,7 +115,9 @@ The default backend pulls its ~19 GB model on the first `mira serve`, which othe
 looks like a hang. Run **`mira fetch-model`** ahead of time to download it explicitly,
 with progress — it's idempotent (a cached model returns at once) and takes an optional
 repo id (`mira fetch-model mlx-community/<repo>`) to pull a model other than the
-configured default.
+configured default. `mira fetch-model --mtp --write-config` also fetches the 1.7 GB
+multi-token-prediction head from the upstream Qwen repo, builds the MTP model directory
+and points `mira.yaml` at it.
 
 ### No extra app required
 

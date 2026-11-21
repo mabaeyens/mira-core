@@ -11,11 +11,10 @@ An assembled MTP model dir is: symlinks to every base-model file + the real
 ``model-mtp.safetensors`` + a merged ``config.json``. ``mlx_lm.load`` globs all
 ``*.safetensors`` in the dir, so the head loads with the base.
 
-OPEN (spec §8): where the bf16 ``mtp.*`` tensors are *sourced* from — a published
-HF sidecar vs. extraction from the full-precision source repo — is not yet
-settled. This module takes the sidecar as an input path (``sidecar_src``); wiring
-an automatic download is the follow-up. Until then, an existing sidecar (e.g. the
-one under ``~/.omlx/models/Qwen3.6-35B-A3B-MTP/``) can be passed as the source.
+The bf16 ``mtp.*`` tensors are sourced from the full-precision upstream repo
+(``Qwen/Qwen3.6-35B-A3B``, apache-2.0) by :func:`fetch_mtp_sidecar`, which pulls only
+those 19 tensors with HTTP range requests (~1.7 GB) instead of the 6 GB of shards they
+live in. ``assemble_mtp_model_dir`` takes the resulting file as its ``sidecar_src``.
 """
 
 from __future__ import annotations
@@ -23,6 +22,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import struct
+import time
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -133,4 +135,106 @@ def assemble_mtp_model_dir(
     (dest / "config.json").write_text(json.dumps(cfg, indent=2))
 
     logger.info("assembled MTP model dir at %s (base=%s, sidecar=%s)", dest, base, sidecar)
+    return dest
+
+
+# ── sourcing the sidecar from the upstream repo ───────────────────────────────
+
+UPSTREAM_MTP_REPO = "Qwen/Qwen3.6-35B-A3B"
+_CHUNK = 64 * 1024 * 1024
+
+
+def _hf_resolve(repo: str, filename: str, revision: str) -> str:
+    return f"https://huggingface.co/{repo}/resolve/{revision}/{filename}"
+
+
+def _http_range(url: str, start: int, end: int, *, retries: int = 4) -> bytes:
+    """Bytes [start, end] inclusive via a Range request. Retries on transient errors.
+    Public repo, so no credentials are ever sent."""
+    last: Exception | None = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"Range": f"bytes={start}-{end}"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                data = r.read()
+            if len(data) != end - start + 1:
+                raise OSError(f"short read: wanted {end - start + 1} bytes, got {len(data)}")
+            return data
+        except (OSError, ValueError) as exc:  # URLError and short reads are OSError
+            last = exc
+            time.sleep(2 * (attempt + 1))
+    raise OSError(f"range request failed after {retries} tries: {last}")
+
+
+def _http_json(url: str) -> dict:
+    with urllib.request.urlopen(url, timeout=60) as r:
+        return json.loads(r.read())
+
+
+def fetch_mtp_sidecar(
+    dest: os.PathLike | str,
+    *,
+    repo: str = UPSTREAM_MTP_REPO,
+    revision: str = "main",
+    progress=None,
+) -> Path:
+    """Build ``model-mtp.safetensors`` at ``dest`` from the upstream repo's ``mtp.*``
+    tensors, downloading only those bytes (~1.7 GB, not the 6 GB of shards that hold
+    them). Atomic (writes ``.part`` then renames) and idempotent: an existing valid
+    sidecar is returned untouched. ``progress(done_bytes, total_bytes)`` is optional.
+    """
+    dest = Path(dest)
+    if sidecar_has_mtp_tensors(dest):
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    index = _http_json(_hf_resolve(repo, "model.safetensors.index.json", revision))
+    names = sorted(k for k in index["weight_map"] if k.startswith(_MTP_KEY_PREFIX))
+    if not names:
+        raise ValueError(f"{repo} has no {_MTP_KEY_PREFIX}* tensors in its index")
+
+    # Per shard: read the safetensors header once, then plan the byte span of each tensor.
+    shard_hdr: dict[str, tuple[int, dict]] = {}
+    plan = []  # (name, shard, abs_start, nbytes, meta)
+    for name in names:
+        shard = index["weight_map"][name]
+        if shard not in shard_hdr:
+            url = _hf_resolve(repo, shard, revision)
+            (hlen,) = struct.unpack("<Q", _http_range(url, 0, 7))
+            header = json.loads(_http_range(url, 8, 8 + hlen - 1))
+            shard_hdr[shard] = (8 + hlen, header)
+        base, header = shard_hdr[shard]
+        meta = header[name]
+        s0, e0 = meta["data_offsets"]
+        plan.append((name, shard, base + s0, e0 - s0, meta))
+
+    total = sum(p[3] for p in plan)
+    out_header, offset = {}, 0
+    for name, _shard, _start, nbytes, meta in plan:
+        out_header[name] = {"dtype": meta["dtype"], "shape": meta["shape"],
+                            "data_offsets": [offset, offset + nbytes]}
+        offset += nbytes
+    raw = json.dumps(out_header, separators=(",", ":")).encode()
+    raw += b" " * (-len(raw) % 8)  # pad so the data section is 8-byte aligned
+
+    part = dest.with_name(dest.name + ".part")
+    done = 0
+    with part.open("wb") as fh:
+        fh.write(struct.pack("<Q", len(raw)))
+        fh.write(raw)
+        for name, shard, start, nbytes, _meta in plan:
+            url = _hf_resolve(repo, shard, revision)
+            pos = 0
+            while pos < nbytes:
+                n = min(_CHUNK, nbytes - pos)
+                fh.write(_http_range(url, start + pos, start + pos + n - 1))
+                pos += n
+                done += n
+                if progress:
+                    progress(done, total)
+    part.replace(dest)
+    if not sidecar_has_mtp_tensors(dest):
+        dest.unlink(missing_ok=True)
+        raise ValueError("fetched sidecar failed validation (no mtp.* tensors)")
+    logger.info("fetched MTP sidecar %s (%d tensors, %.2f GB)", dest, len(plan), total / 1e9)
     return dest

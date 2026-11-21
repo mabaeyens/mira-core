@@ -239,8 +239,10 @@ def doctor() -> int:
                   "it pulls into the HF cache on first `mira serve` (~19 GB)")
 
     # Optional dep (informational — not counted toward exit status).
-    _line(_which("tesseract"), "tesseract installed (optional — scanned-PDF OCR)",
-          "mira setup --with-ocr")
+    if _which("tesseract"):
+        _line(True, "tesseract installed (optional, scanned-PDF OCR)")
+    else:
+        _warn("tesseract not installed (optional, scanned-PDF OCR)", "mira setup --with-ocr")
 
     # Runtime checks (informational — not counted toward exit status).
     print(f"\n{DIM}  runtime (start a backend / server to light these up){RESET}")
@@ -249,8 +251,10 @@ def doctor() -> int:
                            {"Authorization": f"Bearer {_omlx_api_key()}"})
         _line(omlx_up, f"oMLX reachable on :8080 (model: {OMLX_MODEL})",
               f"open oMLX, load {OMLX_MODEL} in its model library")
-    _line(_http_ok(SERVER_URL + "/"),
-          "Mira server reachable on :8000", "mira serve")
+    if _http_ok(SERVER_URL + "/"):
+        _line(True, "Mira server reachable on :8000")
+    else:
+        _warn("Mira server not running on :8000", "start it with `make serve` in the install folder")
 
     # Advisory, and deliberately not counted toward exit status: leftover cache
     # files waste disk but nothing about the install is broken, and `doctor`
@@ -379,7 +383,66 @@ def preflight(include: list, assume_yes: bool, force: bool) -> int:
 
 # ── fetch-model ───────────────────────────────────────────────────────────────
 
-def fetch_model(model: "str | None") -> int:
+def _mira_data_dir() -> Path:
+    return Path(os.environ.get("MIRA_DATA_DIR", str(Path.home() / ".local" / "share" / "mira")))
+
+
+def _set_yaml_scalar(key: str, value: str, only_if_unset: bool = False) -> None:
+    """Set a top-level `key: value` in mira.yaml, keeping comments and other lines.
+    Replaces the first uncommented `key:` line, else the first commented `# key:` example
+    line, else appends. Line-based on purpose (stdlib only, no YAML dependency)."""
+    path = _config_path()
+    lines = path.read_text().splitlines() if path.exists() else []
+    live = re.compile(rf"^{re.escape(key)}:")
+    commented = re.compile(rf"^#\s*{re.escape(key)}:")
+    if only_if_unset and any(live.match(l) for l in lines):
+        return
+    for pat in (live, commented):
+        for i, line in enumerate(lines):
+            if pat.match(line):
+                lines[i] = f"{key}: {value}"
+                path.write_text("\n".join(lines) + "\n")
+                return
+    lines.append(f"{key}: {value}")
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _build_mtp_model(repo: str, snapshot: Path, write_config: bool) -> "Path | None":
+    """Turn the stock 4-bit snapshot into an MTP-capable model dir: range-fetch the 19
+    bf16 mtp.* tensors (~1.7 GB) from the upstream Qwen repo, then assemble symlinks +
+    sidecar + merged config under the mira data dir. Idempotent. Returns the dir."""
+    sys.path.insert(0, str(_repo_root()))
+    from core.inference.mtp.sidecar import (
+        assemble_mtp_model_dir, fetch_mtp_sidecar, SIDECAR_FILENAME,
+    )
+
+    models = _mira_data_dir() / "models"
+    sidecar = models / "mtp-sidecar" / SIDECAR_FILENAME
+    dest = models / (repo.split("/")[-1] + "-MTP")
+    print(f"{YELLOW}Fetching the MTP head{RESET} (~1.7 GB, only the mtp.* tensors)")
+
+    def progress(done: int, total: int) -> None:
+        print(f"\r{DIM}  {done / 1e9:5.2f} / {total / 1e9:.2f} GB{RESET}", end="", flush=True)
+
+    try:
+        fetch_mtp_sidecar(sidecar, progress=progress)
+        print()
+        assemble_mtp_model_dir(snapshot, sidecar, dest)
+    except Exception as e:  # noqa: BLE001
+        print(f"\n{RED}MTP setup failed:{RESET} {e}")
+        print(f"{DIM}  → Mira still works without it (about 1.2x slower); re-run `mira fetch-model --mtp`{RESET}")
+        return None
+    if write_config:
+        _set_yaml_scalar("model", str(dest))
+        _set_yaml_scalar("mira_mlx_mtp_enabled", "true")
+        _set_yaml_scalar("mira_mlx_mtp_draft_vocab", "131072")
+        print(f"{GREEN}✅ MTP ready.{RESET} mira.yaml now points at {dest}")
+    else:
+        print(f"{GREEN}✅ MTP model dir:{RESET} {dest}")
+    return dest
+
+
+def fetch_model(model: "str | None", mtp: bool = False, write_config: bool = False) -> int:
     """Download the configured (or given) mira-mlx model into the HF cache.
 
     The default backend pulls its ~19 GB model on first `mira serve`, which
@@ -395,25 +458,69 @@ def fetch_model(model: "str | None") -> int:
         py = root / ".venv" / "bin" / "python"
         if py.exists() and Path(sys.executable).resolve() != py.resolve():
             return subprocess.run(
-                [str(py), str(root / "mira_cli.py"), "fetch-model", "--model", repo],
+                [str(py), str(root / "mira_cli.py"), "fetch-model", "--model", repo,
+                 *(["--mtp"] if mtp else []), *(["--write-config"] if write_config else [])],
                 cwd=root,
             ).returncode
         print(f"{RED}huggingface_hub is not available — run `make install` first.{RESET}")
         return 1
 
+    snapshot: "str | None" = None
     if _hf_model_cached(repo):
         print(f"{GREEN}Already cached:{RESET} {repo}")
-        return 0
+        if mtp:
+            snapshot = snapshot_download(repo_id=repo, local_files_only=True)
+    else:
+        print(f"{YELLOW}Downloading{RESET} {repo}")
+        print(f"{DIM}  → {_hf_hub_cache()}   (one-time; progress below){RESET}")
+        try:
+            snapshot = snapshot_download(repo_id=repo)  # default tqdm bars stream to stderr
+        except Exception as e:  # noqa: BLE001 — surface any HF/network/auth error plainly
+            print(f"{RED}Download failed:{RESET} {e}")
+            print(f"{DIM}  → check your network / disk space and re-run `mira fetch-model`{RESET}")
+            return 1
+        print(f"{GREEN}✅ {repo} is ready.{RESET}")
 
-    print(f"{YELLOW}Downloading{RESET} {repo}")
-    print(f"{DIM}  → {_hf_hub_cache()}   (one-time; progress below){RESET}")
+    if mtp and snapshot:
+        if not _build_mtp_model(repo, Path(snapshot), write_config):
+            return 1
+    return 0
+
+
+# ── profile ──────────────────────────────────────────────────────────────────
+
+SMALL_MODEL = "mlx-community/Ministral-3-14B-Instruct-2512-4bit"
+
+
+def _ram_gb() -> float:
     try:
-        snapshot_download(repo_id=repo)  # default tqdm bars stream to stderr
-    except Exception as e:  # noqa: BLE001 — surface any HF/network/auth error plainly
-        print(f"{RED}Download failed:{RESET} {e}")
-        print(f"{DIM}  → check your network / disk space and re-run `mira fetch-model`{RESET}")
+        out = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True)
+        return int(out.stdout.strip()) / 2**30
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def apply_profile(name: str) -> int:
+    """Write the tuned out-of-the-box settings into mira.yaml. Never overrides a key the
+    user already set (re-running is safe). Prints the model the install should fetch:
+    the 35B MoE (+MTP head) from 32 GB up, a 14B dense model below that."""
+    if name != "recommended":
+        print(f"{RED}unknown profile: {name}{RESET}")
         return 1
-    print(f"{GREEN}✅ {repo} is ready.{RESET}")
+    ram = _ram_gb()
+    big = ram >= 31  # a "32 GB" Mac reports ~32 GiB; leave slack for reporting
+    keep = {"mira_mlx_kv_bits": "4", "boundary_snapshot": "true",
+            "repetition_penalty": "1.15", "repetition_context_size": "64",
+            "engine_idle_unload_minutes": "15", "proactive_decompress": "false"}
+    if big:
+        keep["mira_mlx_vision"] = "true"
+    else:
+        keep.update({"model": SMALL_MODEL, "context_window": "32768", "mira_mlx_vision": "false",
+                     "engine_idle_unload_minutes": "10"})
+    for k, v in keep.items():
+        _set_yaml_scalar(k, v, only_if_unset=True)
+    print(f"{GREEN}Recommended profile applied{RESET} ({ram:.0f} GB RAM: "
+          f"{'35B + MTP' if big else '14B dense, fits this Mac'})")
     return 0
 
 
@@ -432,8 +539,17 @@ def main() -> None:
 
     p_fetch = sub.add_parser("fetch-model",
                              help="download the default model into the HF cache")
+    p_fetch.add_argument("model_pos", nargs="?", default=None, metavar="MODEL",
+                         help="repo id to fetch (same as --model)")
     p_fetch.add_argument("--model", default=None,
                          help="repo id to fetch (default: mira.yaml's model)")
+    p_fetch.add_argument("--mtp", action="store_true",
+                         help="also fetch the MTP head (~1.7 GB) and build the MTP model dir")
+    p_fetch.add_argument("--write-config", action="store_true",
+                         help="with --mtp: point mira.yaml at the MTP model and enable it")
+
+    p_prof = sub.add_parser("profile", help="apply a tuned settings profile to mira.yaml")
+    p_prof.add_argument("name", choices=["recommended"])
 
     p_pre = sub.add_parser("preflight", help="check disk + memory before install")
     p_pre.add_argument("--include", action="append", default=[], choices=list(COMPONENTS),
@@ -455,7 +571,9 @@ def main() -> None:
     elif args.cmd == "doctor":
         sys.exit(doctor())
     elif args.cmd == "fetch-model":
-        sys.exit(fetch_model(args.model))
+        sys.exit(fetch_model(args.model or args.model_pos, args.mtp, args.write_config))
+    elif args.cmd == "profile":
+        sys.exit(apply_profile(args.name))
     elif args.cmd == "preflight":
         sys.exit(preflight(args.include, args.yes, args.force))
     else:

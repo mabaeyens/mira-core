@@ -11,6 +11,9 @@
 #   --skip-preflight         skip the disk + memory check
 #   --force                  proceed even if disk space is low
 #   -y, --yes                non-interactive (assume yes)
+#   --recommended            one-step install: tuned settings, model + MTP head, the
+#                            LaunchAgent, then wait until the server is healthy.
+#                            (install.sh passes this by default.)
 #
 # Everything except `uv sync` + config is opt-in. The default backend (mira-mlx)
 # is a bundled Python module and needs no separate app; its model downloads into
@@ -28,6 +31,7 @@ TAILSCALE_HOST=""
 ASSUME_YES=0
 SKIP_PREFLIGHT=0
 FORCE=0
+RECOMMENDED=0
 
 G="\033[32m"; R="\033[31m"; Y="\033[33m"; D="\033[2m"; N="\033[0m"
 info() { printf "${Y}==>${N} %s\n" "$1"; }
@@ -42,6 +46,7 @@ while [ $# -gt 0 ]; do
     --skip-preflight) SKIP_PREFLIGHT=1 ;;
     --force) FORCE=1 ;;
     -y|--yes) ASSUME_YES=1 ;;
+    --recommended) RECOMMENDED=1; WITH_LAUNCHAGENT=1; ASSUME_YES=1 ;;
     *) warn "unknown flag: $1" ;;
   esac
   shift
@@ -94,6 +99,9 @@ else
   cp "$REPO_ROOT/mira.yaml.example" "$MIRA_YAML"
   ok "Created mira.yaml from example ($MIRA_YAML)"
 fi
+if [ "$RECOMMENDED" = "1" ]; then
+  MIRA_CONFIG="$MIRA_YAML" uv run python "$REPO_ROOT/mira_cli.py" profile recommended
+fi
 
 # ── optional: OCR (tesseract) ────────────────────────────────────────────────
 if [ "$WITH_OCR" = "1" ]; then
@@ -129,8 +137,12 @@ if [ "$WITH_LAUNCHAGENT" = "1" ]; then
 
   launchctl unload "$PLIST_DST" 2>/dev/null || true
   cp "$PLIST_OUT" "$PLIST_DST"
-  launchctl load "$PLIST_DST"
-  ok "LaunchAgent loaded (server starts at login; logs at /tmp/com.mab.mira.log)"
+  if [ "$RECOMMENDED" = "1" ]; then
+    ok "LaunchAgent installed (loaded after the model is ready)"
+  else
+    launchctl load "$PLIST_DST"
+    ok "LaunchAgent loaded (server starts at login; logs at /tmp/com.mab.mira.log)"
+  fi
 fi
 
 # ── Tailscale: allowlist the MagicDNS name ───────────────────────────────────
@@ -168,22 +180,32 @@ if [ "$BACKEND" = "omlx" ]; then
 else
   ok "mira-mlx is a bundled Python module — no separate app to install"
   printf "${D}     The default model downloads into the HF cache on first run (~19 GB).${N}\n"
-  # Offer to pre-fetch now so the first `mira serve` isn't a silent 19 GB wait.
-  # Never force it under -y (respects the preflight disk decision); fetch-model is
-  # idempotent, so a cached model just returns.
-  if [ "$ASSUME_YES" = "1" ]; then
+  # Pre-fetch so the first start isn't a silent 19 GB wait. --recommended always
+  # downloads (the disk check already ran); otherwise ask, reading the answer from the
+  # terminal so `curl | bash` still gets asked. fetch-model is idempotent.
+  REPLY_DL=""
+  if [ "$RECOMMENDED" = "1" ]; then
+    REPLY_DL=y
+  elif [ "$ASSUME_YES" = "1" ]; then
     printf "${D}     Pre-fetch it now with:  mira fetch-model${N}\n"
-  else
+  elif [ -r /dev/tty ]; then
     printf "\n"
-    if [ -t 0 ] && read -r -p "  Download the default model now (~19 GB)? [y/N] " REPLY_DL; then :; else REPLY_DL=""; fi
-    case "$REPLY_DL" in
-      y|Y|yes|YES)
-        uv run python "$REPO_ROOT/mira_cli.py" fetch-model \
-          || warn "download didn't finish — re-run 'mira fetch-model' any time" ;;
-      *)
-        printf "${D}     Skipped. Pre-fetch later with:  mira fetch-model${N}\n" ;;
-    esac
+    read -r -p "  Download the default model now (~19 GB)? [y/N] " REPLY_DL < /dev/tty || REPLY_DL=""
   fi
+  case "$REPLY_DL" in
+    y|Y|yes|YES)
+      FETCH_ARGS=()
+      MODEL_NOW=$(sed -n 's/^model:[[:space:]]*\([^[:space:]#"'\'']*\).*/\1/p' "$MIRA_YAML" | head -1)
+      [ -n "$MODEL_NOW" ] && FETCH_ARGS+=(--model "$MODEL_NOW")
+      # MTP head only for the 35B stock model (the small fallback has none).
+      if [ "$RECOMMENDED" = "1" ] && { [ -z "$MODEL_NOW" ] || [ "$MODEL_NOW" = "mlx-community/Qwen3.6-35B-A3B-4bit" ]; }; then
+        FETCH_ARGS+=(--mtp --write-config)
+      fi
+      MIRA_CONFIG="$MIRA_YAML" uv run python "$REPO_ROOT/mira_cli.py" fetch-model "${FETCH_ARGS[@]+"${FETCH_ARGS[@]}"}" \
+        || warn "download didn't finish. Re-run: cd $REPO_ROOT && .venv/bin/mira fetch-model" ;;
+    *)
+      printf "${D}     Skipped. Pre-fetch later with:  cd $REPO_ROOT && .venv/bin/mira fetch-model${N}\n" ;;
+  esac
 fi
 
 # ── doctor ───────────────────────────────────────────────────────────────────
@@ -191,4 +213,24 @@ echo
 uv run python "$REPO_ROOT/mira_cli.py" doctor || true
 
 echo
-ok "Setup complete. Start the server with: make serve  (or: mira serve)"
+if [ "$RECOMMENDED" = "1" ] && [ "$WITH_LAUNCHAGENT" = "1" ]; then
+  info "Starting Mira (first start loads the model, this can take a minute)"
+  # Reload so the server picks up the final config written above.
+  launchctl unload "$HOME/Library/LaunchAgents/com.mab.mira.plist" 2>/dev/null || true
+  sleep 2
+  launchctl load "$HOME/Library/LaunchAgents/com.mab.mira.plist" || true
+  UP=0
+  for _ in $(seq 1 120); do
+    if curl -fs --max-time 3 http://localhost:8000/health >/dev/null 2>&1; then UP=1; break; fi
+    sleep 3
+  done
+  if [ "$UP" = "1" ]; then
+    ok "Mira is running:  http://localhost:8000"
+    printf "${D}     It starts at login, unloads the model when idle and wakes on request.\n"
+    printf "     Settings:  $MIRA_YAML   Logs: /tmp/com.mab.mira.log${N}\n"
+  else
+    warn "Mira didn't answer within 6 minutes. Check: tail /tmp/com.mab.mira.log"
+  fi
+else
+  ok "Setup complete. Start the server with:  cd $REPO_ROOT && make serve"
+fi

@@ -6,9 +6,14 @@
 #
 # Clones the repo to ~/mira-core (override with $MIRA_HOME) on a fresh machine,
 # or reuses the current checkout if you're already inside one, then hands off to
-# scripts/setup.sh — which holds all the real logic. Pass any setup.sh flags
-# through, e.g.:  ... | bash -s -- --with-launchagent
+# scripts/setup.sh — which holds all the real logic. By default it runs the
+# one-step `--recommended` install (tuned settings, model, LaunchAgent, health
+# check). To only install the software:  ... | bash -s -- --minimal
+# Any other setup.sh flags pass through, e.g.:  ... | bash -s -- --with-ocr
 set -euo pipefail
+
+# Default to the one-step install unless the caller asked for something specific.
+if [ "${1:-}" = "--minimal" ]; then shift; elif [ $# -eq 0 ]; then set -- --recommended; fi
 
 REPO_URL="https://github.com/mabaeyens/mira-core.git"
 TARGET="${MIRA_HOME:-$HOME/mira-core}"
