@@ -60,7 +60,7 @@ afterwards, not something you need in order to start.
 | E4 | CHANGELOG current; version bumped (0.3 or 1.0) and tagged | open | `/core-release` run |
 | E5 | No secrets or personal paths in tracked files or default config | open | Scan of tracked files and the generated `mira.yaml` |
 
-## F. Menu-bar app (`mira-menubar`, private repo)
+## F. Menu-bar app (`mira-menubar`, public repo)
 
 Supervises the embedded server, runs first-run setup, ships as the notarized DMG (B1).
 
