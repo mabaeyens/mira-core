@@ -23,7 +23,7 @@ execution hole.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `auth_token` | `""` (or `$MIRA_TOKEN`) | Shared bearer token required by every route except `/health` and the static UI. Unset means the server binds `127.0.0.1` only and refuses a non-loopback interface. `chmod 600 mira.yaml` once you set it. |
+| `auth_token` | `""` (or `$MIRA_TOKEN`) | Shared bearer token required by every route except `/health` and the static UI, for requests that arrive over the network. Requests from this Mac to loopback never need it (`docs/remote-access.md`). Unset means the server binds `127.0.0.1` only and refuses a non-loopback interface. `chmod 600 mira.yaml` once you set it. |
 | `allowed_source_cidrs` | `["127.0.0.0/8", "::1/128", "100.64.0.0/10"]` | Source-IP allowlist: loopback plus the Tailscale range. Defense in depth, not the primary gate. |
 | `allowed_hosts` | `[]` | Host-header allowlist (anti-DNS-rebinding), checked *before* auth. IPs in `allowed_source_cidrs` pass automatically; a **name** does not, so remote clients connecting by MagicDNS name need it listed or every request 403s. |
 | `url_fetch_allow_private` | `false` | Whether `fetch_url` may reach loopback, private or link-local addresses. Off by default because the model picks the URL after reading attacker-influenceable text — a crafted page should not be able to steer it at a LAN device or a metadata endpoint. |

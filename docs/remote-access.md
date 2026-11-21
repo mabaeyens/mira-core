@@ -17,6 +17,16 @@ With an `auth_token` set (see the README's *Access control*):
 - Every route (except `/health` and the static UI) needs `Authorization: Bearer <token>`,
   and a source-IP allowlist (loopback + the `100.64.0.0/10` tailnet range) is enforced as
   defense-in-depth.
+- **Loopback never needs the token.** A request that comes from a program on this Mac
+  (the socket peer is `127.0.0.1` or `::1`) **and** whose `Host` header names loopback
+  (`localhost`, `127.0.0.1`, `[::1]`) skips the token and the source allowlist, so the
+  local web UI, the CLI and Mira Desktop keep working when you turn remote access on. The
+  token protects only requests that arrive over the network. The `Host`/`Origin` checks
+  still apply to loopback requests (they block DNS rebinding and cross-site posts). A
+  local reverse proxy such as `tailscale serve` is not loopback for this purpose: it
+  reaches the server from `127.0.0.1` but with your tailnet name as `Host`, so it needs
+  the token. The consequence: any program running as a user on this Mac can call the API
+  without a token, exactly as in the default tokenless install.
 
 **One thing you must configure: `allowed_hosts`.** Before the token or the source-IP
 allowlist, the server checks the `Host` header (this is what blocks DNS rebinding). It

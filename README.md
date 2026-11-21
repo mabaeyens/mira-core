@@ -174,6 +174,9 @@ default and never sends anything sensitive in plaintext:
   Tailscale isn't up yet, `:8443` **fails closed to loopback** and the server retries the
   bind every 15s until Tailscale comes up — no manual restart needed. A monthly LaunchAgent
   auto-renews the 90-day Tailscale HTTPS cert.
+- **Loopback never needs the token.** Requests from this Mac to `127.0.0.1`/`localhost` skip
+  it (the local web UI and Mira Desktop keep working); only requests over the network need
+  it. Details and the trade-off: `docs/remote-access.md`.
 - **Connecting remotely also needs `allowed_hosts`.** A `Host`-header check (anti-DNS-
   rebinding) runs before auth. Loopback and bare IPs in the source allowlist pass
   automatically, but a hostname must be listed — and since the Tailscale cert covers the

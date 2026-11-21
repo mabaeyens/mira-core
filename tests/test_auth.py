@@ -135,3 +135,37 @@ def test_cross_site_get_not_blocked_by_origin(client, allow_source):
     read back by the attacker anyway, and blocking it would break normal use."""
     resp = client.get("/health", headers={"Origin": "http://evil.com"})
     assert resp.status_code != 403
+
+
+# ── Loopback needs no token ─────────────────────────────────────────────────────
+
+def _req(peer, host):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        client=SimpleNamespace(host=peer) if peer else None,
+        headers={"host": host} if host is not None else {},
+    )
+
+
+def test_loopback_request_unit():
+    assert server._is_loopback_request(_req("127.0.0.1", "127.0.0.1:8000"))
+    assert server._is_loopback_request(_req("127.0.0.1", "localhost:8000"))
+    assert server._is_loopback_request(_req("::1", "[::1]:8000"))
+    # A local reverse proxy (tailscale serve) is a loopback peer with another Host.
+    assert not server._is_loopback_request(_req("127.0.0.1", "mac.tail1.ts.net"))
+    assert not server._is_loopback_request(_req("127.0.0.1", None))
+    # A remote peer cannot claim loopback by sending a loopback Host.
+    assert not server._is_loopback_request(_req("100.80.166.97", "127.0.0.1:8000"))
+    assert not server._is_loopback_request(_req(None, "127.0.0.1"))
+
+
+def test_loopback_skips_the_token_but_remote_does_not(monkeypatch):
+    monkeypatch.setattr(server, "AUTH_TOKEN", "s3cret")
+    monkeypatch.setattr(server, "_source_allowed", lambda host: True)
+    with TestClient(server.app, base_url="http://127.0.0.1:8000", client=("127.0.0.1", 5000)) as local:
+        assert local.get("/status").status_code == 200
+    with TestClient(server.app, base_url="http://127.0.0.1:8000", client=("100.80.166.97", 5000)) as remote:
+        assert remote.get("/status").status_code == 401
+    with TestClient(server.app, base_url="http://mac.tail1.ts.net", client=("127.0.0.1", 5000)) as proxied:
+        monkeypatch.setattr(server, "_ALLOWED_HOST_NAMES", {"mac.tail1.ts.net"})
+        assert proxied.get("/status").status_code == 401

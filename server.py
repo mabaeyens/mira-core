@@ -279,6 +279,23 @@ def _origin_allowed(origin: str | None, host_header: str | None) -> bool:
     )
 
 
+_LOOPBACK_PEERS = {"127.0.0.1", "::1"}
+_LOOPBACK_HOST_NAMES = {"localhost", "127.0.0.1", "[::1]"}
+
+
+def _is_loopback_request(request: Request) -> bool:
+    """True when the request is from a program on this machine talking to loopback.
+
+    Both must hold: the real socket peer is 127.0.0.1/::1 (no proxy is trusted, no
+    X-Forwarded-For) AND the Host header names loopback. The second condition keeps
+    a local reverse proxy (e.g. `tailscale serve`) and DNS rebinding out: they arrive
+    from loopback but carry another Host. A missing Host is not treated as loopback.
+    Such requests need no token, the same as when no auth_token is set."""
+    peer = request.client.host if request.client else None
+    host = request.headers.get("host")
+    return peer in _LOOPBACK_PEERS and bool(host) and _split_host(host) in _LOOPBACK_HOST_NAMES
+
+
 def _source_allowed(host: str | None) -> bool:
     """True if the peer IP falls in the allowlist. We use the real socket peer
     (request.client.host) and never trust X-Forwarded-For — there is no proxy."""
@@ -314,6 +331,12 @@ async def _auth_middleware(request: Request, call_next):
         logger.warning("Rejected cross-origin %s %s from Origin: %r",
                        request.method, request.url.path, request.headers.get("origin"))
         return JSONResponse({"detail": "Forbidden"}, status_code=403)
+
+    # Loopback requests (this machine, Host names loopback) never need the token, so the
+    # web UI and local clients keep working when remote access turns the token on.
+    # Gate 0 above still applies to them. Documented in docs/remote-access.md.
+    if _is_loopback_request(request):
+        return await call_next(request)
 
     # Gate 1 — source IP. Only enforced when a token is set (token-set ⇒ off-host).
     if AUTH_TOKEN and not _source_allowed(request.client.host if request.client else None):
