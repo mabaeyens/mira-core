@@ -20,7 +20,8 @@
 - Done: model ported onto the fork (`mabaeyens/mlx-lm` branch `mira-inkling`, 2 commits, pushed) and wired into mira-mlx (`7592701`): stream filter for message framing, looped-KV estimate (32KiB/token), inert-`kv_bits` warning. Works end to end: thinking, tools, streaming, boundary snapshot (TTFT 3.8s to 0.25s).
 - Verdict: not better than Qwen3.6 here. Decode 28.7 vs 57.5 t/s (gate 35 not met), prefill 0.36-0.69x, ~2.5-3x longer answers. GPQA proxy aborted at 21/100 by the RAM floor (12/21, 9 truncated at 2048), not comparable to the 45.0% baseline.
 - Revisit when upstream Inkling support (PR #2086 / new layers layout) lands. Open gaps: kv quant on CacheList, `enable_thinking=false` still reasons ~50-90 tokens, vision untested, tensor parallel stubbed, Mira pin not moved (tests used PYTHONPATH).
-- Downloads kept pending a decision: `thinkingmachines/Inkling-2-Mini` (20.2GB) and `mlx-community/Inkling-2-Mini-4bit` (17.3GB), in `MODEL_REGISTRY.md`. Do not delete without asking.
+- Checkpoints `thinkingmachines/Inkling-2-Mini` (20.2GB) and `mlx-community/Inkling-2-Mini-4bit` (17.3GB) were deleted from the HF cache on 2026-11-21; re-download to revisit. `MODEL_REGISTRY.md` rows may still need updating.
+- Unsloth GGUF thread (HF `unsloth/Inkling-2-Mini-GGUF` discussion 2) checked 2026-11-21: Q3/IQ3_XXS is not a fit. Fit was never the blocker (4-bit already fits); speed and answer length were. Thread is llama.cpp-only (CUDA/ROCm/Vulkan, 11-25 t/s, mainline gibberish until PR 32704), none of its optimizations apply to MLX, and a GGUF would need a new llama.cpp backend. Recheck late Nov.
 - Untried idea: `thinkingmachines/TML-d24-varloop-research` (1-5 passes) for a speed/quality sweep; needs a conversion first.
 - Prod Mira stays DOWN by default (Safari needed); start with `/mira-server start` when wanted.
 
