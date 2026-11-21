@@ -74,7 +74,7 @@ Supervises the embedded server, runs first-run setup, ships as the notarized DMG
 | F6 | The app adopts a server that is already running without restarting it | open | Unit-tested in the status logic only; run against a live server |
 | F7 | Open at Login via `SMAppService` | open | Toggle on an installed copy, log out and in |
 | F8 | Isolated-run support: the app ignores `HOME`, so a test run uses the real `~/Library/Application Support/Mira` | open | A path override, then a test run that touches nothing real |
-| F9 | Pairing the iPhone app (QR with URL and token) | open | D1 |
+| F9 | Pairing the iPhone app and the Mac client (QR or keychain with URL and token) | open | D1. The menu-bar app generates no token today (loopback needs none). The Mac client reads its token from the keychain (`com.mab.mira.apitoken`, sandboxed), so a token the menu-bar app creates reaches it only through a shared access group or a paste. Decide before adding token generation. |
 | F10 | Updates (Sparkle) | open | B4 |
 
 ## Found by the clean-account install test (2026-11-21)
