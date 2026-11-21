@@ -188,3 +188,34 @@ def test_generate_title_goes_through_thinking_suppression(orchestrator):
     kwargs = orchestrator._oai.chat.completions.create.call_args.kwargs
     assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
     assert title == "Quantization Basics"
+
+
+@pytest.mark.parametrize("msg", [
+    "what time is it UTC+1",
+    "Responde de nuevo solo con la hora UTC+1",
+    "what time is it in Tokyo? answer with just the time",
+    "what time is it in UTC?",
+    "¿qué hora es en Sídney?",
+    "convert 19:07 UTC to Tokyo time",
+    "what day was it 10 days ago?",
+    "hace 10 días fue",
+    "how many days until Christmas",
+    "cuántos días faltan para Navidad",
+])
+def test_clock_and_calendar_arithmetic_thinks(msg):
+    """Auto mode must reason for these: with thinking off the model dropped an hour at
+    midnight wraps and misplaced weekdays. _NEVER_THINK ("what time ...") must not win."""
+    from core.orchestrator import _should_think
+    assert _should_think(msg)
+
+
+@pytest.mark.parametrize("msg", [
+    "what time is it?",
+    "what day is it",
+    "what's the date",
+    "hi",
+    "set the server timezone variable name",  # no clock question
+])
+def test_plain_local_clock_stays_fast(msg):
+    from core.orchestrator import _should_think
+    assert not _should_think(msg)

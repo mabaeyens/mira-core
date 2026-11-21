@@ -225,10 +225,29 @@ _TITLE_SCHEMA = {
 }
 
 
+# Clock and calendar arithmetic: a time in another zone, an explicit UTC offset, "N days ago".
+# These are calculations, not lookups of the stamp the server appends, and a model that
+# answers them without reasoning drops an hour at midnight wraps (Tokyo 05:10 for 04:10) or
+# misplaces the weekday. Must win over _NEVER_THINK, which exists for the plain local clock.
+_CLOCK_MATH = re.compile(
+    r"\b(utc|gmt)\s*[+\-\u2212]\s*\d"
+    r"|\b(utc|gmt)\b.{0,40}\b(time|hora|date|fecha|convert|convierte)"
+    r"|\b(time|hora|date|fecha|convert|convierte)\b.{0,40}\b(utc|gmt)\b"
+    r"|\b(what\s+time|que\s+hora|qu\u00e9\s+hora)\b[^.?!]{0,30}\b(in|en)\s+\w+"
+    r"|\bconvert\b.{0,40}\b(time|hora)\b"
+    r"|\b(days?|weeks?|months?|d\u00edas?|semanas?|meses)\s+(ago|from\s+now|until|before|after|between)\b"
+    r"|\bhace\s+\d+\s+(d\u00edas?|semanas?|meses)\b"
+    r"|\bhow\s+many\s+(days|hours|weeks|months)\b|\bcu\u00e1ntos\s+(d\u00edas|horas|semanas|meses)\b",
+    re.IGNORECASE,
+)
+
+
 def _should_think(message: str, has_attachments: bool = False) -> bool:
     """Return True if the message warrants extended reasoning."""
     if _TRIVIAL.match(message):
         return False
+    if _CLOCK_MATH.search(message):
+        return True
     if _NEVER_THINK.match(message):
         return False
     # Reasoning questions warrant thinking on their own — independent of length or
