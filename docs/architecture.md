@@ -18,6 +18,19 @@ main.py (CLI)     server.py (FastAPI + SSE)
                       ├── chromadb: PersistentClient per project (survives restarts) / EphemeralClient with no project open
                       └── reranker: Qwen3-Reranker-0.6B-4bit (mlx, default) or CrossEncoder ms-marco (sentence-transformers)
 
+core/backend_manager.py — start/stop of inference backends, `KNOWN_BACKENDS`
+core/backend_client.py  — backend wire-format adapters
+core/models_api.py   — local model listing and download
+core/hardware.py     — RAM-aware sizing (context window, resident expert fraction)
+core/engine_lifecycle.py — idle unload / wake on request (`docs/engine-lifecycle.md`)
+core/memory_watch.py — notifies when something else on the Mac evicted the model
+core/session_manager.py — per-conversation orchestrator pool
+core/context_manager.py — history compression planning and token math
+core/approvals.py    — approval tokens for destructive tool actions
+core/tool_registry.py — pairs each tool handler with its schema name
+core/thinking_stripper.py — streaming thinking-token stripper
+core/scheduler.py    — osascript notifications for reminders
+core/inference/      — mira-mlx engine (`mira_mlx_server.py`), prompt/expert caches, MTP, vision
 core/config.py       — all tunables; loads overrides from mira.yaml (git-ignored)
 core/file_handler.py — load_file() / load_file_bytes(): PDF→RAG, HTML→text, image→base64
 core/tools.py        — OpenAI-compatible tool schema for web_search and all tools
@@ -103,7 +116,7 @@ This is transparent to clients — the next turn proceeds normally with a shorte
 | `POST` | `/cancel` | Abort in-progress response; triggers history rollback |
 | `POST` | `/reset` | New conversation (preserves active project) |
 | `GET` | `/health` | `200` ready, `503` starting, other → unavailable |
-| `GET` | `/status` | Model name, cumulative tokens, `context_pct`, `workspace_root` |
+| `GET` | `/status` | Per-conversation runtime stats (`conversation_id` query param): model name, cumulative tokens, `context_pct`, `workspace_root` |
 | `GET` | `/browse` | Directory listing (sandboxed to `$HOME`); query param `path` |
 | `POST` | `/ask` | One-shot ephemeral query — no tools, no DB writes |
 | `GET/POST` | `/projects` | List / create projects |
@@ -116,6 +129,18 @@ This is transparent to clients — the next turn proceeds normally with a shorte
 | `POST` | `/backend` | Switch inference backend, keeping that backend's default model (`{"backend": "mira-mlx"}`); blocks until ready |
 | `POST` | `/models/switch` | Switch to a specific backend + model (`{"backend": "mira-mlx", "model_id": "mlx-community/Ministral-3-14B-Instruct-2512-4bit"}`); blocks until ready |
 | `GET` | `/backends` | Named backend presets from `mira.yaml` `backends:` list, with `active` flag; populates app model picker |
+| `GET` | `/conversations/search` | Search conversation history (`q`, `limit` capped at 50) |
+| `POST` | `/compact` | Manually compress a conversation's history; returns the compress event JSON |
+| `POST` | `/verbose` | Toggle verbose event output (`{"enabled": bool}`) |
+| `GET/POST` | `/memories` | List / add persistent memories (max 30) |
+| `DELETE` | `/memories/{memory_id}` | Delete a memory |
+| `GET` | `/reminders` | List scheduled reminders |
+| `DELETE` | `/reminders/{reminder_id}` | Delete a reminder |
+| `GET` | `/hardware` | RAM-aware sizing for the active model (why this machine got its context and resident fractions) |
+| `POST` | `/models/pull` | SSE stream that downloads a model from HuggingFace into the local cache |
+| `GET` | `/engine` | Engine lifecycle state: enabled, running/unloading/sleeping/waking (see `docs/engine-lifecycle.md`) |
+| `POST` | `/engine/wake` | Wake a sleeping engine now |
+| `POST` | `/engine/unload` | Unload the engine now; `409` if a request is in flight |
 | `GET` | `/rag/documents` | List indexed RAG documents |
 | `DELETE` | `/rag/documents/{name}` | Remove a RAG document |
 
