@@ -2,6 +2,14 @@
 
 ## Pending
 
+### NEXT: after the 2026-11-22 ship wave
+- Waiting on App Review: iOS 0.4.0 build 2 (Waiting for Review since 2026-11-22). TestFlight external beta link `join/crTWN4kN` is also in review; swap the old TestFlight link in mira-web (home, support) only when the iOS session says it is approved.
+- Server: `/cancel` with an empty conversation id cancels every active turn (a Stop on a brand-new first turn). Fix: return the conversation id at turn start (SSE event or header) so the client can cancel its own turn. Details in `notes/ios-followups.md`.
+- Mac App Store: not submitted (no demo mode, a Mac reviewer sees only a connect screen). Revisit when Mira Desktop has a demo or review path. Direct download covers Mac meanwhile.
+- Mira Desktop store screenshots: one 1280x800 shot exists (`~/Desktop/mira-store-shots/macos/01-home.png`); automated capture failed while the Mac was in use.
+- Optional: Spanish App Store localisation; a TestFlight beta group for the new app; Mira Desktop 'Pair' first-run text only mentions typing the Tailscale address.
+- Check the home page capability card still matches the one cached model (it names Gemma4 and Llama).
+
 ### NEXT: engine on-demand lifecycle, the daily-use footprint lever (2026-11-21)
 - BUILT and pushed 8232f9a (default off): `core/engine_lifecycle.py`, `engine_idle_unload_minutes`, `/health` + `/info` `engine_state`, `/engine`, `/engine/wake`, `/engine/unload`, docs in `docs/engine-lifecycle.md`. Wake measured 9 to 14 s; verified live (unload freed the process, `/ask` on a sleeping engine woke it and answered in 20 s). A sleeping engine reports `backend_ready: true`, so apps that predate `engine_state` need no change.
 - Still to do: (1) mira-apps: show sleeping/waking, call `/engine/wake` on composer focus, "Unload now" action, chat timeouts that allow a wake (separate repo, needs its own spec and device check); (2) pick the daily default (proposed 15 min) and enable it in the live `mira.yaml` after one real week; (3) turn `proactive_decompress` off in the daily profile, it faults the model back in while Mira runs; (4) done: the dead `_prefill_system_prompt` is deleted. The 15 minute window is enabled in the live `mira.yaml` (local), taking effect at the next server start.
@@ -652,6 +660,11 @@
     misconfigured `allowed_hosts` retries a hopeless connection and then goes orange with no
     explanation.
 
+## Done
+
+- [2026-11-22] iOS 0.4.0 build 2 submitted for App Review (iOS only) with demo mode; listing entered via the ASC API from `notes/asc-listing-0.4.0.md`. Mira Desktop build 2 DMG notarized and attached to mira-apps v0.4.0. Keychain token and on-device dictation verified on a device; privacy page, home and support copy rewritten for the Mac-server model (mira-web `885b910`, `498e60c`, `8f50805`, `4bcef38`).
+- [2026-11-21] mira-core v1.5.1 released (PyMuPDF replaced by pypdfium2, Origin host+port check, proxy headers off, loopback needs no token); menu-bar 0.1.2 notarized with Sparkle update verified; model cache trimmed to the live model (95 GB to 21 GB); two security reviews done, findings in gitignored `SECURITY_AUDIT.md`.
+
 ## Notes
 - **Mixed-precision quant is NOT a speed-free quality lever on this MoE — NULL 2026-08-17.** Tried
   `Qwen3.6-35B-A3B-4bit-DWQ` as the one remaining speed-free quality lever (uniform 4-bit baseline
@@ -697,3 +710,5 @@
   well-written template in mira-apps went unseen for its entire life while GitHub's unedited default
   — browser, iPhone 6, "Version [e.g. 22]" — collected every bug report for a macOS and iOS app.
   If a template ever looks like it is not being used, check for the directory before rewriting it.
+- 2026-11-22: GUI capture of Mira Desktop fails when another app has focus or the user is active (window not capturable, AX tree empty). Needs the Mac idle, or the user takes the shots.
+- 2026-11-22: a fresh MIRA_DATA_DIR is seeded from the stale `core/conversations.db`; delete migrated rows before any screenshot session.
