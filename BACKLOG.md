@@ -164,10 +164,12 @@ GPQA proxy n=100, fresh engine each, `MLX_ENABLE_TF32=0`, kv4 (2026-10-10): gemm
 
 ## Done
 
+- [2026-11-22] Docs consolidation: 43 to 28 tracked `.md` files. Removed `docs/bench-archive/` and the orphan 2026-08-17 bench; merged the MoE design and prior-art docs into `moe-offload-case-study.md` and the decode-wall and custom-kernels essays into `multi-token-prediction.md`; folded `dev-reference.md` into `architecture.md`; re-verified `architecture.md`, `omlx-ctl.md`, `diagram.md` and `SECURITY.md` against the code; pruned this file from 715 to ~216 lines. Removed text is in git history.
 - [2026-11-22] iOS 0.4.0 build 2 submitted for App Review (iOS only) with demo mode; listing entered via the ASC API from `notes/asc-listing-0.4.0.md`. Mira Desktop build 2 DMG notarized and attached to mira-apps v0.4.0. Keychain token and on-device dictation verified on a device; privacy page, home and support copy rewritten for the Mac-server model (mira-web `885b910`, `498e60c`, `8f50805`, `4bcef38`).
 - [2026-11-21] mira-core v1.5.1 released (PyMuPDF replaced by pypdfium2, Origin host+port check, proxy headers off, loopback needs no token); menu-bar 0.1.2 notarized with Sparkle update verified; model cache trimmed to the live model (95 GB to 21 GB); two security reviews done, findings in gitignored `SECURITY_AUDIT.md`.
 
 ## Notes
+- Docs layout: client-side flows (iOS connection, macOS startup) belong in mira-apps, not `docs/diagram.md`. The appendices in `multi-token-prediction.md` and `moe-offload-case-study.md` are long by design and stay as is.
 - **Mixed-precision quant is NOT a speed-free quality lever on this MoE — NULL 2026-08-17.** Tried
   `Qwen3.6-35B-A3B-4bit-DWQ` as the one remaining speed-free quality lever (uniform 4-bit baseline
   = GPQA-diamond 70.7% flex). Despite the "4bit" name it is mixed 4/8-bit (`config.json` top-level
