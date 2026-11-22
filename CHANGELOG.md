@@ -418,7 +418,7 @@ conversation logs rather than in tests.
 
 ## v0.9.1 — June 2026
 
-- **Inference tuning results documented** — `docs/bench-archive/inference-tuning-2026-06-27.md` records the
+- **Inference tuning results documented** — `inference-tuning-2026-06-27.md` (since removed, in git history) records the
   latest decode-path bench sweep: `burst_decode` (aggressive) adopted for a ~10% throughput
   gain; DFlash, MTP, and speculative prefill were evaluated and rejected for the Qwen3.6 MoE
   config (3B-active decode is too cheap to benefit from speculation). No runtime behavior

@@ -51,5 +51,5 @@ label branch but works fine against any OpenAI-compatible backend on 8080. Neith
 reach for: `bench_compare.py` (quality/agentic) and `bench_eval.py` (scoring) are current, and
 `bench_standard.py` remains useful for raw pp/tg throughput.
 
-Past runs are indexed in `docs/bench-archive/README.md`; accepted scores are in
-`docs/quality-baseline.md`.
+Past bench write-ups were removed from the tree and live in git history
+(`git log -- docs/bench-archive`); accepted scores are in `docs/quality-baseline.md`.

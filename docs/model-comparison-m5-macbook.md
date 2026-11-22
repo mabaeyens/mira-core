@@ -52,7 +52,7 @@ received an explicit `enable_thinking` value; (2) mira-mlx's HTTP handler silent
 `chat_template_kwargs` even when sent; (3) the tool-text buffering logic (needed for Mistral's
 one-sided `[TOOL_CALLS]` marker) also captured Qwen's closing `</tool_call>` marker, breaking
 the parser's end-anchored regex. All three fixed 2026-07-10 — see `docs/architecture.md`
-"Model quirks" for details. Full writeup: `docs/bench-archive/bench-results-2026-07-10.md`.
+"Model quirks" for details. Full writeup is in git history (`docs/bench-archive/bench-results-2026-07-10.md`).
 
 **Current `mira.yaml`:**
 ```yaml
@@ -164,7 +164,7 @@ the model, which is why they survived the trim while the throughput tables did n
 
 Every bench run, in order. This is the index to use when you want a number that used to be in
 this file: find the date, then `git log -- docs/model-comparison-m5-macbook.md` or the named
-`docs/bench-archive/` file.
+file under `docs/bench-archive/` (removed from the tree, in git history).
 
 | Date | Key finding |
 |------|-------------|
@@ -176,6 +176,6 @@ this file: find the date, then `git log -- docs/model-comparison-m5-macbook.md` 
 | 2026-06-06 | omlx 0.4.1 vs dFlash: omlx 4–10× faster TTFT (963ms–4.7s vs 5.4–29.6s); dFlash OOM-safe above 18K KV |
 | 2026-06-07 | TTFT shootout: omlx 0.4.1 (0ms warm) vs ollama 0.30.6 MLX (90ms) vs dFlash (~48s); omlx becomes default |
 | 2026-07-09 | mira-mlx promoted to default: bundled, RAM-aware sizing, disk-backed prompt cache, `/v1/stats` |
-| 2026-07-18 | KV quantization at 8 bits and MoE expert offload measured on both models — `docs/bench-archive/bench-results-2026-07-18.md` |
-| 2026-08-01 | mlx 0.32.0 verified against the real model (25/26 on the quality suite, no regression) — `docs/bench-archive/bench-results-2026-08-01.md`. dflash and ollama retired the same day |
+| 2026-07-18 | KV quantization at 8 bits and MoE expert offload measured on both models — `docs/bench-archive/bench-results-2026-07-18.md` (git history) |
+| 2026-08-01 | mlx 0.32.0 verified against the real model (25/26 on the quality suite, no regression) — `docs/bench-archive/bench-results-2026-08-01.md` (git history). dflash and ollama retired the same day |
 

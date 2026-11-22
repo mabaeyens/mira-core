@@ -512,7 +512,7 @@
   gate is accepted too. The underlying hazard stands: `~/.zprofile` line 10 exports an `HF_TOKEN`
   **which takes precedence over `hf auth login`**, so updating only the stored credential does
   nothing. `hf auth login --force` once would give a single source of truth.
-- **Score the 2026-08-08 agentic bench.** `docs/bench-archive/bench-results-2026-08-08.md` has timings and tool
+- **Score the 2026-08-08 agentic bench.** the 2026-08-08 bench write-up (removed from the tree, in git history) has timings and tool
   traces for Q6–Q12 filled in and the quality column empty. Less urgent than it was:
   `scripts/bench_eval.py` now scores these automatically, so this column is only for judgement the
   harness deliberately does not make.
