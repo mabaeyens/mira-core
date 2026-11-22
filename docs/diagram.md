@@ -1,6 +1,6 @@
 # Architecture Diagrams
 
-Mermaid diagrams for the Mira system. Render in any Markdown viewer that supports Mermaid (GitHub, VS Code with extension, etc.).
+Mermaid diagrams for the mira-core server and its turn flows. Client-side flows (iOS connection, macOS server startup) live in mira-apps. Render in any Markdown viewer that supports Mermaid (GitHub, VS Code with extension, etc.).
 
 ## System Overview
 
@@ -77,7 +77,7 @@ sequenceDiagram
     Orch->>LLM: stream chat (tool calling enabled)
     Server-->>Client: thinking
 
-    loop Tool calls (up to MAX_TOOL_STEPS=10)
+    loop Tool calls (up to MAX_AGENT_STEPS=15, MAX_TOOL_CALLS_PER_TURN=20)
         LLM-->>Orch: tool_call chunk
         Orch->>Tools: dispatch tool
         Server-->>Client: search_start / fetch_start
@@ -117,14 +117,14 @@ sequenceDiagram
     participant Server as server.py
     participant Thread as produce() thread
 
-    Client->>Server: POST /cancel
-    Server->>Server: cancel_event.set()
+    Client->>Server: POST /cancel (optional conversation_id)
+    Server->>Server: cancel_event.set() for that conversation's turn(s)
     Server-->>Client: 200 OK
 
     Thread->>Thread: cancel_event.is_set() → break
     Thread->>Server: queue.put(None) sentinel
     Server->>Server: event_stream() receives None
-    Server->>Server: truncate conversation_history (rollback)
+    Server->>Server: roll history back to before the last user message
     Client->>Server: reader.cancel() / close SSE
 
     note over Client,Server: Turn never saved to DB
@@ -153,41 +153,4 @@ flowchart LR
 
     style ingest fill:#f5f0e8,stroke:#c8b89a
     style query fill:#e8f0f5,stroke:#9ab8c8
-```
-
-## iOS Connection Flow
-
-```mermaid
-flowchart TD
-    START([App Launch]) --> LAST{"Last-used\nURL saved?"}
-    LAST -->|yes| PROBE["Probe /health\n(1.4s min splash)"]
-    LAST -->|no| CONN_VIEW
-
-    PROBE -->|200 ready| CONNECTED([Connected\niOSConnectedView])
-    PROBE -->|fail| FALLBACK["Try saved\nfallback URLs"]
-    FALLBACK -->|one responds| CONNECTED
-    FALLBACK -->|all fail| CONN_VIEW
-
-    CONN_VIEW["ConnectionView\n(manual URL entry)"]
-    CONN_VIEW -->|user enters URL| SAVE["Save URL\nUserDefaults"]
-    SAVE --> CONNECTED
-```
-
-## macOS Server Startup
-
-```mermaid
-flowchart TD
-    START([App Launch]) --> LAUNCH["MacConnectionManager\npoll /health every 5s"]
-    LAUNCH --> READY{"200 OK\nwithin 60s?"}
-    READY -->|yes| ROOT([MacRootView\nConversation sidebar + chat])
-    READY -->|no| SPLASH["SplashView\nspinner + status"]
-    SPLASH --> RETRY["Retry (up to 5×)\nexponential backoff"]
-    RETRY --> READY
-    READY -->|timeout| ERROR([Error state\nbackend unreachable])
-
-    subgraph launchd["launchd (login item)"]
-        PLIST["com.mab.mira.plist\n~/Library/LaunchAgents/"]
-        PY["python server.py\n(mira-core)"]
-        PLIST --> PY
-    end
 ```
