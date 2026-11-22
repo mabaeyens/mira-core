@@ -94,13 +94,8 @@ GPQA proxy n=100, fresh engine each, `MLX_ENABLE_TF32=0`, kv4 (2026-10-10): gemm
   `url_fetch_allow_private` were read by `config.py` and absent from `mira.yaml.example`, so their
   non-default paths have never been exercised by anyone deliberately choosing them. Documenting a
   security control is not the same as having reviewed what happens when it is switched off.
-### Borrow from the Unit 4 agent harness (`mabaeyens/hf-courses`, `agents-course/unit4`)
-Read 2026-11-22 (private repo, 65% to 95% on GAIA, see its `PROGRESS.md`). Checked against `core/`:
-- **Archive fallback in `core/url_fetcher.py`.** It already falls back to curl_cffi on 403/429, but a page that stays blocked or down just errors. Unit 4 retries through the Wayback Machine availability API and labels the result as a snapshot. Small, no new dependency.
-- **Recovery rule in the system prompt.** Unit 4 tells the model to try another source when a tool errors or returns empty, never to repeat the call, and never to invent an identifier or number it could not verify. Mira bails on repeats (`AGENT_DIVERGENCE_LIMIT`, per-tool limits) but I have not checked `core/prompts.py` for the instruction. Check before adding.
-- **Per-turn trail of queries and pages.** Unit 4 logs every query and page per question and drops a run that touched a benchmark copy. Mira has no such trail (grepped `core/`). Only worth it if tool-using evals resume; they are cancelled for now.
-- **Small token budgets starve reasoning models.** Unit 4 vision calls returned empty at 600 max_tokens because Qwen3.8 spent the budget thinking; 3000-4000 fixed it. No small-budget helper call exists in `core/*.py`, so nothing to fix today. Keep it in mind for any new vision or sub-call.
-- Not borrowing: the forced guess at the step cap. Mira's soft check-in with the user suits an interactive assistant.
+### Parked from the Unit 4 agent harness (`mabaeyens/hf-courses`)
+- **Per-turn trail of queries and pages.** Only worth building if tool-using evals resume; they are cancelled for now. Archive fallback and the recovery rule shipped 2026-11-22.
 ### Small, no decision needed
 - **The question set is now the limiting factor, not the harness.** Tier 1 scored 24/24 three runs
   running, so the deterministic half no longer discriminates between builds — it is a regression

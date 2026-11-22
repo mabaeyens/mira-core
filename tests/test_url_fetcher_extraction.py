@@ -100,3 +100,41 @@ def test_content_is_capped_and_says_so():
     assert len(out) == uf.MAX_CONTENT_CHARS + len(
         f"\n\n[… content truncated at {uf.MAX_CONTENT_CHARS} chars]")
     assert "content truncated" in out
+
+
+# --- Wayback fallback -------------------------------------------------------
+
+def test_wayback_snapshot_used_when_live_fetch_fails():
+    snap = {"url": "https://web.archive.org/web/2020/https://x.test/a", "timestamp": "2020"}
+
+    def fake_fetch(u):
+        return (None, "Error: HTTP 404 fetching " + u) if u == "https://x.test/a" else (REAL_PAGE, None)
+
+    with patch.object(uf, "_fetch_html", side_effect=fake_fetch), \
+         patch.object(uf, "_wayback_snapshot", return_value=snap), \
+         patch.object(uf, "_is_private_target", return_value=False):
+        out = fetch_url("https://x.test/a")
+    assert out.startswith("[Wayback snapshot 2020 of https://x.test/a; live fetch failed: Error: HTTP 404")
+    assert "Synthetic keys" in out
+
+
+def test_no_snapshot_returns_original_error():
+    with patch.object(uf, "_fetch_html", return_value=(None, "Error: HTTP 404 fetching u")), \
+         patch.object(uf, "_wayback_snapshot", return_value=None), \
+         patch.object(uf, "_is_private_target", return_value=False):
+        assert fetch_url("https://x.test/a") == "Error: HTTP 404 fetching u"
+
+
+def test_archive_url_and_content_type_errors_skip_fallback():
+    with patch.object(uf, "_wayback_snapshot") as w, \
+         patch.object(uf, "_is_private_target", return_value=False):
+        with patch.object(uf, "_fetch_html", return_value=(None, "Error: HTTP 404")):
+            assert fetch_url("https://web.archive.org/web/1/x") == "Error: HTTP 404"
+        with patch.object(uf, "_fetch_html", return_value=(None, "Error: unsupported content type 'x'")):
+            assert fetch_url("https://x.test/a").startswith("Error: unsupported")
+        w.assert_not_called()
+
+
+def test_wayback_snapshot_api_failure_is_none():
+    with patch.object(uf.httpx, "get", side_effect=RuntimeError("down")):
+        assert uf._wayback_snapshot("https://x.test/a") is None

@@ -118,6 +118,28 @@ def _fetch_jina(url: str) -> str | None:
         return None
 
 
+def _is_archive(url: str) -> bool:
+    return (urlparse(url).hostname or "") in ("web.archive.org", "archive.org")
+
+
+def _wayback_snapshot(url: str) -> dict | None:
+    """Closest Wayback Machine snapshot ({'url', 'timestamp'}) or None."""
+    try:
+        r = httpx.get(
+            "https://archive.org/wayback/available",
+            params={"url": url},
+            timeout=FETCH_TIMEOUT,
+            headers=_CHROME_HEADERS,
+        )
+        r.raise_for_status()
+        snap = r.json().get("archived_snapshots", {}).get("closest")
+    except Exception:
+        return None
+    if snap and snap.get("available") and snap.get("url"):
+        return snap
+    return None
+
+
 def _is_private_target(url: str) -> bool:
     """True if the URL resolves to a loopback, private, or link-local address.
 
@@ -167,8 +189,22 @@ def fetch_url(url: str) -> str:
         )
 
     html, error = _fetch_html(url)
+    snapshot_note = ""
     if error:
-        return error
+        # Blocked or down: fall back to the archived copy, labelled as such.
+        # Not for refusals (content type) and not when already on an archive.
+        if "unsupported content type" in error or _is_archive(url):
+            return error
+        snap = _wayback_snapshot(url)
+        if not snap:
+            return error
+        html, snap_err = _fetch_html(snap["url"])
+        if snap_err or not html:
+            return error
+        snapshot_note = (
+            f"[Wayback snapshot {snap.get('timestamp', '?')} of {url}; "
+            f"live fetch failed: {error}]\n"
+        )
     if not html:
         return f"Error: no content returned from {url}"
 
@@ -210,4 +246,4 @@ def fetch_url(url: str) -> str:
         text = text[:MAX_CONTENT_CHARS] + f"\n\n[… content truncated at {MAX_CONTENT_CHARS} chars]"
 
     logger.info("fetch_url: %s — %d chars returned", url, len(text))
-    return text
+    return snapshot_note + text
