@@ -2,7 +2,7 @@
 """Demonstrate that MoE expert disk offloading lets a model whose stacked expert
 table exceeds unified memory load and run on this machine — the payoff of the
 lazy-load fix (`load(lazy=True)` gated on offload; see
-`docs/moe-offload-lazy-load-design.md` and `docs/moe-offload-case-study.md` §9).
+`docs/moe-offload-case-study.md` Appendix A and §9).
 
 The reference run uses `mlx-community/Qwen3.6-35B-A3B-8bit` (35GB on disk;
 ~33.8GB stacked expert table) on a 32GB Apple-silicon Mac (24.96GB Metal wired
