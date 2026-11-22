@@ -1,13 +1,13 @@
 # omlx-ctl
 
-> **STATUS: SUPPORTED, and the backup backend (updated 2026-08-01).** mira-mlx is
+> **STATUS: SUPPORTED, and the backup backend (re-verified 2026-11-22).** mira-mlx is
 > the default; omlx is what you switch to when mira-mlx cannot serve something.
 > It is also the only backend besides mira-mlx with real vision, and the only one
 > with a model library of its own.
 
 oMLX — multi-model OpenAI-compatible inference server for Apple Silicon.
-Installed here: **0.5.1** (this doc was written against 0.3.12, so treat the flag
-table below as a starting point and check `omlx serve --help` before relying on it).
+Installed here: **0.7.0**. The flag table below was checked against `omlx serve --help` on
+that version on 2026-11-22; recheck it after an upgrade.
 
 Binary: `/Applications/oMLX.app/Contents/MacOS/omlx-cli`  
 Symlink: `/Users/miguel/.local/bin/omlx`
@@ -18,7 +18,7 @@ Symlink: `/Users/miguel/.local/bin/omlx`
 - **0.3.9** — crashed again; permanently abandoned at that point
 - **0.3.12** — reinstalled May 2026; full Q1–Q13 bench completed without crashes
 - **0.4.2** — added Gemma 4 support
-- **0.4.3 / 0.4.4 / 0.5.1** — no crashes seen
+- **0.4.3 / 0.4.4 / 0.5.1 / 0.7.0** — no crashes seen
 
 ## The constraint that still decides when to use it
 
@@ -61,13 +61,11 @@ omlx serves all models from a single `--model-dir`. Each subdirectory = one mode
 
 ## Model directory
 
-```
-~/.omlx/models/
-├── Qwen3.6-35B-A3B/        → model_id: "Qwen3.6-35B-A3B"   (files present)
-├── gemma4-26b/             → model_id: "gemma4-26b"         (symlink to HF cache)
-├── Qwen3.8-27B-MTP/        → model_id: "Qwen3.8-27B-MTP"    (base symlinks + baked mtp head)
-└── Qwen3.6-35B-A3B-MTP/    → model_id: "Qwen3.6-35B-A3B-MTP" (base symlinks + baked mtp head)
-```
+`~/.omlx/models/` holds one subdirectory per model; the directory name is the model id in API
+calls. It is **empty on this machine as of 2026-11-22** (the models were removed to free disk), so
+the setups below must be redone before the `omlx-*` presets in `mira.yaml` will load. Each model is
+either a real copy or a symlink into the HF cache (omlx sometimes downloads its own duplicate, so
+prefer symlinks and log any download in `MODEL_REGISTRY.md`).
 
 ### Adding gemma4 (one-time setup)
 
@@ -100,8 +98,8 @@ A 4-bit checkpoint doesn't ship the head (the quant strips it), so bake it back:
    `{"mtp_enabled": true, "mtp_num_draft_tokens": 3}` (3 = max draft depth; an adaptive
    controller picks 1..3 per sequence). Confirm via the `MTP[...] accept=A/D` info log.
 
-Live dirs: `~/.omlx/models/Qwen3.8-27B-MTP`, `~/.omlx/models/Qwen3.6-35B-A3B-MTP`
-(routed by the `omlx-qwen38-27b-mtp` / `omlx-qwen36-moe-mtp` presets in `mira.yaml`).
+Dirs used by the `omlx-qwen38-27b-mtp` / `omlx-qwen36-moe-mtp` presets in `mira.yaml`:
+`~/.omlx/models/Qwen3.8-27B-MTP` and `~/.omlx/models/Qwen3.6-35B-A3B-MTP` (recreate them as above).
 
 ## Start server
 
@@ -131,6 +129,5 @@ host: http://localhost:8080
 
 ## Stop server
 
-```bash
-pkill -f omlx
-```
+`omlx stop` only stops the managed background server and does not kill a foreground `omlx serve`.
+Find it with `pgrep -f 'omlx.cli serve'` and `kill <pid>`.
