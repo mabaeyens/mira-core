@@ -1,13 +1,9 @@
 # Model Comparison: MacBook Pro M5 (32GB RAM) Performance Guide
 
-> **What runs today, and how it was decided.** Trimmed on 2026-08-12: roughly 320 lines of
-> Ollama, llama.cpp and dflash measurement from May–June 2026 came out, because all three
-> stopped being Mira backends and the numbers had become configuration advice for software
-> nobody here runs. They are recoverable from git history — the *Bench History* index at the
-> bottom names every run and its date, so any single number can be found again.
->
-> Verdicts are dated and kept in order, newest first. Where an older one is still true it
-> says so explicitly.
+> **What runs today, and how it was decided.** Only the current verdict and the options you can
+> select today are kept. Older bench runs (Ollama, llama.cpp, dflash, omlx-as-default, and the
+> bench write-ups) were removed from the tree and are recoverable from git history:
+> `git log -- docs/model-comparison-m5-macbook.md docs/bench-archive`.
 
 ## Current Verdict (updated 2026-08-01)
 
@@ -26,7 +22,7 @@ The 2026-07-10 verdict below still stands for the model choice and the numbers.
 
 ## Verdict of 2026-07-10 (model choice unchanged)
 
-**Winner: mira-mlx (Mira's own inference server) — Qwen3.6-35B-A3B as the normal default model**
+**Winner: mira-mlx (Mira's own inference server), Qwen3.6-35B-A3B as the default model**
 
 mira-mlx (`core/inference/mira_mlx_server.py`) was promoted to the default backend on
 2026-07-09, replacing omlx as the primary path — it's bundled (no separate GUI app), has
@@ -52,7 +48,7 @@ received an explicit `enable_thinking` value; (2) mira-mlx's HTTP handler silent
 `chat_template_kwargs` even when sent; (3) the tool-text buffering logic (needed for Mistral's
 one-sided `[TOOL_CALLS]` marker) also captured Qwen's closing `</tool_call>` marker, breaking
 the parser's end-anchored regex. All three fixed 2026-07-10 — see `docs/architecture.md`
-"Model quirks" for details. Full writeup is in git history (`docs/bench-archive/bench-results-2026-07-10.md`).
+"Model quirks" for details.
 
 **Current `mira.yaml`:**
 ```yaml
@@ -61,43 +57,6 @@ model: mlx-community/Qwen3.6-35B-A3B-4bit   # or mlx-community/Ministral-3-14B-I
 host: http://localhost:8080
 context_window: 65536
 ```
-
----
-
-## Previous Verdict (2026-06-07, superseded by mira-mlx above — omlx itself is unchanged and still fully supported)
-
-**Winner: oMLX 0.4.1 + `Qwen3.6-35B-A3B`**
-
-| Metric | Value |
-|--------|-------|
-| TTFT (warm) | ~0ms (KV cache held in RAM after startup warm-up) |
-| TTFT (startup warm-up) | ~5.5s (one-time per server start) |
-| Sustained t/s | ~52–55 t/s |
-| Memory | ~20GB (weights + KV cache) |
-| Quality | 58.7% SWE-Bench; MLX Community leaderboard: 52.5% |
-| Thinking | Per-request via `extra_body={"enable_thinking": False/True}`; ≤14 ms overhead |
-
-**Why:** oMLX 0.4.1 holds the KV cache in RAM and achieves ~0ms TTFT on every new conversation after a one-time 5.5s startup warm-up. Benchmarked 2026-06-07 against the full Mira system prompt (1 488 tokens): omlx median 0ms vs ollama 0.30.6 MLX at 90ms vs dFlash at ~48s (SSD prefix-cache restore). Qwen3.6-35B-A3B is unchanged as the model — same quality, same throughput, dramatically better responsiveness.
-
-**Rejected alternatives:**
-- **dFlash** — demoted to fallback; SSD prefix-cache restore adds ~48s TTFT regardless of cache hit; best option for very large context sessions (>18K tokens) where omlx can OOM
-- **ollama 0.30.6 MLX** — 90ms median TTFT (good, but 10–20× slower than omlx); viable fallback
-- **omlx 0.3.12** — had 15–30× TTFT regression on qwen3.6; fixed in 0.4.1 (see `docs/omlx-ctl.md`)
-- **OptiQ mixed-precision (4-bit)** — 20–25% slower decode; not worth the quality gain on this hardware
-- **gemma-4-26b-a4b-it-4bit** — 42.3% SWE-Bench vs Qwen3's 58.7%; no adaptive thinking
-
-**Current `mira.yaml`:**
-```yaml
-backend: omlx
-model: Qwen3.6-35B-A3B
-host: http://localhost:8080
-context_window: 65536
-```
-
----
-
-> All numbers on this page were measured locally on the hardware below. Nothing is quoted from
-> a vendor or a leaderboard except the *Model quality reference* table, which says so.
 
 ---
 
@@ -133,7 +92,7 @@ Options you can actually select today:
 
 **Current Mira config (2026-08-01)**: mira-mlx + `Qwen3.6-35B-A3B-4bit` (port 8080). mira-mlx is built on the same mlx-lm continuous-batching primitives but as Mira's own server, with RAM-aware sizing and a disk-backed prompt cache. Gemma 4 stays available through omlx for workflows that want its leaderboard score.
 
-Retired options that used to be in this table — Ollama's `qwen3.6:35b-mlx` and `gemma4:26b` variants, llama.cpp, dflash, and oMLX 0.3.9's OOM — came out with the 2026-08-12 trim. See *Bench History* for when each was measured.
+Retired options that used to be in this table (Ollama's `qwen3.6:35b-mlx` and `gemma4:26b` variants, llama.cpp, dflash, and oMLX 0.3.9's OOM) are in git history.
 
 ### Backends Evaluated
 
@@ -159,23 +118,3 @@ the model, which is why they survived the trim while the throughput tables did n
 | gemma4:26b | 42.3% | 74.1% | 58.2% | 58.2% |
 | qwen3.6:27b | **54.1%** | **82.4%** | **68.9%** | **68.5%** |
 | qwen3.6:35b-a3b | **58.7%** | **84.2%** | **71.3%** | **71.4%** |
-
-## Bench History
-
-Every bench run, in order. This is the index to use when you want a number that used to be in
-this file: find the date, then `git log -- docs/model-comparison-m5-macbook.md` or the named
-file under `docs/bench-archive/` (removed from the tree, in git history).
-
-| Date | Key finding |
-|------|-------------|
-| 2026-05-24 | gemma4:26b-mlx vs Q4_K_M via Ollama — MLX eliminates cold-load penalty; t/s identical |
-| 2026-05-25 | qwen3.6:35b-mlx vs gemma4:26b-mlx via Ollama — qwen3.6 +38% quality but 1.8× slower wall time |
-| 2026-05-29 | omlx 0.3.12 viability test — no advantage over mlx-lm on gemma4; 15–30× TTFT regression on qwen3.6 |
-| 2026-05-30 | mlx-lm promoted to default — 4–6× wall time improvement over Ollama on agentic tasks; OptiQ and unsloth rejected |
-| 2026-05-31 | Latency matrix: Qwen3.6 on mlx-lm wins (307ms warm TTFT, ≤14ms thinking overhead); Ollama cache saves 4.6× on warm prefix; Qwen3 becomes default |
-| 2026-06-06 | omlx 0.4.1 vs dFlash: omlx 4–10× faster TTFT (963ms–4.7s vs 5.4–29.6s); dFlash OOM-safe above 18K KV |
-| 2026-06-07 | TTFT shootout: omlx 0.4.1 (0ms warm) vs ollama 0.30.6 MLX (90ms) vs dFlash (~48s); omlx becomes default |
-| 2026-07-09 | mira-mlx promoted to default: bundled, RAM-aware sizing, disk-backed prompt cache, `/v1/stats` |
-| 2026-07-18 | KV quantization at 8 bits and MoE expert offload measured on both models — `docs/bench-archive/bench-results-2026-07-18.md` (git history) |
-| 2026-08-01 | mlx 0.32.0 verified against the real model (25/26 on the quality suite, no regression) — `docs/bench-archive/bench-results-2026-08-01.md` (git history). dflash and ollama retired the same day |
-
