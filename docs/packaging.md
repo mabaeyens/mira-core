@@ -30,7 +30,7 @@ macOS. That is normal and fine.
 |---|---|---|
 | **Build backend** | setuptools, **hatchling**, flit, pdm, maturin (Rust), scikit-build (C++) | **hatchling** — modern default, good for pure-Python |
 | **Version source** | hardcoded in `pyproject.toml`; `__version__` in code; **VCS / git-tag** (hatch-vcs, setuptools-scm) | **hatch-vcs** (tag-driven) |
-| **Distribution channel** | PyPI; private index; **git/GitHub**; Homebrew; npm; conda | **GitHub release asset + source repo** |
+| **Distribution channel** | PyPI; private index; **git/GitHub**; Homebrew; npm; conda | **GitHub release asset + source repo**, plus the Homebrew tap (`brew install mira`, see [`packaging/homebrew/README.md`](../packaging/homebrew/README.md)) |
 | **Install UX** | `pip install`, `uv add`, `uv tool install`, `uvx`, `pipx` | `uv tool install --editable .` + the `install.sh`/`make` bootstrap |
 
 ## 3. Best practice vs. what we chose
@@ -71,6 +71,8 @@ keeps the code in the checkout, so paths resolve).
 - **`make install`** — already cloned; day-to-day.
 - **`uv tool install --editable .`** — want a global `mira` command but still run from the
   checkout. This is the "package" answer.
+- **`brew install mira`** — the tap formula installs the `mira` command and source tree; the venv
+  and model arrive on first use. Details in [`packaging/homebrew/README.md`](../packaging/homebrew/README.md).
 - **The release wheel** — pinning an exact version, an air-gapped copy, or
   `uv tool install <url-to-wheel>` without cloning (works for the CLI/doctor; the full server still
   wants a checkout).
