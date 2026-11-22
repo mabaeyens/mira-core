@@ -94,6 +94,13 @@ GPQA proxy n=100, fresh engine each, `MLX_ENABLE_TF32=0`, kv4 (2026-10-10): gemm
   `url_fetch_allow_private` were read by `config.py` and absent from `mira.yaml.example`, so their
   non-default paths have never been exercised by anyone deliberately choosing them. Documenting a
   security control is not the same as having reviewed what happens when it is switched off.
+### Borrow from the Unit 4 agent harness (`mabaeyens/hf-courses`, `agents-course/unit4`)
+Read 2026-11-22 (private repo, 65% to 95% on GAIA, see its `PROGRESS.md`). Checked against `core/`:
+- **Archive fallback in `core/url_fetcher.py`.** It already falls back to curl_cffi on 403/429, but a page that stays blocked or down just errors. Unit 4 retries through the Wayback Machine availability API and labels the result as a snapshot. Small, no new dependency.
+- **Recovery rule in the system prompt.** Unit 4 tells the model to try another source when a tool errors or returns empty, never to repeat the call, and never to invent an identifier or number it could not verify. Mira bails on repeats (`AGENT_DIVERGENCE_LIMIT`, per-tool limits) but I have not checked `core/prompts.py` for the instruction. Check before adding.
+- **Per-turn trail of queries and pages.** Unit 4 logs every query and page per question and drops a run that touched a benchmark copy. Mira has no such trail (grepped `core/`). Only worth it if tool-using evals resume; they are cancelled for now.
+- **Small token budgets starve reasoning models.** Unit 4 vision calls returned empty at 600 max_tokens because Qwen3.8 spent the budget thinking; 3000-4000 fixed it. No small-budget helper call exists in `core/*.py`, so nothing to fix today. Keep it in mind for any new vision or sub-call.
+- Not borrowing: the forced guess at the step cap. Mira's soft check-in with the user suits an interactive assistant.
 ### Small, no decision needed
 - **The question set is now the limiting factor, not the harness.** Tier 1 scored 24/24 three runs
   running, so the deterministic half no longer discriminates between builds — it is a regression
@@ -160,9 +167,11 @@ GPQA proxy n=100, fresh engine each, `MLX_ENABLE_TF32=0`, kv4 (2026-10-10): gemm
 - **Headroom options if the 32GB budget gets tight (nothing benched today):** Ministral-3-14B 4bit (7.9GB), Qwen3.8-27B 4bit (15.8GB, 8.3 t/s), gemma-4-26B-A4B REAP-14B (11.2GB, pruning risk unmeasured). Qwen3.8-Flash-Next and GLM-5.3-Flash do not fit.
 - **Unmeasured idea:** stop an MTP draft chain early on low draft confidence. Expected gain looks small at accept ~0.77.
 - **MLX Model Explorer bench** (`codelion/mlx-model-explorer`, `bench/mlx_explorer_bench.py`): not run; perplexity is a coarse signal.
+- **justfit-llm 2.6.0 (Qwen3.8-27B with a DFlash2 draft tree, native Rust/Metal runtime): tested, deleted. Revisit if a Mac port of Mira's own draft work needs a comparison point, or if it ships notarized.** On this M5/32GB: 22.7 t/s decode at 1K, 19.8 at 49K, prefill ~310 t/s, against 8.3 t/s for the dense 27B in mlx-lm. That is 2.7x and holds at depth, but the README claims 59.5 decode on an M5 Pro and the 16K point was never measured here (swap hit 16 of 16.4 GB, so I stopped). Engine held 18.6 GB resident; it does not coexist with Mira on 32GB. Output quality unchecked. Binaries are not notarized. The Oceanus/Reddit post is CUDA-only and does not apply to a Mac.
 
 
 ## Done
+- [2026-11-22] Tested justfit-llm 2.6.0 on the M5/32GB (decode 2.7x the dense mlx-lm baseline, 16K point not reached), then deleted `~/.justfit-test` and its venv with approval and updated `MODEL_REGISTRY.md`. Read the Unit 4 agent harness for findings Mira could borrow; they are under Pending. Prod Mira is still down.
 
 - [2026-11-22] Docs consolidation: 43 to 28 tracked `.md` files. Removed `docs/bench-archive/` and the orphan 2026-08-17 bench; merged the MoE design and prior-art docs into `moe-offload-case-study.md` and the decode-wall and custom-kernels essays into `multi-token-prediction.md`; folded `dev-reference.md` into `architecture.md`; re-verified `architecture.md`, `omlx-ctl.md`, `diagram.md` and `SECURITY.md` against the code; pruned this file from 715 to ~216 lines. Removed text is in git history.
 - [2026-11-22] iOS 0.4.0 build 2 submitted for App Review (iOS only) with demo mode; listing entered via the ASC API from `notes/asc-listing-0.4.0.md`. Mira Desktop build 2 DMG notarized and attached to mira-apps v0.4.0. Keychain token and on-device dictation verified on a device; privacy page, home and support copy rewritten for the Mac-server model (mira-web `885b910`, `498e60c`, `8f50805`, `4bcef38`).
