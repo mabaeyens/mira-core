@@ -46,7 +46,7 @@ afterwards, not something you need in order to start.
 | # | Item | Status | Proof |
 |---|---|---|---|
 | D1 | A first-time user can reach a server from the iPhone (pairing, LAN, Tailscale, QR) | open | Fresh device, no manual config files |
-| D2 | App Review has a working path without the reviewer owning a Mac server | open | Decision and test notes recorded here |
+| D2 | App Review has a working path without the reviewer owning a Mac server | done (2026-11-22) | Demo mode in the iOS app (Try the demo on the first screen, local fake server, nothing sent or saved), described in the App Review notes. iOS 0.4.0 build 2 submitted 2026-11-22, Waiting for Review. The macOS app has no demo, so it is not submitted to the App Store; the notarized Mira Desktop DMG is on the mira-apps v0.4.0 release. |
 | D3 | The engine-lifecycle UI is device-tested | done (2026-11-21) | Physical iPhone against HTTPS 8443: asleep banner, wake on composer focus, first message after a sleep (29.8 s wake), Unload now, and Unload now while busy (409 and the Busy message). The first run exposed a client watchdog that cancelled any wake over 15 s; fixed in mira-apps and re-verified. |
 | D4 | Release cadence respected (5-day minimum between TestFlight pushes) | open | Release notes and dates |
 
