@@ -2,58 +2,32 @@
 
 ## Pending
 
-### NEXT: after the 2026-11-22 ship wave
+Prod Mira is DOWN by default (Safari needed); `/mira-server start` when wanted. The LaunchAgent was left unloaded after the 2026-10-10 bench.
+
+### Ship wave 2026-11-22: follow-ups
 - Waiting on App Review: iOS 0.4.0 build 2 (Waiting for Review since 2026-11-22). TestFlight external beta link `join/crTWN4kN` is also in review; swap the old TestFlight link in mira-web (home, support) only when the iOS session says it is approved.
 - Server: `/cancel` with an empty conversation id cancels every active turn (a Stop on a brand-new first turn). Fix: return the conversation id at turn start (SSE event or header) so the client can cancel its own turn. Details in `notes/ios-followups.md`.
+- Check the home page capability card still matches the one cached model (it names Gemma4 and Llama).
 - Mac App Store: not submitted (no demo mode, a Mac reviewer sees only a connect screen). Revisit when Mira Desktop has a demo or review path. Direct download covers Mac meanwhile.
 - Mira Desktop store screenshots: one 1280x800 shot exists (`~/Desktop/mira-store-shots/macos/01-home.png`); automated capture failed while the Mac was in use.
 - Optional: Spanish App Store localisation; a TestFlight beta group for the new app; Mira Desktop 'Pair' first-run text only mentions typing the Tailscale address.
-- Check the home page capability card still matches the one cached model (it names Gemma4 and Llama).
 
-### NEXT: engine on-demand lifecycle, the daily-use footprint lever (2026-11-21)
-- BUILT and pushed 8232f9a (default off): `core/engine_lifecycle.py`, `engine_idle_unload_minutes`, `/health` + `/info` `engine_state`, `/engine`, `/engine/wake`, `/engine/unload`, docs in `docs/engine-lifecycle.md`. Wake measured 9 to 14 s; verified live (unload freed the process, `/ask` on a sleeping engine woke it and answered in 20 s). A sleeping engine reports `backend_ready: true`, so apps that predate `engine_state` need no change.
-- Still to do: (1) mira-apps: show sleeping/waking, call `/engine/wake` on composer focus, "Unload now" action, chat timeouts that allow a wake (separate repo, needs its own spec and device check); (2) pick the daily default (proposed 15 min) and enable it in the live `mira.yaml` after one real week; (3) turn `proactive_decompress` off in the daily profile, it faults the model back in while Mira runs; (4) done: the dead `_prefill_system_prompt` is deleted. The 15 minute window is enabled in the live `mira.yaml` (local), taking effect at the next server start.
-- Direction is daily usability and a 0.3 then 1.0 App Store release, not speed. The engine is a child of `server.py`, started in the lifespan and never stopped, so ~20GB stays wired around the clock. No idle unload exists for the language model (only the vision tower has one). `proactive_decompress` only faults an evicted model back in and is off by default.
-- Spec: `specs/engine-on-demand-lifecycle.md` (local, gitignored). Idle watcher plus single-flight wake, default off, mira-mlx only. Build order: `core/engine_lifecycle.py` and `engine_state` on `/health`, then wire one route.
-- First step is measuring cold-start (spawn to first token) with a warm and a cold OS file cache; it decides the default idle window. mira-apps needs a separate spec for a "waking up" state.
+### Engine on-demand lifecycle (daily-use footprint lever)
+Built and pushed (`8232f9a`, default off, see `docs/engine-lifecycle.md`). Wake measured 9 to 14 s. Direction is daily usability and a 0.3 then 1.0 App Store release, not speed: the engine is a child of `server.py` and ~20GB stays wired around the clock.
+- mira-apps: show sleeping/waking, call `/engine/wake` on composer focus, "Unload now" action, chat timeouts that allow a wake. Separate repo, needs its own spec and device check.
+- Pick the daily default (proposed 15 min) and enable `engine_idle_unload_minutes` in the live `mira.yaml` after one real week.
+- Retry the independent adversarial review of these levers on context-mode 2.x; it did not run because the 1.0.169 hook appended its routing block to every Agent prompt without an idempotency check.
 - Not worth pursuing as headline levers: smaller default context (already derived to ~39k, 64k OOMs), smaller prefill step, kv2 (kv4 was judged keep).
-- The independent adversarial review of these levers did not run: the context-mode hook (1.0.169, `hooks/core/routing.mjs` ~905) appends its routing block to every Agent prompt without an idempotency check, so auto mode's resubmit loop never converges. Retry it once on context-mode 2.x.
 
-### NEXT: fit Qwen3.6 better on 32GB, context is the limit (2026-11-21)
-- Short zero-shot prompts are fine; longer tasks trail mostly because served context is too low. Wall is prefill transient + Metal ceiling, not KV (see long-ctx ceiling work).
-- REAP lead: many Qwen3.6-35B-A3B REAP checkpoints exist on HF, none checked yet. MLX-ready candidate: `mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit-REAP-19B`. Others: `inference-optimization/Qwen3.6-35B-A3B-REAP20`, `DJLougen/Qwen3.6-35B-A3B-REAP-90pct`, `IAmTheRealGumbo/*-REAP-{64,128,192,231}-experts`. Base has 256 experts, top-8, 40 layers.
-- REAP-19B result (2026-11-21): `mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit-REAP-19B` scores 28.0% on the GPQA proxy n=100 vs 45.0% for stock Qwen3.6-35B-A3B 4-bit, same apparatus back to back (fresh engine, TF32=0, kv4, no MTP either side; control reproduced 45.0% exactly). Near chance (25%), Biology 1/10, Chemistry 11/47. 0 empty/truncated, so it is capability loss, not an apparatus fault. Rejected; the other REAP checkpoints (REAP20, 90pct, expert-count variants) prune less or similarly and are unchecked. Raw runs in `scripts/eval_runs/`.
-- REAP only frees memory (weights), it does not cut active compute, so the payoff is more context/headroom, not speed. Measure quality loss first: GPQA proxy n=100 vs 45.0% baseline, plus a long-context task, same apparatus, fresh engine, `MLX_ENABLE_TF32=0`. Third-party repos: read the card, no `trust_remote_code`.
-- Add any downloaded model to `MODEL_REGISTRY.md`.
-
-### Inkling 2 Mini support: built, parked, not adopted (2026-11-21)
-- Done: model ported onto the fork (`mabaeyens/mlx-lm` branch `mira-inkling`, 2 commits, pushed) and wired into mira-mlx (`7592701`): stream filter for message framing, looped-KV estimate (32KiB/token), inert-`kv_bits` warning. Works end to end: thinking, tools, streaming, boundary snapshot (TTFT 3.8s to 0.25s).
-- Verdict: not better than Qwen3.6 here. Decode 28.7 vs 57.5 t/s (gate 35 not met), prefill 0.36-0.69x, ~2.5-3x longer answers. GPQA proxy aborted at 21/100 by the RAM floor (12/21, 9 truncated at 2048), not comparable to the 45.0% baseline.
-- Revisit when upstream Inkling support (PR #2086 / new layers layout) lands. Open gaps: kv quant on CacheList, `enable_thinking=false` still reasons ~50-90 tokens, vision untested, tensor parallel stubbed, Mira pin not moved (tests used PYTHONPATH).
-- Checkpoints `thinkingmachines/Inkling-2-Mini` (20.2GB) and `mlx-community/Inkling-2-Mini-4bit` (17.3GB) were deleted from the HF cache on 2026-11-21; re-download to revisit. `MODEL_REGISTRY.md` rows may still need updating.
-- Unsloth GGUF thread (HF `unsloth/Inkling-2-Mini-GGUF` discussion 2) checked 2026-11-21: Q3/IQ3_XXS is not a fit. Fit was never the blocker (4-bit already fits); speed and answer length were. Thread is llama.cpp-only (CUDA/ROCm/Vulkan, 11-25 t/s, mainline gibberish until PR 32704), none of its optimizations apply to MLX, and a GGUF would need a new llama.cpp backend. Recheck late Nov.
-- Untried idea: `thinkingmachines/TML-d24-varloop-research` (1-5 passes) for a speed/quality sweep; needs a conversion first.
-- Prod Mira stays DOWN by default (Safari needed); start with `/mira-server start` when wanted.
-
-### Gemma4-26B vs Qwen3.6 on the GPQA proxy, memory pick-up (2026-10-13)
-- Measured 2026-10-10, fresh engine each, `MLX_ENABLE_TF32=0`, thinking off, n=100, kv4: gemma4-26b 48.0% (136 q/min) vs Qwen3.6-35B-A3B-MTP with prod flags 45.0% (120 q/min). 0 empty/no-letter/truncated on both. Chem 38% vs 34%, Phys 51% vs 53.5%, Bio 80% vs 60% (n=10). The 3-point gap is inside proxy noise; the proxy shows gemma4 no worse, nothing more. Raw runs in `scripts/eval_runs/*proxy_{qwen36-mtp,gemma4-26b}.jsonl`.
-- Not measured: peak memory (the reason to consider gemma4), tool-calling, long context, and the thinking-on gate. The earlier "gemma4 is worse" results were tool-calling and 24K-context OOM, which the proxy does not touch. Next: bench_compare tool-calling run and a peak-RAM reading before any default change.
+### Gemma4-26B vs Qwen3.6: open follow-ups
+GPQA proxy n=100, fresh engine each, `MLX_ENABLE_TF32=0`, kv4 (2026-10-10): gemma4-26b 48.0% vs Qwen3.6-35B-A3B-MTP 45.0%, a gap inside proxy noise. Earlier "gemma4 is worse" results were tool-calling and 24K-context OOM, which the proxy does not touch.
+- Not measured: peak memory, tool-calling, long context, thinking-on gate. Next: a `bench_compare` tool-calling run and a peak-RAM reading before any default change.
 - The proxy fixture printed `subset_sha` 35be7d860593; the eval-contract notes record af3777f46584. Qwen's 45.0% matches the old baseline, but find out why the hash differs.
-- The MLX Model Explorer Space (mlx-community) is a static finder; its `bench/mlx_explorer_bench.py` (speed, peak memory, wikitext perplexity, plain mlx-lm, no MTP) lives in `codelion/mlx-model-explorer`. Not run. Perplexity is a coarse signal, and the Gemma BOS handling needs `mlxbench-2`.
-- Prod LaunchAgent is unloaded (stopped for the bench) and was not restarted. Run `/mira-server start`.
 
-### mlx 0.32.3 bump shipped; fused quantized SDPA and smaller-model options parked (2026-10-10)
-- Done: `mlx`/`mlx-metal` 0.32.0 → 0.32.3 (`8614c8a`, CHANGELOG under Unreleased `54ce5b0`). Same-machine A/B on fresh engines, `MLX_ENABLE_TF32=0`: 831 tests pass, GPQA proxy n=100 unchanged at 45.0%, 93.5 → 110.8 q/min, ~20k-token prompt 8.9 → 10.2 tok/s wall (prefill included, one run each). 8 of 100 picks flipped with equal accuracy (batched-kernel effect). The fused-attention kernels in 0.32.1–0.32.3 are not on the prod path (kv4 uses the quantized SDPA composition); the speedup is most likely the quantized MoE matmul changes, not isolated.
-- Deferred: local build of mlx PR #3026 (fused quantized SDPA, the lever against the 73 → 11 t/s decode collapse from 2k to 64k). It does not apply to v0.32.3 (7 of 15 files conflict, base is 521 commits behind) and the Metal toolchain is not installed. Recheck its status at the next mlx bump. Spec in `specs/mlx-pr3026-quantized-sdpa-local-build.md` (local).
-- Headroom options if the 32GB budget gets tight (nothing benched today): Ministral-3-14B 4bit (7.9GB, known good in Mira), Qwen3.8-27B 4bit (15.8GB, 8.3 t/s plain, zero-fail on 4 prompts), gemma-4-26B-A4B REAP-14B (11.2GB, pruning risk unmeasured). Qwen3.8-Flash-Next (111GB at 4-bit) and GLM-5.3-Flash (204GB) do not fit.
-- Unmeasured idea: stop an MTP draft chain early on low draft confidence. `_DepthController` already prices expert-union cost per depth from measured wall-clock but ignores draft probability; expected gain looks small at accept ~0.77.
-- Prod restarted on 0.32.3 after the A/B; I saw `backend_ready: false` right after restart and `true` in a later `/health` check.
-
-### omlx 0.7.0 installed + truncated-thinking PR — follow-ups (2026-10-10)
-- omlx backup backend upgraded 0.5.1 → 0.7.0 (app + `~/.omlx/bin/omlx`). Streaming truncated-thinking leak is fixed upstream; non-streaming still leaks (jundot/omlx#3796). Mira is not materially affected: the only non-streaming call whose output is used is `_llm_chat_sync` (titles/summaries, thinking off).
-- Done 2026-10-10: all four `omlx-*` presets in `mira.yaml` load and answer on 0.7.0; MTP settings in `~/.omlx/model_settings.json` survived the upgrade. Only load + one-token reply checked, MTP speed and accept rate not re-measured. Prod `/health` ok after the restart.
-- PR jundot/omlx#4414 open (non-streaming fix, unit-tested only). Stale bot closes after 60 days without commits, so rebase onto `main` by early December if unreviewed.
-- Cleanup done 2026-10-10: fork branch `fix/streaming-truncated-thinking` deleted; 0.5.1 rollback app deleted. Still open: `~/Downloads/omlx-0.7.0-dmg/` (0.7.0 DMG only) and the `~/Projects/omlx` clone, which goes after #4414 is merged or closed.
+### omlx 0.7.0 follow-ups
+- PR jundot/omlx#4414 (non-streaming truncated-thinking fix) is open and unit-tested only. The stale bot closes after 60 days without commits: rebase onto `main` by early December if unreviewed. The non-streaming leak (jundot/omlx#3796) does not materially affect Mira.
+- MTP speed and accept rate on 0.7.0 were not re-measured (only load plus a one-token reply).
+- Cleanup left: `~/Downloads/omlx-0.7.0-dmg/` and the `~/Projects/omlx` clone, which goes after #4414 is merged or closed.
 
 ### `derive_resident_expert_fraction` is blind to gpt-oss-120b
 - **`gpt-oss-120b-MXFP4-Q8` reports `num_experts=None` in its config, so `_classify_weight_bytes`
@@ -178,6 +152,15 @@
     retry — the lean is to keep retrying but surface the reason on the first refusal, since today a
     misconfigured `allowed_hosts` retries a hopeless connection and then goes orange with no
     explanation.
+
+## Parked (revisit trigger in bold)
+- **Smaller-footprint Qwen3.6 (REAP): dead end.** `mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit-REAP-19B` scored 28.0% on the GPQA proxy vs 45.0% stock (2026-11-21, near chance). Other REAP checkpoints are unchecked; measure quality first, no `trust_remote_code`, and log any download in `MODEL_REGISTRY.md`. Context, not weights, is the limit on 32GB: wall is prefill transient plus the Metal ceiling, not KV.
+- **Inkling 2 Mini: built, not adopted. Revisit when upstream Inkling support (PR #2086) lands.** Ported on the fork (`mabaeyens/mlx-lm` branch `mira-inkling`) and wired into mira-mlx (`7592701`), but decode is 28.7 vs 57.5 t/s (gate 35 not met), prefill 0.36-0.69x, ~2.5-3x longer answers. Open gaps: kv quant on CacheList, `enable_thinking=false` still reasons, vision untested, Mira pin not moved. Checkpoints were deleted 2026-11-21; re-download to revisit. Untried: `thinkingmachines/TML-d24-varloop-research` (needs conversion).
+- **Fused quantized SDPA (mlx PR #3026): deferred. Recheck at the next mlx bump.** It is the lever against the 73 to 11 t/s decode collapse from 2k to 64k, but does not apply to v0.32.3 (7 of 15 files conflict) and the Metal toolchain is not installed. mlx is at 0.32.3 (831 tests pass, proxy unchanged at 45.0%).
+- **Headroom options if the 32GB budget gets tight (nothing benched today):** Ministral-3-14B 4bit (7.9GB), Qwen3.8-27B 4bit (15.8GB, 8.3 t/s), gemma-4-26B-A4B REAP-14B (11.2GB, pruning risk unmeasured). Qwen3.8-Flash-Next and GLM-5.3-Flash do not fit.
+- **Unmeasured idea:** stop an MTP draft chain early on low draft confidence. Expected gain looks small at accept ~0.77.
+- **MLX Model Explorer bench** (`codelion/mlx-model-explorer`, `bench/mlx_explorer_bench.py`): not run; perplexity is a coarse signal.
+
 
 ## Done
 
