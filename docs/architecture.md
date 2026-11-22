@@ -68,7 +68,7 @@ static/index.html    — single-page web UI (vanilla HTML/CSS/JS + marked.js)
 | `compress` | `message` | Context window compressed — emitted after `done` when `context_pct` exceeded threshold |
 | `heartbeat` | — | Keepalive — emitted periodically during long tool calls to prevent connection timeout |
 
-**Thinking toggle:** `stream_chat()` accepts `thinking_enabled: bool = True`. The orchestrator decides whether to think via `_should_think(message, has_attachments)` — a scoring heuristic that also checks `_NEVER_THINK` (trivial commands: time/date queries, "fix file.ext" patterns) and `_REASONING_INTENT` (strong signals that always trigger thinking). On **Qwen3**, thinking is controlled per-request via `extra_body={"chat_template_kwargs": {"enable_thinking": True/False}}`; the `reasoning` field in SSE delta chunks carries thinking tokens and is emitted as `thinking` events. Warm thinking overhead on mlx-lm is ≤14 ms (noise). The server form field `thinking_enabled` (default `true`) flows from the app's thinking toggle.
+**Thinking toggle:** `stream_chat()` accepts `thinking_enabled: bool = True`. The orchestrator decides whether to think via `_should_think(message, has_attachments)` — a scoring heuristic (threshold 4) with short-circuits: `_TRIVIAL` and `_NEVER_THINK` (time/date queries, "fix file.ext" patterns) return False, while `_CLOCK_MATH` and `_REASONING_INTENT` always return True. On **Qwen3**, thinking is controlled per-request via `extra_body={"chat_template_kwargs": {"enable_thinking": True/False}}`; the `reasoning` field in SSE delta chunks carries thinking tokens and is emitted as `thinking` events. Warm thinking overhead on mlx-lm is ≤14 ms (noise). The server form field `thinking_enabled` (default `true`) flows from the app's thinking toggle.
 
 **Mockable boundary:** `_call_llm()` is the single point tests mock — returns an iterable of stream chunks with `.message.content`, `.message.tool_calls`, `.done`.
 
@@ -193,7 +193,7 @@ After the server is confirmed reachable, `_warmup_model(...)` sends a 1-token co
 
 **External config (preferred):** copy `mira.yaml.example` → `mira.yaml` (git-ignored) and edit.
 
-All 45 settings, with defaults, are in **[configuration.md](configuration.md)**. Do not restate
+All 52 settings, with defaults, are in **[configuration.md](configuration.md)**. Do not restate
 them here — three partial copies of that table is how `reranker_model` came to be documented as
 source-only when it had been a config field for weeks.
 
@@ -205,7 +205,7 @@ Two mechanics worth knowing that belong here rather than there:
   made a retired backend look load-bearing.
 
 **Knobs that genuinely have no `mira.yaml` equivalent** (edit `core/config.py`):
-`MAX_SEARCH_RESULTS`, `SEARCH_TIMEOUT`, `MAX_RETRIES`, `MAX_TOOL_STEPS`, `VERBOSE_DEFAULT`,
+`MAX_SEARCH_RESULTS`, `SEARCH_TIMEOUT`, `MAX_RETRIES`, `MAX_AGENT_STEPS`, `VERBOSE_DEFAULT`,
 `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP`, `RAG_RETRIEVE_K`, `RAG_RERANK_TOP_K`,
 `RAG_SCORE_THRESHOLD`, `RAG_MAX_CHUNKS`.
 
@@ -214,7 +214,7 @@ Two mechanics worth knowing that belong here rather than there:
 Behaviours that are intentional and must not be removed:
 
 - **Gemma4 (mlx-lm):** emits `tool_calls` in an intermediate chunk (`done=False`) — handled by `accumulated_tool_calls` in `orchestrator.py`.
-- **Gemma4:** occasionally emits LaTeX (e.g. `$\rightarrow$`) — `preprocessLatex()` in `index.html` converts to Unicode.
+- **Gemma4:** occasionally emits LaTeX (e.g. `$\rightarrow$`) — the web UI renders it with KaTeX (`static/index.html`) and the native apps convert it with `preprocessLatex()` (mira-apps `MessageBubble.swift`).
 - **Qwen3.6 thinking:** controlled per-request via `extra_body={"chat_template_kwargs": {"enable_thinking": True/False}}`. Where the reasoning text then *arrives* is backend-specific and this is the part that bites: omlx splits it into a `reasoning`/`reasoning_content` delta field, while **mira-mlx leaves it inline in `delta.content`** wrapped in `<think>` markers, so the orchestrator's `ThinkingStripper` is what separates the two. Either way the orchestrator emits `thinking` events and only the answer reaches `token` events. Overhead on mlx-lm is ≤14 ms warm, negligible.
 - **`_NEVER_THINK` / `_ANALYTICAL_WITH_ATTACHMENT`:** `_should_think()` uses a scoring heuristic (threshold 4). `_NEVER_THINK` short-circuits to False for time/date queries and "fix file.ext" patterns. Bare attachments score +1; analytical verbs (explain, analyze, review, debug, refactor…) combined with an attachment add a further +2.
 - **Qwen3.6 thinking toggle must be threaded through per-backend:** `_call_llm()` (`core/orchestrator.py`) gates the `enable_thinking`/`chat_template_kwargs` override behind an explicit backend allow-list — every OpenAI-compatible backend that honors it (`mira-mlx`, `omlx`, `mlx-lm`, `vllm-mlx`) must be listed there, or that backend silently falls back to the model's chat-template default (thinking always on) regardless of the per-turn toggle. Found and fixed 2026-07-10 when `mira-mlx` was missing from the tuple. The predicate is now `_uses_qwen_thinking_template(backend, model)`, shared with the response side below so the two cannot drift apart.
