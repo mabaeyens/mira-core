@@ -5,7 +5,7 @@ model wrote the literal tags in its reasoning and answer. A plain "</think>" clo
 ended the reasoning early (the rest leaked into the answer) and a quoted "<think>"
 opened a block that swallowed the answer.
 """
-from core.inference.inkling_stream import CLOSE_MARK, THINK_CLOSE
+from core.inference.inkling_stream import CLOSE_MARK, THINK_CLOSE  # import-guard: lazy-mlx
 from core.thinking_stripper import ThinkingStripper
 
 
