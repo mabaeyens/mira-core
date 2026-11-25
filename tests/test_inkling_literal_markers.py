@@ -42,3 +42,20 @@ def test_default_stripper_is_unchanged():
     s = ThinkingStripper(preopened=True)
     out = list(s.feed("plan</think>ans")) + list(s.drain())
     assert "".join(e["content"] for e in out if e["type"] == "token") == "ans"
+
+
+def test_default_stripper_keeps_quoted_tags_as_text():
+    """Qwen explaining the tags: `"<think>"` in the answer and `"</think>"` in its reasoning."""
+    s = ThinkingStripper(preopened=True)
+    out = list(s.feed('check the marker "</think>" first</think>It returns `"<think>"` and ')) \
+        + list(s.feed('("<think>", "</think>") end')) + list(s.drain())
+    think = "".join(e["content"] for e in out if e["type"] == "thinking")
+    text = "".join(e["content"] for e in out if e["type"] == "token")
+    assert '"</think>"' in think and "first" in think
+    assert text == 'It returns `"<think>"` and ("<think>", "</think>") end'
+
+
+def test_default_stripper_real_markers_split_across_chunks_still_work():
+    s = ThinkingStripper(preopened=True)
+    out = list(s.feed("plan</thi")) + list(s.feed("nk>\nans")) + list(s.drain())
+    assert "".join(e["content"] for e in out if e["type"] == "token") == "\nans"

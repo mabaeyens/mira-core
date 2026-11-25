@@ -22,6 +22,12 @@ _GEMMA_THINK_CLOSE = "<channel|>"
 _INKLING_CLOSE = "\u2063</think>\u2063"
 
 
+# A marker written inside quotes or backticks is the model talking about the tag
+# ("... returns `<think>` when ..."), not opening or closing a block. Real markers
+# follow a newline, a sentence or nothing; they are not glued to a quote.
+_QUOTE_CHARS = "\"'`("
+
+
 def _partial_marker_tail(buf: str, *markers: str) -> int:
     """Length of the longest suffix of ``buf`` that is a proper prefix of any
     marker. Such a tail might be the start of a marker that spans into the next
@@ -62,6 +68,10 @@ class ThinkingStripper:
         # </think> in its reasoning or answer is just text.
         self._close = _INKLING_CLOSE if inkling else "</think>"
         self._match_open = not inkling
+        # Last character consumed in each mode, for the quoted-marker check when a
+        # marker starts a chunk.
+        self._prev_think = ""
+        self._prev_text = ""
         self._think_buf = ""
         self._in_thinking = False
         self._gemma_buf = ""
@@ -165,17 +175,31 @@ class ThinkingStripper:
 
     # -- internals -----------------------------------------------------------
 
+    @staticmethod
+    def _find_unquoted(buf: str, marker: str, prev: str) -> int:
+        """Index of the first `marker` in `buf` that is not glued to a quote mark."""
+        if marker.startswith("\u2063"):  # Inkling's private sentinel is never quoted text
+            return buf.find(marker)
+        i = buf.find(marker)
+        while i != -1:
+            before = buf[i - 1] if i > 0 else prev
+            if before not in _QUOTE_CHARS or before == "":
+                return i
+            i = buf.find(marker, i + 1)
+        return -1
+
     def _pass1_strip_think(self) -> Iterator[Dict]:
         """Strip Qwen3 ``<think>...</think>`` blocks; non-thinking text flows to
         ``_gemma_buf`` for pass 2."""
         while self._think_buf:
             if self._in_thinking:
-                close = self._think_buf.find(self._close)
+                close = self._find_unquoted(self._think_buf, self._close, self._prev_think)
                 if close == -1:
                     hold = _partial_marker_tail(self._think_buf, self._close)
                     emit = self._think_buf[:len(self._think_buf) - hold] if hold else self._think_buf
                     if emit:
                         self.thinking_chars += len(emit)
+                        self._prev_think = emit[-1]
                         if self._preopen_active:
                             self._preopen_buf += emit
                         yield {"type": "thinking", "content": emit}
@@ -190,19 +214,26 @@ class ThinkingStripper:
                 self._preopen_active = False
                 self._preopen_buf = ""
                 self._in_thinking = False
+                self._prev_text = ""
                 self._think_buf = self._think_buf[close + len(self._close):]
             else:
-                open_tag = self._think_buf.find("<think>") if self._match_open else -1
+                open_tag = (self._find_unquoted(self._think_buf, "<think>", self._prev_text)
+                            if self._match_open else -1)
                 if open_tag == -1:
                     hold = _partial_marker_tail(self._think_buf, "<think>") if self._match_open else 0
-                    self._gemma_buf += self._think_buf[:len(self._think_buf) - hold] if hold else self._think_buf
+                    added = self._think_buf[:len(self._think_buf) - hold] if hold else self._think_buf
+                    if added:
+                        self._prev_text = added[-1]
+                    self._gemma_buf += added
                     self._think_buf = self._think_buf[len(self._think_buf) - hold:] if hold else ""
                     break
                 if open_tag > 0:
+                    self._prev_text = self._think_buf[open_tag - 1]
                     self._gemma_buf += self._think_buf[:open_tag]
                     self._think_buf = self._think_buf[open_tag:]
                 else:
                     self._in_thinking = True
+                    self._prev_think = ""
                     self._think_buf = self._think_buf[len("<think>"):]
 
     def _pass2_strip_gemma(self) -> Iterator[Dict]:
