@@ -144,7 +144,7 @@ def test_a_summary_after_real_tool_work_still_exits(orchestrator):
     Banning empty-content task_done outright would break this."""
     orchestrator._execute_tools = lambda prepared, step, fetch_results: iter(())
     calls = _script(orchestrator, [
-        _turn(tool_calls=[_tool_call("read_file", {"path": "x.py"}, tc_id="tc-r")]),
+        _turn(tool_calls=[_tool_call("web_search", {"query": "temp files"}, tc_id="tc-r")]),
         _turn(tool_calls=[_tool_call("task_done", {"summary": "Deleted 3 files."})]),
     ])
     events = _run(orchestrator, "clean up the temp files")

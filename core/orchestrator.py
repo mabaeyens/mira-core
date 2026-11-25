@@ -866,10 +866,29 @@ class ChatOrchestrator:
 
             # Prepare: resolve tc_id, divergence for each call in the batch
             prepared = []
+            # The parser turns any tool-call message into a call, whatever the turn
+            # offered. Refuse names outside the offered set, so a turn handed no
+            # tools (or no shell) cannot run one, and answer each with a tool result
+            # so the history stays well formed and the model can still reply.
+            offered = {t["function"]["name"] for t in self._active_tools}
+            refused_any = False
             for i, tc in enumerate(tool_calls):
                 tc_id = getattr(tc, 'id', None) or f"call_{step}_{i}"
                 name = tc.function.name
                 args = tc.function.arguments
+                if name not in offered:
+                    refused_any = True
+                    logger.warning("Refused tool call not offered this turn: %s", name)
+                    self.conversation_history.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "name": name,
+                        "content": (
+                            f"Refused: the tool '{name}' is not available in this turn. "
+                            "Answer from what you already know, in plain text."
+                        ),
+                    })
+                    continue
                 if name != "task_done":
                     call_hash = str(hash(name + json.dumps(args, sort_keys=True)))
                     repeat_count = self._tool_call_hashes.get(call_hash, 0) + 1
@@ -880,6 +899,9 @@ class ChatOrchestrator:
                 else:
                     diverged = False
                 prepared.append((tc_id, name, args, diverged))
+
+            if refused_any and not prepared:
+                continue
 
             # Hard cap: bail before executing if the absolute turn limit is exceeded.
             if self._total_tool_calls > MAX_TOOL_CALLS_PER_TURN:

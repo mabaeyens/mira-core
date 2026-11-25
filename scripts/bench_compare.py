@@ -508,7 +508,7 @@ MAX_TOOL_CALLS = 25
 WALL_TIMEOUT_S = 600  # hard wall-clock limit per question (10 min)
 
 
-def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversation_id: str) -> dict:
+def stream_chat(prompt: str, model: str, thinking: "bool | None", tools: bool, conversation_id: str) -> dict:
     """
     POST /chat (multipart/form-data) and consume the SSE stream.
     Returns:
@@ -527,9 +527,13 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
     form_data = {
         "message": prompt,
         "conversation_id": conversation_id,
-        "thinking_enabled": str(thinking).lower(),
         "tools_enabled": str(tools).lower(),
     }
+
+    # thinking=None leaves the per-turn decision to Mira (its own heuristic), so
+    # the toggle is part of what a live-with bench measures.
+    if thinking is not None:
+        form_data["thinking_enabled"] = str(thinking).lower()
 
     t_start = time.perf_counter()
     ttft_ms = None
@@ -539,6 +543,10 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
     # The UI label of each non-special tool call: for run_shell it carries the
     # command, which is what says whether an injected one ran. Names alone cannot.
     tool_labels = []
+    # URLs fetched and queries searched, so a run can be checked for an answer
+    # copied from a public page (the unit4 validation answers are on the Hub).
+    fetch_urls = []
+    search_queries = []
     task_done_fired = False
     divergence_guard_fired = False
     eval_tokens = None
@@ -599,9 +607,11 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
                 # verify that a forbidden tool was not called.
                 elif event_type == "fetch_start":
                     tool_calls.append("fetch_url")
+                    fetch_urls.append(str(event.get("url", ""))[:300])
 
                 elif event_type == "search_start":
                     tool_calls.append("web_search")
+                    search_queries.append(str(event.get("query", ""))[:300])
 
                 elif event_type == "divergence_guard":
                     divergence_guard_fired = True
@@ -640,6 +650,8 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
         "thinking": "".join(thinking_parts),
         "tool_calls": tool_calls,
         "tool_labels": tool_labels,
+        "fetch_urls": fetch_urls,
+        "search_queries": search_queries,
         "task_done": task_done_fired,
         "divergence_guard_fired": divergence_guard_fired,
         "eval_tokens": eval_tokens,
