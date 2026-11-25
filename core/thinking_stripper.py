@@ -19,6 +19,7 @@ from typing import Iterator, Dict
 # Gemma 4 thinking token boundaries (mlx-lm raw stream format).
 _GEMMA_THINK_OPEN = "<|channel>thought\n"
 _GEMMA_THINK_CLOSE = "<channel|>"
+_INKLING_CLOSE = "\u2063</think>\u2063"
 
 
 def _partial_marker_tail(buf: str, *markers: str) -> int:
@@ -55,7 +56,12 @@ class ThinkingStripper:
     ``</think>``).
     """
 
-    def __init__(self, preopened: bool = False) -> None:
+    def __init__(self, preopened: bool = False, inkling: bool = False) -> None:
+        # Inkling has no in-band opener, and its closer is a private sentinel
+        # (core.inference.inkling_stream.CLOSE_MARK), so a literal <think> or
+        # </think> in its reasoning or answer is just text.
+        self._close = _INKLING_CLOSE if inkling else "</think>"
+        self._match_open = not inkling
         self._think_buf = ""
         self._in_thinking = False
         self._gemma_buf = ""
@@ -164,9 +170,9 @@ class ThinkingStripper:
         ``_gemma_buf`` for pass 2."""
         while self._think_buf:
             if self._in_thinking:
-                close = self._think_buf.find("</think>")
+                close = self._think_buf.find(self._close)
                 if close == -1:
-                    hold = _partial_marker_tail(self._think_buf, "</think>")
+                    hold = _partial_marker_tail(self._think_buf, self._close)
                     emit = self._think_buf[:len(self._think_buf) - hold] if hold else self._think_buf
                     if emit:
                         self.thinking_chars += len(emit)
@@ -184,11 +190,11 @@ class ThinkingStripper:
                 self._preopen_active = False
                 self._preopen_buf = ""
                 self._in_thinking = False
-                self._think_buf = self._think_buf[close + len("</think>"):]
+                self._think_buf = self._think_buf[close + len(self._close):]
             else:
-                open_tag = self._think_buf.find("<think>")
+                open_tag = self._think_buf.find("<think>") if self._match_open else -1
                 if open_tag == -1:
-                    hold = _partial_marker_tail(self._think_buf, "<think>")
+                    hold = _partial_marker_tail(self._think_buf, "<think>") if self._match_open else 0
                     self._gemma_buf += self._think_buf[:len(self._think_buf) - hold] if hold else self._think_buf
                     self._think_buf = self._think_buf[len(self._think_buf) - hold:] if hold else ""
                     break

@@ -1076,7 +1076,8 @@ class ChatOrchestrator:
                     preopened=(
                         thinking_enabled
                         and _uses_qwen_thinking_template(self.backend, self.model)
-                    ) or _is_inkling(self.backend, self.model)
+                    ) or _is_inkling(self.backend, self.model),
+                    inkling=_is_inkling(self.backend, self.model),
                 )
 
                 for chunk in self._call_llm(

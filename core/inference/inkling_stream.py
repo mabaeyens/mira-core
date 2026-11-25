@@ -19,7 +19,13 @@ the state machine (see ``mlx_lm.tool_parsers.inkling``).
 
 from __future__ import annotations
 
-THINK_CLOSE = "</think>\n\n"
+# Inkling's reasoning can quote "</think>" and "<think>" verbatim (it is asked about
+# Mira's own stripper, among other things). A plain closer would end the block early
+# and a quoted opener would swallow the answer, so the real closer carries invisible
+# separators the model never writes, and ThinkingStripper(inkling=True) matches only
+# that.
+CLOSE_MARK = "\u2063</think>\u2063"
+THINK_CLOSE = CLOSE_MARK + "\n\n"
 
 MESSAGE = "<|message_model|>"
 TEXT = ("<|content_text|>", "<|content_xml|>")
