@@ -16,7 +16,15 @@ from .workspace import safe_path, rel
 from .approvals import approval_token
 
 
-def read_file(path: str, root: Optional[str] = None) -> Dict[str, Any]:
+# A whole large file in one result is re-prefilled on every later tool step (hybrid
+# models cannot reuse the conversation cache), so a single read of a 3000-line
+# module cost two minutes of prefill. Reads return a window; the model asks for more.
+READ_MAX_LINES = 400
+READ_MAX_CHARS = 24_000
+
+
+def read_file(path: str, root: Optional[str] = None,
+              start_line: int = 1, max_lines: int = READ_MAX_LINES) -> Dict[str, Any]:
     try:
         p = safe_path(path, root)
     except ValueError as e:
@@ -25,8 +33,28 @@ def read_file(path: str, root: Optional[str] = None) -> Dict[str, Any]:
         return {"error": f"File not found: {path}"}
     if not p.is_file():
         return {"error": f"Not a file: {path}"}
-    content = p.read_text(encoding="utf-8", errors="replace")
-    return {"path": rel(p, root), "content": content, "size": len(content)}
+    text = p.read_text(encoding="utf-8", errors="replace")
+    try:
+        start = max(1, int(start_line))
+        n = max(1, min(int(max_lines), READ_MAX_LINES))
+    except (TypeError, ValueError):
+        return {"error": "start_line and max_lines must be integers"}
+    lines = text.splitlines(keepends=True)
+    total = len(lines)
+    if start == 1 and total <= n and len(text) <= READ_MAX_CHARS:
+        return {"path": rel(p, root), "content": text, "size": len(text)}
+    chunk = "".join(lines[start - 1:start - 1 + n])
+    if len(chunk) > READ_MAX_CHARS:
+        chunk = chunk[:READ_MAX_CHARS]
+    shown = chunk.count("\n") + (0 if chunk.endswith("\n") or not chunk else 1)
+    end = start - 1 + shown
+    out = {"path": rel(p, root), "content": chunk, "size": len(text),
+           "start_line": start, "end_line": end, "total_lines": total}
+    if end < total:
+        out["truncated"] = True
+        out["note"] = (f"Showing lines {start}-{end} of {total}. Use search_files to find "
+                       f"what you need, or call read_file again with start_line={end + 1}.")
+    return out
 
 
 def write_file(path: str, content: str, root: Optional[str] = None) -> Dict[str, Any]:

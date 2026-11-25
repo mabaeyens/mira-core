@@ -283,6 +283,21 @@ def _should_think(message: str, has_attachments: bool = False) -> bool:
     return score >= 4
 
 
+def _trim_lead(events, lead: list):
+    """Drop whitespace-only text at the start of an answer (post-tool turns open with blank lines).
+
+    `lead` is a one-item list holding whether the first visible character was seen.
+    """
+    for ev in events:
+        if ev.get("type") == "token" and not lead[0]:
+            text = ev["content"].lstrip()
+            if not text:
+                continue
+            lead[0] = True
+            ev = {**ev, "content": text}
+        yield ev
+
+
 def _append_step_nudge(history: List[Dict], text: str) -> None:
     """Append an agent-loop nudge, respecting strict tool/assistant alternation.
 
@@ -1072,6 +1087,7 @@ class ChatOrchestrator:
                 # a reasoning message, and mira-mlx marks that message's end
                 # with a bare </think>. Pre-opened is safe either way: a turn
                 # with no reasoning is recovered as the answer by drain().
+                lead = [False]
                 stripper = ThinkingStripper(
                     preopened=(
                         thinking_enabled
@@ -1102,7 +1118,7 @@ class ChatOrchestrator:
                     if raw_token:
                         # ThinkingStripper runs the dual-pass <think>/Gemma-channel
                         # state machine and yields {"thinking"|"token"} events.
-                        yield from stripper.feed(raw_token)
+                        yield from _trim_lead(stripper.feed(raw_token), lead)
                         full_content = stripper.full_content
 
                     if chunk.done:
@@ -1159,7 +1175,7 @@ class ChatOrchestrator:
                 if final_finish_reason == "length":
                     stripper.truncated()
                 # Drain remaining buffered content.
-                yield from stripper.drain()
+                yield from _trim_lead(stripper.drain(), lead)
                 full_content = stripper.full_content
                 thinking_chars += stripper.thinking_chars
                 break
@@ -1224,7 +1240,7 @@ class ChatOrchestrator:
         self.last_finish_reason = final_finish_reason
         yield {
             "type": "llm_done",
-            "full_content": full_content,
+            "full_content": full_content.lstrip(),
             "final_message": final_message,
             "thinking_chars": thinking_chars,
             "finish_reason": final_finish_reason,

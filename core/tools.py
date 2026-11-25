@@ -90,11 +90,17 @@ READ_FILE_TOOL = {
     "type": "function",
     "function": {
         "name": "read_file",
-        "description": "Read the contents of a file in the workspace. Path is relative to the workspace root.",
+        "description": (
+            "Read a file in the workspace. Path is relative to the workspace root. Returns at most "
+            "400 lines; for a larger file the result says so and gives the next start_line. "
+            "To find one function in a big file, use search_files first, then read that range."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Relative file path within the workspace"},
+                "start_line": {"type": "integer", "description": "First line to read (1-based, default 1)"},
+                "max_lines": {"type": "integer", "description": "Lines to read (default and maximum 400)"},
             },
             "required": ["path"],
         },

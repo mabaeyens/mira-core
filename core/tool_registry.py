@@ -78,7 +78,9 @@ def dispatch(name: str, args: dict, ctx: ToolContext) -> dict:
 
 @tool("read_file")
 def _read_file(ctx, a):
-    return fs_tools.read_file(a.get("path", ""), root=ctx.read_root)
+    return fs_tools.read_file(a.get("path", ""), root=ctx.read_root,
+                              start_line=a.get("start_line", 1),
+                              max_lines=a.get("max_lines", fs_tools.READ_MAX_LINES))
 
 
 @tool("write_file")

@@ -79,6 +79,7 @@ TOUCH_ID_STRIDE = 7919
 # holds few entries, so a one-shot question would evict a useful one to store
 # something that saves a second.
 SNAPSHOT_MIN_BOUNDARY_TOKENS = 1024
+INKLING_PROMPT_CACHE_MAX_BYTES = 3 * 1024**3
 
 # Entry-count ceiling for the in-memory prompt cache. Up to three entries per
 # turn now (the completed turn, its history snapshot, and the shared system
@@ -307,6 +308,9 @@ def _passthrough_processor(tokens, logits):
 _passthrough_processor.mtp_pure = True
 
 
+_WRAP_UP_TEXT = "\n\nI am out of thinking time. I must stop reasoning and write my final answer now.\n"
+
+
 class ThinkingBudget:
     """Closes the reasoning block once it has run past its budget.
 
@@ -325,8 +329,14 @@ class ThinkingBudget:
     """
 
     def __init__(self, budget: int, think_start, think_end, preopened: bool,
-                 end_requires_start: bool = False):
+                 end_requires_start: bool = False, wrap_up=()):
         self.budget = budget
+        # Tokens forced just before the closer when the budget is hit, so the model
+        # reads "stop reasoning, answer now" as the last words of its own thinking.
+        # A bare forced closer leaves it mid-thought and it carries on reasoning in
+        # the answer (GPQA items 13 and 115).
+        self.wrap_up = tuple(wrap_up or ())
+        self._forced_seq = self.wrap_up + tuple(think_end or ())
         # Inkling's closer (<|end_message|>) also ends every answer and tool
         # message, and the prompt itself ends with one. Without this the very
         # first step would read it as "the model closed its reasoning" and
@@ -374,12 +384,12 @@ class ThinkingBudget:
         # Over budget: emit think_end one token at a time by flooring every
         # other logit. -1e4 rather than -inf so this is representable in float16
         # and cannot produce a NaN in softmax; it is far below any real logit.
-        target = self.think_end[self.forced]
+        target = self._forced_seq[self.forced]
         self.forced += 1
-        if self.forced >= len(self.think_end):
+        if self.forced >= len(self._forced_seq):
             self.closed = True
         logger.info("thinking budget HIT at %d tokens: forcing token %d (%d/%d)",
-                    self.count, target, self.forced, len(self.think_end))
+                    self.count, target, self.forced, len(self._forced_seq))
         idx = mx.arange(logits.shape[-1])
         return mx.where(idx == target, logits, mx.array(-1e4, logits.dtype))
 
@@ -433,7 +443,7 @@ class ThinkingBudget:
 
 def _build_logits_processors(thinking_budget, think_start, think_end,
                              prompt_tokens, penalties=None,
-                             end_requires_start=False):
+                             end_requires_start=False, wrap_up=()):
     """The per-sequence logits processors for one job. Never returns an empty list.
 
     The budget is attached whenever a budget and a closer token exist, regardless
@@ -478,6 +488,7 @@ def _build_logits_processors(thinking_budget, think_start, think_end,
             think_end=think_end,
             preopened=preopened,
             end_requires_start=end_requires_start,
+            wrap_up=wrap_up,
         ))
         logger.info("thinking budget active: %d tokens (preopened=%s, start_ids=%s, end_ids=%s)",
                     thinking_budget, preopened, think_start, think_end)
@@ -886,9 +897,14 @@ class GenerationEngine:
             # warm. 20 restores it. Bytes remain the real ceiling and are
             # enforced separately (insert_cache evicts on both), so this cannot
             # grow memory beyond prompt_cache_max_bytes.
+            # Inkling's cache holds ~90 KB per token (a 20k-token step is ~1.8 GB), so
+            # the shared 12 GB default would sit on top of ~20 GB of weights.
+            cache_bytes = self.prompt_cache_max_bytes
+            if self._inkling:
+                cache_bytes = min(cache_bytes, INKLING_PROMPT_CACHE_MAX_BYTES)
             self.prompt_cache = DiskBackedPromptCache(
                 max_size=PROMPT_CACHE_MAX_ENTRIES,
-                max_bytes=self.prompt_cache_max_bytes,
+                max_bytes=cache_bytes,
                 disk_store=disk_store,
             )
             # The tower is NOT built here. Startup stays text-only and a session
@@ -1824,7 +1840,14 @@ class GenerationEngine:
             logger.debug("boundary render failed (%s); skipping snapshot", exc)
             return None
         n = len(boundary)
-        if n == 0 or n >= len(prompt_tokens):
+        if n == len(prompt_tokens):
+            # A template whose generation prompt adds no tokens (Inkling's) renders
+            # the boundary as the whole prompt. Generation still needs one token to
+            # start from, so cache everything before it: that state is a prefix of
+            # the next tool step's prompt, which is what saves re-prefilling it.
+            n -= 1
+            boundary = boundary[:n]
+        if n <= 0 or n >= len(prompt_tokens):
             return None
         if list(prompt_tokens[:n]) != list(boundary):
             logger.warning(
@@ -1943,8 +1966,15 @@ class GenerationEngine:
         else:
             _b_start = tuple(getattr(self.tokenizer, "think_start_tokens", ()) or ())
             _b_end = tuple(getattr(self.tokenizer, "think_end_tokens", ()) or ())
+        _wrap = ()
+        if not self._inkling and _b_end:
+            try:
+                _wrap = tuple(self.tokenizer.encode(_WRAP_UP_TEXT, add_special_tokens=False))
+            except Exception:
+                _wrap = ()
         logits_processors = _build_logits_processors(
             thinking_budget=thinking_budget,
+            wrap_up=_wrap,
             think_start=_b_start,
             think_end=_b_end,
             prompt_tokens=prompt_tokens,
