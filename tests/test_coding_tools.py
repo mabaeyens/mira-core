@@ -36,8 +36,11 @@ def _consume(gen):
 
 
 @pytest.fixture
-def orc():
-    return ChatOrchestrator(verbose=False)
+def orc(tmp_path):
+    o = ChatOrchestrator(verbose=False)
+    # A workspace is what makes the file and shell tools part of the turn.
+    o.project = {"local_path": str(tmp_path)}
+    return o
 
 
 # ── tool_start / tool_done events ─────────────────────────────────────────────
@@ -97,7 +100,7 @@ def test_github_list_repos_emits_tool_events(orc):
         _tool_stream("github_list_repos", {}),
         _final_stream("You have 1 repo."),
     ]), patch("core.github_tools.github_list_repos", return_value=fake_result):
-        events, _ = _consume(orc.stream_chat("List my repos"))
+        events, _ = _consume(orc.stream_chat("List my repos", github_tools_enabled=True))
 
     start = next(e for e in events if e["type"] == "tool_start")
     assert start["tool"] == "github_list_repos"

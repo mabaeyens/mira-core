@@ -51,8 +51,11 @@ def _consume(gen):
 
 
 @pytest.fixture
-def orc():
-    return ChatOrchestrator(verbose=False)
+def orc(tmp_path):
+    o = ChatOrchestrator(verbose=False)
+    # A workspace is what makes the file and shell tools part of the turn.
+    o.project = {"local_path": str(tmp_path)}
+    return o
 
 
 def _tool_contents(orc):

@@ -883,10 +883,13 @@ class ChatOrchestrator:
                         "role": "tool",
                         "tool_call_id": tc_id,
                         "name": name,
-                        "content": (
-                            f"Refused: the tool '{name}' is not available in this turn. "
-                            "Answer from what you already know, in plain text."
-                        ),
+                        "content": json.dumps({
+                            "status": "error",
+                            "error_details": (
+                                f"Refused: the tool '{name}' is not available in this turn. "
+                                "Answer from what you already know, in plain text."
+                            ),
+                        }),
                     })
                     continue
                 if name != "task_done":
