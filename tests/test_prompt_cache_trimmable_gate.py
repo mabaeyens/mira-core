@@ -18,7 +18,7 @@ import core.inference.disk_prompt_cache as dpc  # noqa: E402
     [
         # non-trimmable model: only "system" survives, the rest are deadweight
         (False, "assistant", False),
-        (False, "user", False),      # SNAPSHOT_CACHE_TYPE["history"]
+        (False, "user", True),       # history: whole prefix of the next tool step; newest only
         (False, "system", True),
         # trimmable model: every class inserts exactly as before
         (True, "assistant", True),
@@ -41,3 +41,22 @@ def test_predicate_error_falls_toward_inserting():
          patch.object(dpc.LRUPromptCache, "insert_cache") as base_insert:
         cache.insert_cache("model-id", [1, 2, 3], [object()], cache_type="assistant")
     assert base_insert.called is True
+
+
+def test_non_trimmable_keeps_only_the_newest_history_entry():
+    """Each tool step supersedes the last one, so older history entries are deadweight."""
+    class C:
+        nbytes = 100
+
+        def is_trimmable(self):
+            return False
+
+    cache = dpc.DiskBackedPromptCache(max_size=10, max_bytes=10 ** 12)
+    with patch.object(dpc, "can_trim_prompt_cache", return_value=False):
+        cache.insert_cache("m", [1, 2, 3], [C()], cache_type="system")
+        cache.insert_cache("m", [1, 2, 3, 4], [C()], cache_type="user")
+        cache.insert_cache("m", [1, 2, 3, 4, 5], [C()], cache_type="user")
+    assert len(cache) == 2          # system + newest user
+    assert cache.nbytes == 200
+    got, rest = cache.fetch_nearest_cache("m", [1, 2, 3, 4, 5, 6])
+    assert got is not None and rest == [6]

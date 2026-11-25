@@ -180,8 +180,17 @@ class DiskBackedPromptCache(LRUPromptCache):
         model the predicate is True and every class inserts exactly as before.
         """
         try:
-            reusable = cache_type == "system" or can_trim_prompt_cache(prompt_cache)
+            trimmable = can_trim_prompt_cache(prompt_cache)
+            reusable = cache_type == "system" or trimmable
         except Exception:  # noqa: BLE001 — never let a predicate error drop a working cache
+            trimmable = True
+            reusable = True
+        # A history ("user") entry is a whole prefix of the NEXT TOOL STEP of the same
+        # turn, so it is reusable without trimming. It is useless to any other turn
+        # (the template scaffold differs), so only the newest one is worth holding.
+        # Without it every tool step re-prefilled the whole conversation (~360 tok/s).
+        keep_newest_user = cache_type == "user" and not trimmable
+        if keep_newest_user:
             reusable = True
         if not reusable:
             logger.info(
@@ -190,7 +199,23 @@ class DiskBackedPromptCache(LRUPromptCache):
             )
             return False
         super().insert_cache(model, tokens, prompt_cache, cache_type=cache_type)
+        if keep_newest_user:
+            self._drop_older_user_entries(model, tokens)
         return True
+
+    def _drop_older_user_entries(self, model: Any, newest: List[int]) -> None:
+        """Evict every "user" entry except `newest`. Best effort: it reads
+        LRUPromptCache internals, and a failure only means entries linger until the
+        byte cap evicts them."""
+        try:
+            lru = self._lru._lrus["user"]
+            for m, toks in [e for e in lru if e != (model, newest)]:
+                entry = self._trie.pop(m, toks)
+                lru.remove((m, toks))
+                self._n_bytes -= entry.nbytes
+                self._n_bytes_by_type[entry.cache_type] -= entry.nbytes
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("could not drop older history entries: %s", exc)
 
     def _explain_miss(self, model: Any, tokens: List[int]) -> None:
         """Say WHY a lookup missed, which the hit/miss counters cannot.
