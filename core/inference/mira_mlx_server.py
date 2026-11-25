@@ -21,6 +21,7 @@ import asyncio
 import gc
 import functools
 import json
+import os
 import logging
 import queue
 import secrets
@@ -323,8 +324,14 @@ class ThinkingBudget:
     Attached per sequence, so the state here is one request's.
     """
 
-    def __init__(self, budget: int, think_start, think_end, preopened: bool):
+    def __init__(self, budget: int, think_start, think_end, preopened: bool,
+                 end_requires_start: bool = False):
         self.budget = budget
+        # Inkling's closer (<|end_message|>) also ends every answer and tool
+        # message, and the prompt itself ends with one. Without this the very
+        # first step would read it as "the model closed its reasoning" and
+        # disarm the budget for the whole request.
+        self.end_requires_start = end_requires_start
         self.think_start = tuple(think_start or ())
         self.think_end = tuple(think_end or ())
         # Qwen3-style templates open the block in the prompt, so the model never
@@ -350,7 +357,8 @@ class ThinkingBudget:
             if not self.started and self.think_start and \
                     _rfind_subseq(tail, self.think_start) >= 0:
                 self.started = True
-            if _rfind_subseq(tail, self.think_end) >= 0:
+            if (self.started or not self.end_requires_start) and \
+                    _rfind_subseq(tail, self.think_end) >= 0:
                 # The model closed it on its own, inside budget. Nothing to do,
                 # ever again for this request.
                 self.closed = True
@@ -414,7 +422,8 @@ class ThinkingBudget:
             if (not self.started and self.think_start
                     and _rfind_subseq(tail, self.think_start) >= 0):
                 self.started = True
-            if _rfind_subseq(tail, self.think_end) >= 0:
+            if (self.started or not self.end_requires_start) and \
+                    _rfind_subseq(tail, self.think_end) >= 0:
                 self.closed = True
                 return
             if not self.started:
@@ -423,7 +432,8 @@ class ThinkingBudget:
 
 
 def _build_logits_processors(thinking_budget, think_start, think_end,
-                             prompt_tokens, penalties=None):
+                             prompt_tokens, penalties=None,
+                             end_requires_start=False):
     """The per-sequence logits processors for one job. Never returns an empty list.
 
     The budget is attached whenever a budget and a closer token exist, regardless
@@ -467,6 +477,7 @@ def _build_logits_processors(thinking_budget, think_start, think_end,
             think_start=think_start,
             think_end=think_end,
             preopened=preopened,
+            end_requires_start=end_requires_start,
         ))
         logger.info("thinking budget active: %d tokens (preopened=%s, start_ids=%s, end_ids=%s)",
                     thinking_budget, preopened, think_start, think_end)
@@ -834,6 +845,15 @@ class GenerationEngine:
             self._inkling = is_inkling_tokenizer(self.tokenizer)
             if self._inkling:
                 logger.info("Inkling message framing detected; stream filter on")
+                # Inkling has no <think>/</think>. A reasoning message opens with
+                # <|content_thinking|> and ends with <|end_message|>, so those two
+                # ids are the budget's start and end. Forcing <|end_message|> makes
+                # the model start its next message, which is the answer.
+                _vocab = self.tokenizer.get_vocab()
+                self._inkling_think = (
+                    (_vocab["<|content_thinking|>"],),
+                    (_vocab["<|end_message|>"],),
+                )
             self._warn_if_kv_quant_is_inert()
             # Capture this thread's stream so every later insert/next call is
             # pinned to it — this is the fix for the MLX cross-thread hang class.
@@ -1842,8 +1862,13 @@ class GenerationEngine:
         if self._inkling and "reasoning_effort" not in ckwargs:
             # Inkling's template has no enable_thinking switch; reasoning depth is
             # a number in the system prompt. Map the switch Mira already sends.
+            # "low" by default: at high, 9 of 16 GPQA questions ran into a 2048
+            # token cap against 3 of 16 at low, and the tool bench took 3.3x the
+            # tokens for the same score (notes/inkling_pr_*, 2026-11-24/25).
+            # MIRA_INKLING_EFFORT overrides it (none/minimal/low/medium/high/...).
             ckwargs["reasoning_effort"] = (
-                "none" if ckwargs.get("enable_thinking") is False else "high"
+                "none" if ckwargs.get("enable_thinking") is False
+                else os.environ.get("MIRA_INKLING_EFFORT", "low")
             )
         messages, images = _prepare_messages(job.messages, vision=self.vision)
         prompt_tokens = self.tokenizer.apply_chat_template(
@@ -1913,12 +1938,18 @@ class GenerationEngine:
         # (draft == argmax(verify)) is lossless only against greedy decode, so it
         # engages only when this flag is set; any stochastic draw keeps MTP off.
         sampler.mtp_greedy = (job.temperature == 0)
+        if self._inkling:
+            _b_start, _b_end = self._inkling_think
+        else:
+            _b_start = tuple(getattr(self.tokenizer, "think_start_tokens", ()) or ())
+            _b_end = tuple(getattr(self.tokenizer, "think_end_tokens", ()) or ())
         logits_processors = _build_logits_processors(
             thinking_budget=thinking_budget,
-            think_start=tuple(getattr(self.tokenizer, "think_start_tokens", ()) or ()),
-            think_end=tuple(getattr(self.tokenizer, "think_end_tokens", ()) or ()),
+            think_start=_b_start,
+            think_end=_b_end,
             prompt_tokens=prompt_tokens,
             penalties=job.penalties,
+            end_requires_start=self._inkling,
         )
 
         # Split prefill at the history boundary so the state there can be

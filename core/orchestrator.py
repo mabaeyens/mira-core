@@ -186,6 +186,19 @@ def _uses_qwen_thinking_template(backend: str, model: str) -> bool:
     )
 
 
+def _is_inkling(backend: str, model: str) -> bool:
+    """True for Inkling 2 on a chat-template backend. Its template has no
+    `enable_thinking`, but mira-mlx maps that kwarg onto `reasoning_effort`
+    (off -> "none") and enforces `thinking_budget` on its reasoning message."""
+    return backend in _CHAT_TEMPLATE_BACKENDS and "inkling" in model.lower()
+
+
+def _sends_thinking_kwargs(backend: str, model: str) -> bool:
+    """True when the per-turn thinking toggle and the thinking budget go in
+    `chat_template_kwargs` for this model."""
+    return _uses_qwen_thinking_template(backend, model) or _is_inkling(backend, model)
+
+
 # Queries/commands that should never trigger thinking regardless of other signals.
 _NEVER_THINK = re.compile(
     r"^\s*(what\s+(time|day|date)|what'?s\s+the\s+(time|date|day))"
@@ -404,7 +417,7 @@ class ChatOrchestrator:
         for the turns where the model opens a block anyway. Mirrors the thinking
         half of `_call_llm` so both paths stay in step.
         """
-        if _uses_qwen_thinking_template(self.backend, self.model):
+        if _sends_thinking_kwargs(self.backend, self.model):
             ckwargs: dict = {"enable_thinking": False}
             if MAX_THINKING_TOKENS > 0:
                 ckwargs["thinking_budget"] = MAX_THINKING_TOKENS
@@ -1029,9 +1042,16 @@ class ChatOrchestrator:
                 # thinking is on, so the model's output starts inside the block
                 # and never sends an opening tag. Tell the stripper, or the whole
                 # reasoning stream is served to the user as the answer.
+                # Inkling is the exception to "only when thinking is on": its
+                # effort switch is a hint, so even with thinking off it may emit
+                # a reasoning message, and mira-mlx marks that message's end
+                # with a bare </think>. Pre-opened is safe either way: a turn
+                # with no reasoning is recovered as the answer by drain().
                 stripper = ThinkingStripper(
-                    preopened=thinking_enabled
-                    and _uses_qwen_thinking_template(self.backend, self.model)
+                    preopened=(
+                        thinking_enabled
+                        and _uses_qwen_thinking_template(self.backend, self.model)
+                    ) or _is_inkling(self.backend, self.model)
                 )
 
                 for chunk in self._call_llm(
@@ -1302,7 +1322,7 @@ class ChatOrchestrator:
         """Call the configured LLM backend with streaming. Mockable in tests."""
         if True:
             extra: dict = {}
-            if _uses_qwen_thinking_template(self.backend, self.model):
+            if _sends_thinking_kwargs(self.backend, self.model):
                 # Qwen3's chat template controls thinking via the enable_thinking
                 # kwarg, which the OpenAI-compatible servers (mlx-lm, omlx,
                 # mira-mlx, vllm-mlx) only honor when nested under chat_template_kwargs. omlx is

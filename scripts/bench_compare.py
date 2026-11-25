@@ -96,6 +96,11 @@ def _wait_for(predicate, timeout: float, interval: float = 1.0) -> bool:
     return predicate()
 
 
+# Keys merged over the bench server's copy of mira.yaml (--config-override). This is
+# how a different model is benched without editing the live mira.yaml.
+CONFIG_OVERRIDES: dict = {}
+
+
 class IsolatedServer:
     """Run the bench against its own Mira server, with production stopped.
 
@@ -190,6 +195,7 @@ class IsolatedServer:
             with open(live) as f:
                 cfg = yaml.safe_load(f) or {}
         cfg["url_fetch_allow_private"] = True
+        cfg.update(CONFIG_OVERRIDES)
         fd, path = tempfile.mkstemp(prefix="mira_bench_config_", suffix=".yaml")
         with os.fdopen(fd, "w") as f:
             yaml.safe_dump(cfg, f)
@@ -530,6 +536,9 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
     content_parts = []
     thinking_parts = []
     tool_calls = []
+    # The UI label of each non-special tool call: for run_shell it carries the
+    # command, which is what says whether an injected one ran. Names alone cannot.
+    tool_labels = []
     task_done_fired = False
     divergence_guard_fired = False
     eval_tokens = None
@@ -577,6 +586,7 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
                         task_done_fired = True
                     else:
                         tool_calls.append(tool_name)
+                        tool_labels.append(str(event.get("label", ""))[:300])
 
                 # web_search and fetch_url do NOT emit tool_start. The
                 # orchestrator gives them their own events so the UI can show a
@@ -629,6 +639,7 @@ def stream_chat(prompt: str, model: str, thinking: bool, tools: bool, conversati
         "content": "".join(content_parts),
         "thinking": "".join(thinking_parts),
         "tool_calls": tool_calls,
+        "tool_labels": tool_labels,
         "task_done": task_done_fired,
         "divergence_guard_fired": divergence_guard_fired,
         "eval_tokens": eval_tokens,
@@ -708,6 +719,7 @@ def run_multi_turn(q: dict, model: str, project_id: str | None = None,
         # turn 1 and is acted on in turn 2 is the failure being tested for, and
         # discarding turn 1's calls would have hidden the opposite case too.
         "tool_calls": r1["tool_calls"] + r2["tool_calls"],
+        "tool_labels": r1.get("tool_labels", []) + r2.get("tool_labels", []),
         "thinking": (r1.get("thinking") or "") + (r2.get("thinking") or ""),
         "task_done": bool(r1.get("task_done") or r2.get("task_done")),
         "divergence_guard_fired": bool(r1.get("divergence_guard_fired")
@@ -967,7 +979,13 @@ def main():
                              "isolated one. Bench conversations then land in the REAL history and "
                              "are only removed by the teardown afterwards, which does not run if "
                              "the bench is interrupted. Explicit opt-in only.")
+    parser.add_argument("--config-override", type=str, default=None,
+                        help="JSON object merged over the bench server's copy of mira.yaml, e.g. "
+                             "'{\"model\": \"/path/to/model\", \"mira_mlx_mtp_enabled\": false}'. "
+                             "Never touches the live mira.yaml. Isolated server only.")
     args = parser.parse_args()
+    if args.config_override:
+        CONFIG_OVERRIDES.update(json.loads(args.config_override))
 
     BASE_URL = args.server.rstrip("/")
     if BASE_URL != DEFAULT_BASE_URL:

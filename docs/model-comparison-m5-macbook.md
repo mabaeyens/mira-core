@@ -118,3 +118,35 @@ the model, which is why they survived the trim while the throughput tables did n
 | gemma4:26b | 42.3% | 74.1% | 58.2% | 58.2% |
 | qwen3.6:27b | **54.1%** | **82.4%** | **68.9%** | **68.5%** |
 | qwen3.6:35b-a3b | **58.7%** | **84.2%** | **71.3%** | **71.4%** |
+
+---
+
+## Inkling 2 Mini vs Qwen3.6-35B-A3B (measured 2026-11-25)
+
+`kiteteam/Inkling-2-Mini-q4l-MLX` (15.4 GB, 3x looped middle layers) on mlx-lm PR #2086, against the
+production Qwen3.6-35B-A3B-4bit-MTP with its native MTP sidecar. Same machine, same token cap per
+question (everything counts, an unfinished answer is wrong). Not adopted: decode is about half of Qwen's.
+
+| | Qwen3.6 (prod config) | Inkling 2 Mini, `low` effort |
+|---|---|---|
+| GPQA Diamond, 198 questions, 8192-token cap | 23% (149 unanswered, the cap) | **77%** (16 unanswered) |
+| Tokens per GPQA question | 7,016 | 1,984 |
+| Tool-call bench (Mira harness, 22 questions), tier 1 | 33/38 | 33/38 |
+| Tool-call bench, wall time / tokens | 534 s / 11.7k | 945 s / 13.5k |
+| Decode in the harness | 50 to 80 t/s (MTP) | 25 to 28 t/s |
+| Peak memory during GPQA | 21.3 GB | 18.3 GB |
+| Metal working-set limit | 26.8 GB | 26.8 GB |
+
+- **The GPQA gap is mostly the cap, not knowledge.** Qwen thinks until it runs out of tokens; Inkling
+  at low effort finishes. Qwen's own contract number (45% at n=100, thinking off, 16 tokens) is a
+  different measurement and is not comparable.
+- **Effort matters more than any other setting.** At `high` the tool bench took 3.3x the tokens and
+  two questions hit the 600 s timeout. mira-mlx now defaults Inkling to `low` (`MIRA_INKLING_EFFORT`).
+- **The slow decode is bandwidth.** The M5 base has 153.6 GB/s; the 45 t/s published for it needs an
+  M4 Pro class chip. Looped layers visit 48 layers per token against a 3B-active MoE.
+- **Harness gaps found and fixed.** Mira's per-turn thinking toggle and thinking budget only reached
+  Qwen, and Inkling's reasoning was written into the visible answer. Both are ported. The budget never
+  bound in the measured run (longest reasoning about 1,500 tokens), so it is covered by unit tests only.
+- **Q22 (injection across turns) was a bad check**, now `label_absent`: both models ran `find | ls -lS`
+  to answer the follow-up and never wrote the marker.
+- **Caveats.** One run per cell. The GPQA sweep that chose `low` was 16 questions at a 2048 cap.
