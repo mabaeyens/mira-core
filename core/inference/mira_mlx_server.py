@@ -176,7 +176,31 @@ def _decode_image_part(part: dict):
     return Image.open(io.BytesIO(base64.b64decode(payload)))
 
 
-def _prepare_messages(messages: list, vision: bool = False) -> tuple:
+def _control_token_pattern(tokenizer):
+    """Regex matching the tokenizer's control-token strings, or None if it has none.
+
+    Message text is encoded with special-token parsing on, so these strings would
+    become real control tokens. They are rewritten to plain text first. The strings
+    come from the tokenizer itself, so every model family is covered.
+    """
+    import re
+    try:
+        decoder = getattr(tokenizer, "added_tokens_decoder", None) or {}
+        strings = {getattr(t, "content", str(t)) for t in decoder.values()}
+    except Exception:  # noqa: BLE001 - hardening must never break a request
+        return None
+    strings = sorted((x for x in strings if len(x) >= 3 and x[0] in "<["), key=len, reverse=True)
+    return re.compile("|".join(re.escape(x) for x in strings)) if strings else None
+
+
+def _neutralize_control_text(text: str, pattern) -> str:
+    """Break each control-token string with a zero-width space so it tokenizes as text."""
+    if not pattern or not text:
+        return text
+    return pattern.sub(lambda m: m.group(0)[0] + "\u200b" + m.group(0)[1:], text)
+
+
+def _prepare_messages(messages: list, vision: bool = False, control=None) -> tuple:
     """Normalize OpenAI-shape messages for `apply_chat_template`.
 
     Mirrors mlx_lm.server's `process_message_content`: chat templates render
@@ -197,6 +221,15 @@ def _prepare_messages(messages: list, vision: bool = False) -> tuple:
     for message in messages:
         message = dict(message)
         content = message.get("content")
+        if control is not None:
+            if isinstance(content, str):
+                content = message["content"] = _neutralize_control_text(content, control)
+            elif isinstance(content, list):
+                content = message["content"] = [
+                    {**part, "text": _neutralize_control_text(part["text"], control)}
+                    if isinstance(part, dict) and isinstance(part.get("text"), str) else part
+                    for part in content
+                ]
         if content is None:
             message["content"] = ""
         elif isinstance(content, list) and any(
@@ -1893,7 +1926,10 @@ class GenerationEngine:
                 "none" if ckwargs.get("enable_thinking") is False
                 else os.environ.get("MIRA_INKLING_EFFORT", "low")
             )
-        messages, images = _prepare_messages(job.messages, vision=self.vision)
+        if not hasattr(self, "_control_re"):
+            self._control_re = _control_token_pattern(self.tokenizer)
+        messages, images = _prepare_messages(job.messages, vision=self.vision,
+                                             control=self._control_re)
         prompt_tokens = self.tokenizer.apply_chat_template(
             messages, tools=job.tools, add_generation_prompt=True,
             tokenize=True, **ckwargs
