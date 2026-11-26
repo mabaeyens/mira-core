@@ -199,9 +199,6 @@ def _prepare_messages(messages: list, vision: bool = False, control=None) -> tup
     for message in messages:
         message = dict(message)
         content = message.get("content")
-        if control is not None:
-            message = control.scrub(message)
-            content = message.get("content")
         if content is None:
             message["content"] = ""
         elif isinstance(content, list) and any(
@@ -235,8 +232,26 @@ def _prepare_messages(messages: list, vision: bool = False, control=None) -> tup
                     func = dict(func)
                     func["arguments"] = json.loads(func["arguments"])
                     tc["function"] = func
+        if control is not None:
+            # Adjacent text parts are joined by the template with nothing between
+            # them, so a control string split across two parts would re-form.
+            if isinstance(message.get("content"), list):
+                message["content"] = _merge_text_parts(message["content"])
+            message = control.scrub(message)
         prepared.append(message)
     return prepared, images
+
+
+def _merge_text_parts(parts: list) -> list:
+    merged = []
+    for part in parts:
+        is_text = isinstance(part, dict) and part.get("type", "text") == "text" \
+            and isinstance(part.get("text"), str)
+        if is_text and merged and merged[-1][0]:
+            merged[-1][1]["text"] += part["text"]
+        else:
+            merged.append((is_text, dict(part) if is_text else part))
+    return [p for _, p in merged]
 
 
 def _build_state_machine(tokenizer, stop_words=()):
@@ -1739,7 +1754,8 @@ class GenerationEngine:
     @staticmethod
     def _has_placeholder(*parts) -> bool:
         """True when ControlGuard rewrote something in the messages or the tool schemas."""
-        return any("\ue000" in json.dumps(p, ensure_ascii=False, default=str) for p in parts)
+        return any(c in json.dumps(p, ensure_ascii=False, default=str)
+                   for p in parts for c in ("\ue000", "\ue002"))
 
     def _history_boundary(self, messages, tools, ckwargs, prompt_tokens):
         """Length of the prompt up to (not including) the generation prompt.
