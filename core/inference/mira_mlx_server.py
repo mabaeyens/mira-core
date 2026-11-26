@@ -21,6 +21,7 @@ import asyncio
 import gc
 import functools
 import json
+import re
 import os
 import logging
 import queue
@@ -176,28 +177,51 @@ def _decode_image_part(part: dict):
     return Image.open(io.BytesIO(base64.b64decode(payload)))
 
 
-def _control_token_pattern(tokenizer):
-    """Regex matching the tokenizer's control-token strings, or None if it has none.
+class ControlGuard:
+    """Keeps control-token strings in message text as plain text.
 
-    Message text is encoded with special-token parsing on, so these strings would
-    become real control tokens. They are rewritten to plain text first. The strings
-    come from the tokenizer itself, so every model family is covered.
+    The tokenizer parses the strings it knows (turn markers, think tags, tool-call
+    tags) as single control tokens wherever they appear. Message text is therefore
+    rewritten to private placeholders before the chat template runs, and `encode`
+    turns each placeholder back into the ordinary pieces of the original string
+    (never the control token), so the model reads the tag as text, unchanged.
+    The strings come from the tokenizer, so every model family is covered.
     """
-    import re
-    try:
-        decoder = getattr(tokenizer, "added_tokens_decoder", None) or {}
-        strings = {getattr(t, "content", str(t)) for t in decoder.values()}
-    except Exception:  # noqa: BLE001 - hardening must never break a request
-        return None
-    strings = sorted((x for x in strings if len(x) >= 3 and x[0] in "<["), key=len, reverse=True)
-    return re.compile("|".join(re.escape(x) for x in strings)) if strings else None
 
+    _PLACEHOLDER = re.compile("\ue000(\\d+)\ue001")
 
-def _neutralize_control_text(text: str, pattern) -> str:
-    """Break each control-token string with a zero-width space so it tokenizes as text."""
-    if not pattern or not text:
-        return text
-    return pattern.sub(lambda m: m.group(0)[0] + "\u200b" + m.group(0)[1:], text)
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+        try:
+            decoder = getattr(tokenizer, "added_tokens_decoder", None) or {}
+            found = {getattr(t, "content", str(t)) for t in decoder.values()}
+        except Exception:  # noqa: BLE001 - hardening must never break a request
+            found = set()
+        self.strings = sorted((x for x in found if len(x) >= 3 and x[0] in "<["),
+                              key=len, reverse=True)
+        self._index = {x: i for i, x in enumerate(self.strings)}
+        self._pattern = (re.compile("|".join(re.escape(x) for x in self.strings))
+                         if self.strings else None)
+
+    def neutralize(self, text: str) -> str:
+        if not self._pattern or not text:
+            return text
+        return self._pattern.sub(lambda m: f"\ue000{self._index[m.group(0)]}\ue001", text)
+
+    def encode(self, text: str) -> list:
+        enc = lambda t: self.tokenizer.encode(t, add_special_tokens=False)  # noqa: E731
+        if not self._pattern or "\ue000" not in text:
+            return enc(text)
+        ids, pos = [], 0
+        for m in self._PLACEHOLDER.finditer(text):
+            ids += enc(text[pos:m.start()]) if m.start() > pos else []
+            lit = self.strings[int(m.group(1))]
+            # Split after the first character so the tokenizer cannot match the whole string.
+            ids += enc(lit[0]) + enc(lit[1:])
+            pos = m.end()
+        if pos < len(text):
+            ids += enc(text[pos:])
+        return ids
 
 
 def _prepare_messages(messages: list, vision: bool = False, control=None) -> tuple:
@@ -223,10 +247,10 @@ def _prepare_messages(messages: list, vision: bool = False, control=None) -> tup
         content = message.get("content")
         if control is not None:
             if isinstance(content, str):
-                content = message["content"] = _neutralize_control_text(content, control)
+                content = message["content"] = control.neutralize(content)
             elif isinstance(content, list):
                 content = message["content"] = [
-                    {**part, "text": _neutralize_control_text(part["text"], control)}
+                    {**part, "text": control.neutralize(part["text"])}
                     if isinstance(part, dict) and isinstance(part.get("text"), str) else part
                     for part in content
                 ]
@@ -1756,6 +1780,27 @@ class GenerationEngine:
                 self._snapshot_failures += 1
             logger.warning("boundary snapshot failed (%s); continuing", exc)
 
+    def _guard(self):
+        if getattr(self, "_control_guard", None) is None:
+            self._control_guard = ControlGuard(self.tokenizer)
+        return self._control_guard
+
+    def _encode_text(self, text: str) -> list:
+        return self._guard().encode(text)
+
+    @staticmethod
+    def _has_placeholder(messages) -> bool:
+        """True when some message text was rewritten by ControlGuard.neutralize."""
+        for m in messages:
+            c = m.get("content")
+            if isinstance(c, str):
+                if "\ue000" in c:
+                    return True
+            elif isinstance(c, list):
+                if any(isinstance(p, dict) and "\ue000" in (p.get("text") or "") for p in c):
+                    return True
+        return False
+
     def _history_boundary(self, messages, tools, ckwargs, prompt_tokens):
         """Length of the prompt up to (not including) the generation prompt.
 
@@ -1826,7 +1871,7 @@ class GenerationEngine:
                         tools=tools, add_generation_prompt=True,
                         tokenize=False, **ckwargs
                     )
-                    probes.append(self.tokenizer.encode(text, add_special_tokens=False))
+                    probes.append(self._encode_text(text))
                 except Exception as exc:  # noqa: BLE001 - never break a request for this
                     logger.debug("system probe render failed (%s); skipping", exc)
                     return None
@@ -1868,7 +1913,7 @@ class GenerationEngine:
                 messages, tools=tools, add_generation_prompt=False,
                 tokenize=False, **ckwargs
             )
-            boundary = self.tokenizer.encode(text, add_special_tokens=False)
+            boundary = self._encode_text(text)
         except Exception as exc:  # noqa: BLE001 - never break a request for this
             logger.debug("boundary render failed (%s); skipping snapshot", exc)
             return None
@@ -1926,14 +1971,18 @@ class GenerationEngine:
                 "none" if ckwargs.get("enable_thinking") is False
                 else os.environ.get("MIRA_INKLING_EFFORT", "low")
             )
-        if not hasattr(self, "_control_re"):
-            self._control_re = _control_token_pattern(self.tokenizer)
         messages, images = _prepare_messages(job.messages, vision=self.vision,
-                                             control=self._control_re)
-        prompt_tokens = self.tokenizer.apply_chat_template(
-            messages, tools=job.tools, add_generation_prompt=True,
-            tokenize=True, **ckwargs
-        )
+                                             control=self._guard())
+        if self._has_placeholder(messages):
+            prompt_tokens = self._encode_text(self.tokenizer.apply_chat_template(
+                messages, tools=job.tools, add_generation_prompt=True,
+                tokenize=False, **ckwargs
+            ))
+        else:
+            prompt_tokens = self.tokenizer.apply_chat_template(
+                messages, tools=job.tools, add_generation_prompt=True,
+                tokenize=True, **ckwargs
+            )
         image_embeds = None
         if images:
             prompt_tokens, image_embeds = self._expand_image_tokens(
