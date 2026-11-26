@@ -103,10 +103,12 @@ def _get_qwen3_scorer():
             false_id = hf.convert_tokens_to_ids("no")
             pre = hf.encode(prefix, add_special_tokens=False)
             suf = hf.encode(suffix, add_special_tokens=False)
+            from .control_guard import ControlGuard
+            guard = ControlGuard(hf)  # a document must not carry real control tokens into the scorer
 
             def _score(query: str, doc: str) -> float:
                 content = f"<Instruct>: {instruct}\n<Query>: {query}\n<Document>: {doc}"
-                ids = pre + hf.encode(content, add_special_tokens=False) + suf
+                ids = pre + guard.encode(guard.neutralize(content)) + suf
                 logits = model(mx.array([ids]))[:, -1, :]
                 pair = mx.stack([logits[0, false_id], logits[0, true_id]])
                 return float(mx.exp((pair - mx.logsumexp(pair))[1]))

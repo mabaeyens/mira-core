@@ -45,6 +45,7 @@ from mlx_lm.server import ToolCallFormatter
 from mlx_lm.utils import load
 
 from core.inference.disk_prompt_cache import DiskBackedPromptCache, DiskPromptCacheStore
+from core.control_guard import ControlGuard  # noqa: F401  (re-exported for tests)
 from core.inference.inkling_stream import InklingStreamFilter, is_inkling_tokenizer
 
 logger = logging.getLogger("mira_mlx_server")
@@ -177,53 +178,6 @@ def _decode_image_part(part: dict):
     return Image.open(io.BytesIO(base64.b64decode(payload)))
 
 
-class ControlGuard:
-    """Keeps control-token strings in message text as plain text.
-
-    The tokenizer parses the strings it knows (turn markers, think tags, tool-call
-    tags) as single control tokens wherever they appear. Message text is therefore
-    rewritten to private placeholders before the chat template runs, and `encode`
-    turns each placeholder back into the ordinary pieces of the original string
-    (never the control token), so the model reads the tag as text, unchanged.
-    The strings come from the tokenizer, so every model family is covered.
-    """
-
-    _PLACEHOLDER = re.compile("\ue000(\\d+)\ue001")
-
-    def __init__(self, tokenizer):
-        self.tokenizer = tokenizer
-        try:
-            decoder = getattr(tokenizer, "added_tokens_decoder", None) or {}
-            found = {getattr(t, "content", str(t)) for t in decoder.values()}
-        except Exception:  # noqa: BLE001 - hardening must never break a request
-            found = set()
-        self.strings = sorted((x for x in found if len(x) >= 3 and x[0] in "<["),
-                              key=len, reverse=True)
-        self._index = {x: i for i, x in enumerate(self.strings)}
-        self._pattern = (re.compile("|".join(re.escape(x) for x in self.strings))
-                         if self.strings else None)
-
-    def neutralize(self, text: str) -> str:
-        if not self._pattern or not text:
-            return text
-        return self._pattern.sub(lambda m: f"\ue000{self._index[m.group(0)]}\ue001", text)
-
-    def encode(self, text: str) -> list:
-        enc = lambda t: self.tokenizer.encode(t, add_special_tokens=False)  # noqa: E731
-        if not self._pattern or "\ue000" not in text:
-            return enc(text)
-        ids, pos = [], 0
-        for m in self._PLACEHOLDER.finditer(text):
-            ids += enc(text[pos:m.start()]) if m.start() > pos else []
-            lit = self.strings[int(m.group(1))]
-            # Split after the first character so the tokenizer cannot match the whole string.
-            ids += enc(lit[0]) + enc(lit[1:])
-            pos = m.end()
-        if pos < len(text):
-            ids += enc(text[pos:])
-        return ids
-
-
 def _prepare_messages(messages: list, vision: bool = False, control=None) -> tuple:
     """Normalize OpenAI-shape messages for `apply_chat_template`.
 
@@ -246,14 +200,8 @@ def _prepare_messages(messages: list, vision: bool = False, control=None) -> tup
         message = dict(message)
         content = message.get("content")
         if control is not None:
-            if isinstance(content, str):
-                content = message["content"] = control.neutralize(content)
-            elif isinstance(content, list):
-                content = message["content"] = [
-                    {**part, "text": control.neutralize(part["text"])}
-                    if isinstance(part, dict) and isinstance(part.get("text"), str) else part
-                    for part in content
-                ]
+            message = control.scrub(message)
+            content = message.get("content")
         if content is None:
             message["content"] = ""
         elif isinstance(content, list) and any(
@@ -1789,17 +1737,9 @@ class GenerationEngine:
         return self._guard().encode(text)
 
     @staticmethod
-    def _has_placeholder(messages) -> bool:
-        """True when some message text was rewritten by ControlGuard.neutralize."""
-        for m in messages:
-            c = m.get("content")
-            if isinstance(c, str):
-                if "\ue000" in c:
-                    return True
-            elif isinstance(c, list):
-                if any(isinstance(p, dict) and "\ue000" in (p.get("text") or "") for p in c):
-                    return True
-        return False
+    def _has_placeholder(*parts) -> bool:
+        """True when ControlGuard rewrote something in the messages or the tool schemas."""
+        return any("\ue000" in json.dumps(p, ensure_ascii=False, default=str) for p in parts)
 
     def _history_boundary(self, messages, tools, ckwargs, prompt_tokens):
         """Length of the prompt up to (not including) the generation prompt.
@@ -1973,14 +1913,15 @@ class GenerationEngine:
             )
         messages, images = _prepare_messages(job.messages, vision=self.vision,
                                              control=self._guard())
-        if self._has_placeholder(messages):
+        tools = self._guard().scrub(job.tools) if job.tools else job.tools
+        if self._has_placeholder(messages, tools):
             prompt_tokens = self._encode_text(self.tokenizer.apply_chat_template(
-                messages, tools=job.tools, add_generation_prompt=True,
+                messages, tools=tools, add_generation_prompt=True,
                 tokenize=False, **ckwargs
             ))
         else:
             prompt_tokens = self.tokenizer.apply_chat_template(
-                messages, tools=job.tools, add_generation_prompt=True,
+                messages, tools=tools, add_generation_prompt=True,
                 tokenize=True, **ckwargs
             )
         image_embeds = None
@@ -2083,7 +2024,7 @@ class GenerationEngine:
                 ("system", self._system_boundary),
                 ("history", self._history_boundary),
             ):
-                n = finder(messages, job.tools, ckwargs, prompt_tokens)
+                n = finder(messages, tools, ckwargs, prompt_tokens)
                 if n is None:
                     continue
                 if n < SNAPSHOT_MIN_BOUNDARY_TOKENS:
