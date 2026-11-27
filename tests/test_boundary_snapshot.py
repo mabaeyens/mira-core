@@ -188,11 +188,13 @@ def test_a_template_failure_is_not_fatal(engine):
     assert engine._history_boundary([], None, {}, engine.tokenizer.full()) is None
 
 
-def test_a_boundary_covering_the_whole_prompt_is_refused(engine):
-    """Nothing left to prefill after it, so there is no second segment and
-    nothing to snapshot."""
+def test_a_boundary_covering_the_whole_prompt_stops_one_token_short(engine):
+    """A template whose generation prompt adds no tokens (Inkling's) renders the
+    boundary as the whole prompt. Generation needs one token to start from, so
+    the snapshot keeps everything before it instead of being dropped."""
     tok = engine.tokenizer
-    assert engine._history_boundary([], None, {}, list(tok.history_ids)) is None
+    prompt = list(tok.history_ids)
+    assert engine._history_boundary([], None, {}, prompt) == len(prompt) - 1
 
 
 # ── the system boundary ───────────────────────────────────────────────────────
