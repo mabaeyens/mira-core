@@ -50,7 +50,7 @@ import yaml
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 REPO = SCRIPTS_DIR.parent
-QUESTIONS_FILE = SCRIPTS_DIR / "bench_questions.yaml"
+QUESTIONS_FILE = Path(os.getenv("MIRA_BENCH_QUESTIONS") or SCRIPTS_DIR / "bench_questions.yaml")
 FIXTURES_FILE = SCRIPTS_DIR / "bench_fixtures" / "judge_fixtures.yaml"
 DEFAULT_JUDGE_URL = "http://localhost:8080"   # the INFERENCE BACKEND, not Mira: no database, no history
 

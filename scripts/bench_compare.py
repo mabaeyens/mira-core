@@ -49,7 +49,9 @@ BASE_URL = os.getenv("MIRA_BENCH_SERVER", DEFAULT_BASE_URL)
 SCRIPTS_DIR = Path(__file__).parent
 SOURCE_REPO = SCRIPTS_DIR.parent  # the mira-core repo root (a git repo)
 DOCS_DIR = SCRIPTS_DIR.parent / "docs"
-QUESTIONS_FILE = SCRIPTS_DIR / "bench_questions.yaml"
+# MIRA_BENCH_QUESTIONS swaps the question file (the held-out set, bench_heldout.yaml).
+# Run it with --source-repo pointing at the repo those questions are about.
+QUESTIONS_FILE = Path(os.getenv("MIRA_BENCH_QUESTIONS") or SCRIPTS_DIR / "bench_questions.yaml")
 # (SERVER_PY removed 2026-08-08: the multi-turn question now names its own
 # inject_file, because hardcoding server.py here is what made Q10 ask about code
 # that was not in the file it shared.)
@@ -822,9 +824,43 @@ def _truth_todo_fixme_count(workspace: Path) -> int:
 # shell=True is repo-wide, and piping find into wc is also the exact command the
 # model under test is being asked to produce, so deriving truth the same way
 # would score the model against its own approach instead of against the tree.
+def _truth_mlxlm_models_py_line_count(workspace: Path) -> int:
+    """Newline bytes across mlx_lm/models/**/*.py (held-out H101); same unit as `wc -l`."""
+    total = 0
+    for p in sorted((workspace / "mlx_lm" / "models").rglob("*.py")):
+        if "__pycache__" in p.parts:
+            continue
+        total += p.read_bytes().count(b"\n")
+    return total
+
+
+def _truth_mlxlm_batchgenerator_line(workspace: Path) -> int:
+    """1-based line of `class BatchGenerator` in mlx_lm/generate.py (held-out H102)."""
+    for i, line in enumerate((workspace / "mlx_lm" / "generate.py").read_text().splitlines(), 1):
+        if line.startswith("class BatchGenerator"):
+            return i
+    raise LookupError("class BatchGenerator not found")
+
+
+def _truth_mlxlm_generate_toplevel_count(workspace: Path) -> int:
+    """Top-level `def`/`class` lines in mlx_lm/generate.py (held-out H103); grep -c semantics."""
+    text = (workspace / "mlx_lm" / "generate.py").read_text().splitlines()
+    return sum(1 for line in text if line.startswith(("def ", "class ")))
+
+
+def _truth_mlxlm_qwen_model_file_count(workspace: Path) -> int:
+    """Files in mlx_lm/models whose name starts with 'qwen' (held-out H104)."""
+    return sum(1 for p in (workspace / "mlx_lm" / "models").iterdir()
+               if p.is_file() and p.name.startswith("qwen"))
+
+
 _TRUTH_PROBES = {
     "core_py_line_count": _truth_core_py_line_count,
     "todo_fixme_count": _truth_todo_fixme_count,
+    "mlxlm_models_py_line_count": _truth_mlxlm_models_py_line_count,
+    "mlxlm_batchgenerator_line": _truth_mlxlm_batchgenerator_line,
+    "mlxlm_generate_toplevel_count": _truth_mlxlm_generate_toplevel_count,
+    "mlxlm_qwen_model_file_count": _truth_mlxlm_qwen_model_file_count,
 }
 
 

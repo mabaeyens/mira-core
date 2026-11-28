@@ -1,0 +1,122 @@
+# Held-out bench set: the same SHAPES as the main set, over a repo that is not Mira.
+#
+# Purpose: tell a real harness improvement from tuning to bench_questions.yaml. A change
+# made while looking at Q6/Q8 is judged here, on questions nobody tuned against.
+#
+# Rules:
+#   - Do NOT read these answers or tweak the harness while looking at them. Run before
+#     and after a change, compare, and stop. Once a question has informed a change it is
+#     spent: write a replacement.
+#   - Truth is a number or an exact token computed from the tree at bench time, so
+#     recalling the public mlx-lm repo from training cannot help; the model has to look.
+#
+# Run (repo under test is mlx-lm at its committed HEAD, snapshotted into a throwaway worktree):
+#   MIRA_BENCH_QUESTIONS=scripts/bench_heldout.yaml MLX_ENABLE_TF32=0 \
+#     .venv/bin/python scripts/bench_compare.py --model <label> --source-repo ~/Projects/mlx-lm
+#   MIRA_BENCH_QUESTIONS=scripts/bench_heldout.yaml .venv/bin/python scripts/bench_eval.py <raw.jsonl>
+#
+# Shapes covered: single-tool count (like Q6), locate in a large file (the Q8 failure mode,
+# 2277 lines vs orchestrator.py's 1457), enumerate, explain a mechanism in a large file
+# (like Q8, judged), multi-fact lookup.
+
+questions:
+  - id: 101
+    difficulty: hard
+    category: heldout-single-tool-count
+    tools: true
+    thinking: false
+    prompt: "Using a single shell command, count the total number of lines across all .py files under {workspace_root}/mlx_lm/models (recursively) — exclude __pycache__. Show only the total line count."
+    expected_tool_calls: 1
+    check:
+      truth: mlxlm_models_py_line_count
+      answer_contains_truth: true
+      tool_present: [run_shell]
+    notes: Held-out twin of Q6. Different repo, different directory, same unit (wc -l).
+
+  - id: 102
+    difficulty: hard
+    category: heldout-locate-in-large-file
+    tools: true
+    thinking: false
+    prompt: "In {workspace_root}/mlx_lm/generate.py, on which line number is `class BatchGenerator` defined? Use your tools to check and answer with the line number."
+    expected_tool_calls: 1
+    check:
+      truth: mlxlm_batchgenerator_line
+      answer_contains_truth: true
+    notes: |
+      The large-file navigation failure mode behind Q8's 9-call loop, isolated. generate.py is
+      2277 lines, so reading it whole is the wrong approach; one targeted search is right.
+      Read tool_calls in the raw record: the count is the signal, the answer is the gate.
+
+  - id: 103
+    difficulty: hard
+    category: heldout-enumerate-large-file
+    tools: true
+    thinking: false
+    prompt: "How many top-level function and class definitions (lines starting with `def ` or `class ` at column 0) are there in {workspace_root}/mlx_lm/generate.py? Use your tools and give the number."
+    expected_tool_calls: 1
+    check:
+      truth: mlxlm_generate_toplevel_count
+      answer_contains_truth: true
+    notes: Counting in a large file; a model that reads a window and extrapolates gets it wrong.
+
+  - id: 104
+    difficulty: hard
+    category: heldout-enumerate-directory
+    tools: true
+    thinking: false
+    prompt: "How many files directly inside {workspace_root}/mlx_lm/models have a name starting with `qwen`? Use your tools and give the number."
+    expected_tool_calls: 1
+    check:
+      truth: mlxlm_qwen_model_file_count
+      answer_contains_truth: true
+    notes: Directory enumeration, no recursion. Cheap, one-call.
+
+  - id: 105
+    difficulty: hard
+    category: heldout-multi-fact-lookup
+    tools: true
+    thinking: false
+    prompt: "In {workspace_root}/mlx_lm/generate.py, what are the default values of `prefill_step_size` and `max_tokens` in the `generate_step` function signature? Use your tools to check."
+    expected_tool_calls: 1
+    check:
+      answer_contains_all: ["2048", "256"]
+    notes: Two facts from one signature inside a large file. Defaults verified in the tree on 2026-11-28.
+
+  - id: 106
+    difficulty: hard
+    category: heldout-read-reason
+    tools: true
+    thinking: false
+    prompt: "Read the relevant part of {workspace_root}/mlx_lm/generate.py and explain how `generate_step` processes a long prompt before it starts generating. How is the prompt split, what happens between chunks, and how is the first token produced? Quote the relevant code."
+    expected_tool_calls: 1
+    check:
+      tool_present: [read_file]
+      judged: true
+      rubric: |
+        The real mechanism (generate.py, generate_step, roughly lines 424-455): the prompt is
+        prefilled in a while loop that runs while more than one prompt token remains. Each
+        iteration takes n_to_process = min(prefill_step_size, remaining), where remaining
+        leaves the LAST token out; it calls the model on that chunk to fill the KV cache,
+        quantizes the cache, forces evaluation of the cache state (mx.eval), advances the
+        prompt, and clears the cache (mx.clear_cache). After the loop the one remaining token
+        goes through _step, which samples the first token.
+        2 = says the prompt is processed in chunks of prefill_step_size, that the cache is
+            evaluated between chunks, that the final token is held back and run through
+            _step to produce the first sample, and includes a quotation of the loop.
+        1 = right idea (chunked prefill) but misses the held-back final token or the
+            between-chunk evaluation, or the quoted code is plainly not the prefill loop.
+        0 = describes a different mechanism (one-shot prefill, speculative decoding, batching).
+        The judge cannot open the file, so it must not rule on whether a quotation is genuine.
+    notes: Held-out twin of Q8, same judged shape, a larger file and a different mechanism.
+
+  - id: 107
+    difficulty: hard
+    category: heldout-enumerate-names
+    tools: true
+    thinking: false
+    prompt: "List the names of all functions in {workspace_root}/mlx_lm/sample_utils.py whose name starts with `apply_`. Use your tools to check."
+    expected_tool_calls: 1
+    check:
+      answer_contains_all: ["apply_top_k", "apply_min_p", "apply_top_p", "apply_xtc"]
+    notes: The tree has exactly these four (verified 2026-11-28); a fifth in the answer is a hallucination, read it.
