@@ -114,6 +114,17 @@ def test_search_files_finds_match(ws):
     assert result["matches"][0]["line"] == 1
 
 
+def test_search_files_accepts_a_single_file_path(ws):
+    """A file path used to return an empty result (rglob on a file yields nothing)."""
+    from core import fs_tools
+    (ws / "big.py").write_text("x = 1\nclass Target:\n    pass\n")
+    (ws / "other.py").write_text("class Target:\n    pass\n")
+    result = fs_tools.search_files("class Target", path="big.py")
+    assert result["count"] == 1
+    assert result["matches"][0]["line"] == 2
+    assert result["matches"][0]["file"].endswith("big.py")
+
+
 def test_search_files_case_insensitive_by_default(ws):
     from core import fs_tools
     (ws / "notes.txt").write_text("Hello World\n")

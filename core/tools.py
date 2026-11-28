@@ -147,7 +147,7 @@ SEARCH_FILES_TOOL = {
             "type": "object",
             "properties": {
                 "pattern": {"type": "string", "description": "Regex pattern to search for"},
-                "path": {"type": "string", "description": "Directory to search in (default: workspace root)", "default": "."},
+                "path": {"type": "string", "description": "Directory or single file to search in (default: workspace root)", "default": "."},
                 "case_sensitive": {"type": "boolean", "default": False},
             },
             "required": ["pattern"],

@@ -110,14 +110,20 @@ def search_files(pattern: str, path: str = ".", case_sensitive: bool = False, ro
     except re.error as e:
         return {"error": f"Invalid pattern: {e}"}
     matches = []
-    for file_path in sorted(p.rglob("*")):
+    # A path that names one file searches that file. rglob on a file yields nothing, which
+    # used to return an empty result indistinguishable from "no match" and sent the model
+    # into a long loop of re-searching a file that did contain the pattern.
+    candidates = [p] if p.is_file() else sorted(p.rglob("*"))
+    for file_path in candidates:
         if not file_path.is_file():
             continue
         # Skip dependency/VCS dirs (.venv, .git, __pycache__, node_modules) so repo
         # searches return signal, not thousands of vendored matches that blow the cap.
-        rel_parts = file_path.relative_to(p).parts
-        if any(part.startswith(".") or part in _EXCLUDED_DIRS for part in rel_parts):
-            continue
+        # An explicitly named file is searched even if it sits under such a dir.
+        if file_path != p:
+            rel_parts = file_path.relative_to(p).parts
+            if any(part.startswith(".") or part in _EXCLUDED_DIRS for part in rel_parts):
+                continue
         try:
             for i, line in enumerate(file_path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
                 if regex.search(line):
