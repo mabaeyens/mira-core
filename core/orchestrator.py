@@ -471,6 +471,13 @@ class ChatOrchestrator:
 
     # ── Post-turn helpers ────────────────────────────────────────────────────
 
+    def _guard_foreign(self, messages):
+        """Backends other than mira-mlx tokenize on their own, so control-token
+        strings in message text are broken up here. mira-mlx guards in the engine."""
+        if self.backend == "mira-mlx":
+            return messages
+        return bc.neutralize_control_strings(messages)
+
     def _llm_chat_sync(self, messages: List[Dict], format: Optional[dict] = None) -> str:
         """Non-streaming single-turn LLM call. Returns the text content.
 
@@ -485,12 +492,13 @@ class ChatOrchestrator:
             with _engine_lifecycle.get().request():
                 try:
                     resp = self._oai.chat.completions.create(
-                        model=self.model, messages=messages, extra_body=extra, **kwargs
+                        model=self.model, messages=self._guard_foreign(messages),
+                        extra_body=extra, **kwargs
                     )
                 except Exception:
                     # Backend doesn't support response_format — retry without it
                     resp = self._oai.chat.completions.create(
-                        model=self.model, messages=messages, extra_body=extra
+                        model=self.model, messages=self._guard_foreign(messages), extra_body=extra
                     )
             return bc.strip_think((resp.choices[0].message.content or "").strip())
 
@@ -1412,7 +1420,7 @@ class ChatOrchestrator:
                 lambda: bc.normalize_oai_stream(
                     self._oai.chat.completions.create(
                         model=self.model,
-                        messages=bc.normalize_messages_for_oai(messages),
+                        messages=self._guard_foreign(bc.normalize_messages_for_oai(messages)),
                         tools=tools or None,
                         stream=True,
                         stream_options={"include_usage": True},

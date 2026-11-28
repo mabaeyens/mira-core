@@ -56,6 +56,33 @@ def normalize_messages_for_oai(messages: List[Dict]) -> List[Dict]:
     return result
 
 
+# Control strings the common chat tokenizers parse as single control tokens anywhere in text.
+# Only used for the backends that tokenize on their own (omlx, mlx-lm, vllm-mlx); mira-mlx
+# guards inside the engine with the tokenizer's real list and keeps the text unchanged.
+_CONTROL_STRING_RE = re.compile(
+    r"<\|[A-Za-z0-9_\-:.]{1,48}\|>"
+    r"|</?(?:think|thinking|tool_call|tool_response|tool_calls|tools|function|parameter)(?=[\s=>/])[^>\n]{0,40}>"
+    r"|\[/?(?:INST|SYSTEM_PROMPT|TOOL_CALLS|AVAILABLE_TOOLS|TOOL_RESULTS|TOOL_CONTENT|IMG|THINK)\]"
+    r"|</?s>|<unused\d+>"
+)
+_CONTROL_SKIP_KEYS = ("role", "type", "id", "tool_call_id")
+
+
+def neutralize_control_strings(obj):
+    """Break up control-token strings in message text so a backend's own tokenizer
+    reads them as ordinary text (a space after the first character; the model
+    still reads the tag). Walks nested content, tool calls and keys."""
+    if isinstance(obj, str):
+        return _CONTROL_STRING_RE.sub(lambda m: m.group(0)[0] + " " + m.group(0)[1:], obj)
+    if isinstance(obj, dict):
+        return {(neutralize_control_strings(k) if isinstance(k, str) else k):
+                (v if k in _CONTROL_SKIP_KEYS else neutralize_control_strings(v))
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [neutralize_control_strings(v) for v in obj]
+    return obj
+
+
 _XML_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 _XML_FUNC_RE = re.compile(r"<function=([^>\s]+)\s*>(.*?)</function>", re.DOTALL)
 _XML_PARAM_RE = re.compile(r"<parameter=([^>\s]+)\s*>\s*(.*?)\s*</parameter>", re.DOTALL)
