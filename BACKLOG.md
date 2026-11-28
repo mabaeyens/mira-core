@@ -4,6 +4,11 @@
 
 Prod Mira is DOWN by default (Safari needed); `/mira-server start` when wanted. The LaunchAgent was left unloaded after the 2026-10-10 bench.
 
+### MTP verify-window overlap: loose ends
+- The expert profiler logs the MTP head's MoE block as backbone layer 0 (`mtp.layers.0` matches the `layers\.(\d+)` regex in `expert_profiler.py`). Give the head its own id before the next profile. Until then, drop layer 0 when analysing.
+- Greedy output with MTP on is not byte-stable run to run (4 of 5 prompts diverged between two identical runs). Likely the depth controller varying the verify batch shape; not isolated. Matters for any eval that assumes determinism.
+- The `-MTP` model dir produces token noise when loaded with MTP off (the plain snapshot is fine). Not a prod issue, but `mira_mlx_mtp_enabled: false` on that dir is a trap.
+
 ### Inkling comparison: follow-ups
 - Prod runs code from before 1d71695; a restart picks up the latest fixes.
 - Verify the wrap-up before a forced thinking close live (unit-tested only).
@@ -176,6 +181,7 @@ GPQA proxy n=100, fresh engine each, `MLX_ENABLE_TF32=0`, kv4 (2026-10-10): gemm
 
 
 ## Done
+- [2026-11-28] Read Cohere's 2309.05444 (training-only, no use for Mira) and 2610.38981 (verify cost on sparse MoE follows unique experts per window). Measured it on the live MoE with the expert profiler: a 4-token verify window touches ~21 unique experts per layer against 8 for one token, for ~2.5 tokens per cycle, which caps MTP near 1.2x. Measured 1.25x at max depth 3 and 1.21x at depth 2 against the plain 4-bit snapshot (3 interleaved repeats each, spread ~1%). No new lever. Write-up in local `specs/mtp-verify-expert-overlap.md`, data in `notes/mtp_overlap_*`.
 - [2026-11-28] Inkling 2 Mini q4l vs Qwen3.6-35B-A3B-4bit-MTP harness comparison finished; results in local `notes/live_with_2026-11-25/FINAL_ASSESSMENT.md`. Harness fixes shipped from it: `read_file` window cap, leading blank lines, forced-close wrap-up, history snapshot kept on non-trimmable models, quoted think tags, boundary one token short. Message text containing tokenizer control strings now stays plain text on every backend (1d71695). Suite and CI green.
 - [2026-11-22] Shipped the Wayback fallback in `fetch_url` and the RULE 9 recovery rule from the Unit 4 harness (e3fd314). Smoke-tested Ternary-Bonsai-2-27B (no-go, see Parked) and re-checked Inkling 2 Mini against the HF launch post (no change). Bonsai files deleted with approval (`~/.bonsai-test`, `~/.venvs/bonsai-smoke`).
 - [2026-11-22] Tested justfit-llm 2.6.0 on the M5/32GB (decode 2.7x the dense mlx-lm baseline, 16K point not reached), then deleted `~/.justfit-test` and its venv with approval and updated `MODEL_REGISTRY.md`. Read the Unit 4 agent harness for findings Mira could borrow; they are under Pending. Prod Mira is still down.
@@ -185,6 +191,7 @@ GPQA proxy n=100, fresh engine each, `MLX_ENABLE_TF32=0`, kv4 (2026-10-10): gemm
 - [2026-11-21] mira-core v1.5.1 released (PyMuPDF replaced by pypdfium2, Origin host+port check, proxy headers off, loopback needs no token); menu-bar 0.1.2 notarized with Sparkle update verified; model cache trimmed to the live model (95 GB to 21 GB); two security reviews done, findings in gitignored `SECURITY_AUDIT.md`.
 
 ## Notes
+- **MoE MTP is capped by expert reads per verify pass, not by the head or the draft depth (2026-11-28).** A verify window reads ~2.1x one token's experts for ~2.5 emitted tokens, so a bandwidth-bound step gains about 1.2x; measured 1.21-1.25x. Depth 3 beats depth 2 by 3% (real, outside the spread); the head's own MoE reads are ~5% of a step. The dense model has no such growth, hence 1.70x. A cheaper verify (fewer unique experts) is the only lever; the sort-threshold gather fix is a separate cost.
 - Docs layout: client-side flows (iOS connection, macOS startup) belong in mira-apps, not `docs/diagram.md`. The appendices in `multi-token-prediction.md` and `moe-offload-case-study.md` are long by design and stay as is.
 - **Mixed-precision quant is NOT a speed-free quality lever on this MoE — NULL 2026-08-17.** Tried
   `Qwen3.6-35B-A3B-4bit-DWQ` as the one remaining speed-free quality lever (uniform 4-bit baseline
