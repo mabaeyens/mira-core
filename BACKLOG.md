@@ -4,6 +4,15 @@
 
 Prod Mira is DOWN by default (Safari needed); `/mira-server start` when wanted. The LaunchAgent was left unloaded after the 2026-10-10 bench.
 
+### Inkling comparison: follow-ups
+- Prod runs code from before 1d71695; a restart picks up the latest fixes.
+- Verify the wrap-up before a forced thinking close live (unit-tested only).
+- Check whether history ever stores un-stripped think blocks.
+- Intermittent "bench server never reported backend_ready" on the first launch of two runs; retry worked, cause unknown.
+- Decide whether to delete the 15.4 GB Inkling q4l copy (needs approval); update `MODEL_REGISTRY.md` either way.
+- Optional: rerun the 44-item benchmark on current code (v4 was aborted at 7 items).
+- Remaining hardening items are in local `notes/` (gitignored).
+
 ### Ship wave 2026-11-22: follow-ups
 - Waiting on App Review: iOS 0.4.0 build 2 (Waiting for Review since 2026-11-22). TestFlight external beta link `join/crTWN4kN` is also in review; swap the old TestFlight link in mira-web (home, support) only when the iOS session says it is approved.
 - Server: `/cancel` with an empty conversation id cancels every active turn (a Stop on a brand-new first turn). Fix: return the conversation id at turn start (SSE event or header) so the client can cancel its own turn. Details in `notes/ios-followups.md`.
@@ -167,6 +176,7 @@ GPQA proxy n=100, fresh engine each, `MLX_ENABLE_TF32=0`, kv4 (2026-10-10): gemm
 
 
 ## Done
+- [2026-11-28] Inkling 2 Mini q4l vs Qwen3.6-35B-A3B-4bit-MTP harness comparison finished; results in local `notes/live_with_2026-11-25/FINAL_ASSESSMENT.md`. Harness fixes shipped from it: `read_file` window cap, leading blank lines, forced-close wrap-up, history snapshot kept on non-trimmable models, quoted think tags, boundary one token short. Message text containing tokenizer control strings now stays plain text on every backend (1d71695). Suite and CI green.
 - [2026-11-22] Shipped the Wayback fallback in `fetch_url` and the RULE 9 recovery rule from the Unit 4 harness (e3fd314). Smoke-tested Ternary-Bonsai-2-27B (no-go, see Parked) and re-checked Inkling 2 Mini against the HF launch post (no change). Bonsai files deleted with approval (`~/.bonsai-test`, `~/.venvs/bonsai-smoke`).
 - [2026-11-22] Tested justfit-llm 2.6.0 on the M5/32GB (decode 2.7x the dense mlx-lm baseline, 16K point not reached), then deleted `~/.justfit-test` and its venv with approval and updated `MODEL_REGISTRY.md`. Read the Unit 4 agent harness for findings Mira could borrow; they are under Pending. Prod Mira is still down.
 
