@@ -2,7 +2,7 @@
 
 ## Pending
 
-Prod Mira is DOWN by default (Safari needed); `/mira-server start` when wanted. The LaunchAgent was left unloaded after the 2026-10-10 bench.
+Prod Mira is up (LaunchAgent loaded 2026-11-28). It may be stopped whenever work needs it, with no approval, unless I say I am using Mira; `/mira-server start` brings it back.
 
 ### MTP verify-window overlap: loose ends
 - The expert profiler logs the MTP head's MoE block as backbone layer 0 (`mtp.layers.0` matches the `layers\.(\d+)` regex in `expert_profiler.py`). Give the head its own id before the next profile. Until then, drop layer 0 when analysing.
@@ -179,6 +179,7 @@ GPQA proxy n=100, fresh engine each, `MLX_ENABLE_TF32=0`, kv4 (2026-10-10): gemm
 
 
 ## Done
+- [2026-11-28] Inkling follow-ups closed out: wrap-up before a forced thinking close verified live on the Qwen engine; history never stores think blocks on current code (regression test added for the pre-opened closing-tag shape); `backend_ready` flake diagnosed as a Mac sleep mid-load jumping the wall-clock deadline (`_wait_for` now monotonic, bench holds `caffeinate -i`, server log kept); full suite 923 passed in two halves. Inkling verdict recorded: Qwen stays default, Inkling q4l copy kept, revisit if a drafter version passes 35 tok/s with no accuracy loss.
 - [2026-11-28] Control-string guard on the three other backends: closed. Mira already neutralizes control strings client-side for omlx, mlx-lm and vllm-mlx (1d71695). The shared tokenizer default does parse user text as control tokens (Qwen3.6 tokenizer: 3 `<|im_start|>` and 3 `<|im_end|>` where a clean prompt has 2 and 1), but none of the three engine servers was tested and no upstream Issue or PR exists. Nothing filed, nothing pending.
 - [2026-11-28] Read Cohere's 2309.05444 (training-only, no use for Mira) and 2610.38981 (verify cost on sparse MoE follows unique experts per window). Measured it on the live MoE with the expert profiler: a 4-token verify window touches ~21 unique experts per layer against 8 for one token, for ~2.5 tokens per cycle, which caps MTP near 1.2x. Measured 1.25x at max depth 3 and 1.21x at depth 2 against the plain 4-bit snapshot (3 interleaved repeats each, spread ~1%). No new lever. Write-up in local `specs/mtp-verify-expert-overlap.md`, data in `notes/mtp_overlap_*`.
 - [2026-11-28] Inkling 2 Mini q4l vs Qwen3.6-35B-A3B-4bit-MTP harness comparison finished; results in local `notes/live_with_2026-11-25/FINAL_ASSESSMENT.md`. Harness fixes shipped from it: `read_file` window cap, leading blank lines, forced-close wrap-up, history snapshot kept on non-trimmable models, quoted think tags, boundary one token short. Message text containing tokenizer control strings now stays plain text on every backend (1d71695). Suite and CI green.
