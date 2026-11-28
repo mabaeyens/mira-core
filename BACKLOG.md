@@ -10,7 +10,7 @@ Prod Mira is DOWN by default (Safari needed); `/mira-server start` when wanted. 
 - The `-MTP` model dir produces token noise when loaded with MTP off (the plain snapshot is fine). Not a prod issue, but `mira_mlx_mtp_enabled: false` on that dir is a trap.
 
 ### Inkling comparison: follow-ups
-- Decide whether to delete the 15.4 GB Inkling q4l copy, once all benches and comparisons have run successfully (needs approval); update `MODEL_REGISTRY.md` either way.
+- Keep the 15.4 GB Inkling q4l copy until a drafter version is worth testing (decided 2026-11-28). Revisit the deletion only if that never materializes; `MODEL_REGISTRY.md` keeps tracking it.
 - Optional: rerun the 44-item benchmark on current code (v4 was aborted at 7 items; v3 plus the Qwen code-01 correction stands meanwhile).
 - "bench server never reported backend_ready": diagnosed for 2026-11-26 (both runs). Each launched in a ~35 s DarkWake window and the Mac slept 15-17 min mid-load; on wake the wall-clock deadline had jumped past 420 s, so `_wait_for` made one instant probe and gave up. Fixed: `_wait_for` uses `time.monotonic()` and the run holds `caffeinate -i`. Unexplained: 2026-11-24 23:56-00:03, a genuine 7 min timeout with no sleep (power log no longer covers it); the bench now keeps the server log, so a recurrence is diagnosable.
 - Remaining hardening items are in local `notes/` (gitignored).
