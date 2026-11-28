@@ -208,3 +208,35 @@ def test_restore_waits_for_the_backend_not_just_the_port(bench, monkeypatch, cap
     out = capsys.readouterr().out
     assert "backend never became ready" in out
     assert "back up, backend loaded" not in out
+
+
+def test_wait_for_survives_a_wall_clock_jump_from_sleep(bench, monkeypatch):
+    # A Mac sleeping mid-load jumps time.time() past the deadline but not
+    # time.monotonic(). The old wall-clock loop then made one instant probe and
+    # gave up on a server that was seconds from ready (2026-11-26, twice).
+    calls = {"n": 0}
+
+    def predicate():
+        calls["n"] += 1
+        return calls["n"] >= 3
+
+    class FakeTime:
+        def __init__(self):
+            self.mono = 0.0
+            self.wall = 1000.0
+
+        def monotonic(self):
+            return self.mono
+
+        def time(self):
+            return self.wall
+
+        def sleep(self, secs):
+            self.mono += secs
+            self.wall += secs
+            if calls["n"] == 1:
+                self.wall += 10_000  # the Mac slept; wall clock leaps, monotonic does not
+
+    monkeypatch.setattr(bench, "time", FakeTime())
+    assert bench._wait_for(predicate, timeout=420, interval=3) is True
+    assert calls["n"] == 3

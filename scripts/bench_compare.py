@@ -88,8 +88,14 @@ def _port_is_open(port: int) -> bool:
 
 
 def _wait_for(predicate, timeout: float, interval: float = 1.0) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    # time.monotonic, not time.time: on macOS it stops while the Mac sleeps, the
+    # wall clock does not. A sleep that lands mid-load used to jump the wall clock
+    # past the deadline, so on wake the loop was skipped and ONE instant probe
+    # decided the run, before the frozen server and engine had finished loading
+    # ("bench server never reported backend_ready", 2026-11-26, twice: each run
+    # started inside a 35 s DarkWake window and slept 15-17 min mid-load).
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if predicate():
             return True
         time.sleep(interval)
@@ -124,6 +130,7 @@ class IsolatedServer:
     def __init__(self) -> None:
         self.data_dir: str | None = None
         self.proc: subprocess.Popen | None = None
+        self._caffeinate: subprocess.Popen | None = None
         self.agent_was_loaded = False
         self._restored = False
         self._stopped = False
@@ -259,6 +266,14 @@ class IsolatedServer:
         # Registered before anything is stopped: if the very next call fails
         # halfway, the handler still puts production back.
         atexit.register(self.stop)
+        # Keep the Mac awake for the whole run. A sleep mid-bench also inflates
+        # every latency measured across it. -w ends it when this process exits.
+        try:
+            self._caffeinate = subprocess.Popen(
+                ["caffeinate", "-i", "-w", str(os.getpid())],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            self._caffeinate = None
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, self._on_signal)
 
