@@ -185,3 +185,16 @@ def test_full_content_and_thinking_chars_track_totals():
     _, _, s = _run(["<think>abc</think>XY", "Z"])
     assert s.full_content == "XYZ"
     assert s.thinking_chars == 3
+
+
+def test_preopened_block_with_only_a_closing_tag_never_reaches_history():
+    # Shape of the one stored row that kept a stray `</think>` (corpus run,
+    # 2026-08-11): the template pre-opens the block, the model reasons, closes.
+    # What the orchestrator persists is `full_content`, so it must be clean.
+    _, thinking, s = _run(
+        ["Explained dispatch.\n\nI will summarize.\n", "</think>", "\n\nI researched ", "and synthesized."],
+        preopened=True,
+    )
+    assert "</think>" not in s.full_content
+    assert s.full_content.strip() == "I researched and synthesized."
+    assert "I will summarize." in thinking

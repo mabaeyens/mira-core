@@ -273,10 +273,15 @@ class IsolatedServer:
         env["MIRA_CONFIG"] = self.config_path
         print(f"  bench data dir: {self.data_dir}  (thrown away afterwards)")
 
+        # Kept, not discarded: a "never reported backend_ready" failure is
+        # otherwise unexplainable (it hit the first launch of two runs and a
+        # retry worked). The tail goes into the error below.
+        self.server_log = os.path.join(self.data_dir, "bench_server.log")
+        self._server_log_fh = open(self.server_log, "wb")
         self.proc = subprocess.Popen(
             [sys.executable, "server.py"],
             cwd=str(SOURCE_REPO), env=env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=self._server_log_fh, stderr=subprocess.STDOUT,
         )
         print("  starting bench server (cold model load, this takes a minute)...")
 
@@ -290,7 +295,12 @@ class IsolatedServer:
                 return False
 
         if not _wait_for(ready, timeout=420, interval=3):
-            raise RuntimeError("bench server never reported backend_ready")
+            try:
+                tail = "".join(open(self.server_log, errors="replace").readlines()[-25:])
+            except OSError:
+                tail = "(no server log)"
+            raise RuntimeError(
+                "bench server never reported backend_ready; last server output:\n" + tail)
         print("  bench server ready")
 
     def _on_signal(self, signum, frame):  # noqa: ARG002

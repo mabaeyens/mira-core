@@ -10,13 +10,12 @@ Prod Mira is DOWN by default (Safari needed); `/mira-server start` when wanted. 
 - The `-MTP` model dir produces token noise when loaded with MTP off (the plain snapshot is fine). Not a prod issue, but `mira_mlx_mtp_enabled: false` on that dir is a trap.
 
 ### Inkling comparison: follow-ups
-- Prod runs code from before 1d71695; a restart picks up the latest fixes.
-- Verify the wrap-up before a forced thinking close live (unit-tested only).
-- Check whether history ever stores un-stripped think blocks.
-- Intermittent "bench server never reported backend_ready" on the first launch of two runs; retry worked, cause unknown.
-- Decide whether to delete the 15.4 GB Inkling q4l copy (needs approval); update `MODEL_REGISTRY.md` either way.
-- Optional: rerun the 44-item benchmark on current code (v4 was aborted at 7 items).
+- After the next Mira release closes: decide whether to file an Issue or PR for the control-string guard on omlx, mlx-lm and vllm-mlx (they are unguarded, not our engines).
+- Decide whether to delete the 15.4 GB Inkling q4l copy, once all benches and comparisons have run successfully (needs approval); update `MODEL_REGISTRY.md` either way.
+- Optional: rerun the 44-item benchmark on current code (v4 was aborted at 7 items; v3 plus the Qwen code-01 correction stands meanwhile).
+- "bench server never reported backend_ready" on the first launch of two runs: cause still unknown. `bench_compare.py` now keeps the server log and prints its tail on the failure, so the next occurrence is diagnosable.
 - Remaining hardening items are in local `notes/` (gitignored).
+- Checked 2026-11-28: the wrap-up before a forced thinking close works live on the Qwen engine (sentence lands before `</think>`, the answer follows cleanly). History never stores think blocks on current code; the single stored leak is an Aug 11 corpus row from before pre-opened handling.
 
 ### Ship wave 2026-11-22: follow-ups
 - Waiting on App Review: iOS 0.4.0 build 2 (Waiting for Review since 2026-11-22). TestFlight external beta link `join/crTWN4kN` is also in review; swap the old TestFlight link in mira-web (home, support) only when the iOS session says it is approved.
