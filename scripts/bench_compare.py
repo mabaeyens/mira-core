@@ -521,7 +521,12 @@ def teardown(source_repo: Path | None, tmp_base: Path | None, wt: Path | None,
 def load_questions() -> list[dict]:
     with open(QUESTIONS_FILE) as f:
         data = yaml.safe_load(f)
-    return data["questions"]
+    questions = data["questions"]
+    # `spent: true` marks a held-out question that informed a change; it no longer judges
+    # later changes. Set MIRA_BENCH_INCLUDE_SPENT=1 to run it anyway (e.g. to compare to a baseline).
+    if not os.getenv("MIRA_BENCH_INCLUDE_SPENT"):
+        questions = [q for q in questions if not q.get("spent")]
+    return questions
 
 
 def make_prompt(q: dict) -> str | None:
@@ -854,7 +859,37 @@ def _truth_mlxlm_qwen_model_file_count(workspace: Path) -> int:
                if p.is_file() and p.name.startswith("qwen"))
 
 
+def _truth_mlxlm_lruprompt_line(workspace: Path) -> int:
+    """1-based line of `class LRUPromptCache` in mlx_lm/models/cache.py (held-out H108)."""
+    for i, line in enumerate((workspace / "mlx_lm" / "models" / "cache.py").read_text().splitlines(), 1):
+        if line.startswith("class LRUPromptCache"):
+            return i
+    raise LookupError("class LRUPromptCache not found")
+
+
+def _truth_mlxlm_cache_class_count(workspace: Path) -> int:
+    """Lines starting `class ` in mlx_lm/models/cache.py (held-out H109); grep -c semantics."""
+    text = (workspace / "mlx_lm" / "models" / "cache.py").read_text().splitlines()
+    return sum(1 for line in text if line.startswith("class "))
+
+
+def _truth_mlxlm_embeddings_fn_line(workspace: Path) -> int:
+    """Line of `def does_model_support_input_embeddings` anywhere under mlx_lm (held-out H112).
+    Must be unique in the tree; raises otherwise so an ambiguous truth never scores a run."""
+    hits = []
+    for p in sorted((workspace / "mlx_lm").rglob("*.py")):
+        for i, line in enumerate(p.read_text(errors="ignore").splitlines(), 1):
+            if line.startswith("def does_model_support_input_embeddings"):
+                hits.append(i)
+    if len(hits) != 1:
+        raise LookupError(f"expected exactly one definition, found {len(hits)}")
+    return hits[0]
+
+
 _TRUTH_PROBES = {
+    "mlxlm_lruprompt_line": _truth_mlxlm_lruprompt_line,
+    "mlxlm_cache_class_count": _truth_mlxlm_cache_class_count,
+    "mlxlm_embeddings_fn_line": _truth_mlxlm_embeddings_fn_line,
     "core_py_line_count": _truth_core_py_line_count,
     "todo_fixme_count": _truth_todo_fixme_count,
     "mlxlm_models_py_line_count": _truth_mlxlm_models_py_line_count,

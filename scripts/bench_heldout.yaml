@@ -34,6 +34,7 @@ questions:
     notes: Held-out twin of Q6. Different repo, different directory, same unit (wc -l).
 
   - id: 102
+    spent: true  # informed the search_files fix (e4a7516), 2026-11-28; do not use to judge later changes
     difficulty: hard
     category: heldout-locate-in-large-file
     tools: true
@@ -49,6 +50,7 @@ questions:
       Read tool_calls in the raw record: the count is the signal, the answer is the gate.
 
   - id: 103
+    spent: true  # informed the search_files fix (e4a7516), 2026-11-28; do not use to judge later changes
     difficulty: hard
     category: heldout-enumerate-large-file
     tools: true
@@ -111,6 +113,7 @@ questions:
     notes: Held-out twin of Q8, same judged shape, a larger file and a different mechanism.
 
   - id: 107
+    spent: true  # informed the search_files fix (e4a7516), 2026-11-28; do not use to judge later changes
     difficulty: hard
     category: heldout-enumerate-names
     tools: true
@@ -120,3 +123,84 @@ questions:
     check:
       answer_contains_all: ["apply_top_k", "apply_min_p", "apply_top_p", "apply_xtc"]
     notes: The tree has exactly these four (verified 2026-11-28); a fifth in the answer is a hallucination, read it.
+
+  # ── Replacements for the spent 102/103/107 (written 2026-11-28, before any change they would judge).
+  # Same shapes, different files: cache.py is 2440 lines, bigger than generate.py.
+
+  - id: 108
+    difficulty: hard
+    category: heldout-locate-in-large-file
+    tools: true
+    thinking: false
+    prompt: "In {workspace_root}/mlx_lm/models/cache.py, on which line number is `class LRUPromptCache` defined? Use your tools to check and answer with the line number."
+    expected_tool_calls: 1
+    check:
+      truth: mlxlm_lruprompt_line
+      answer_contains_truth: true
+    notes: Replacement for 102. The signal is the tool-call count, as before.
+
+  - id: 109
+    difficulty: hard
+    category: heldout-enumerate-large-file
+    tools: true
+    thinking: false
+    prompt: "How many classes are defined at the top level (lines starting with `class ` at column 0) in {workspace_root}/mlx_lm/models/cache.py? Use your tools and give the number."
+    expected_tool_calls: 1
+    check:
+      truth: mlxlm_cache_class_count
+      answer_contains_truth: true
+    notes: Replacement for 103.
+
+  - id: 110
+    difficulty: hard
+    category: heldout-enumerate-names
+    tools: true
+    thinking: false
+    prompt: "List the names of all functions in {workspace_root}/mlx_lm/sample_utils.py whose name starts with `make_`. Use your tools to check."
+    expected_tool_calls: 1
+    check:
+      answer_contains_all: ["make_sampler", "make_logits_processors", "make_repetition_penalty", "make_presence_penalty", "make_frequency_penalty"]
+    notes: Replacement for 107. The tree has exactly these five (verified 2026-11-28).
+
+  - id: 111
+    difficulty: hard
+    category: heldout-read-reason
+    tools: true
+    thinking: false
+    prompt: "Read the relevant part of {workspace_root}/mlx_lm/models/cache.py and explain how `KVCache.update_and_fetch` grows its buffers as tokens are added. When does it allocate, how much, and what does it return? Quote the relevant code."
+    expected_tool_calls: 1
+    check:
+      tool_present: [read_file]
+      judged: true
+      rubric: |
+        The real mechanism (cache.py, class KVCache, update_and_fetch, ~lines 346-368): keys and
+        values are preallocated in blocks of `step` (256) token slots, not grown per token. When
+        the cache is empty, or offset plus the incoming tokens would overflow the allocated length,
+        it computes n_steps = ceil(new_tokens / step), allocates zero blocks of n_steps * step
+        slots and concatenates them on the sequence axis (first trimming any unused tail when
+        offset is not a multiple of step). It then writes the new keys/values in place at
+        [offset : offset + new], advances offset, and returns views sliced to [: offset], so the
+        returned arrays hold only real tokens, not the padding.
+        2 = says allocation happens in step-sized blocks only when the new tokens would overflow,
+            that new data is written in place and offset advances, that the return is sliced to
+            offset, and includes a quotation of the method.
+        1 = right idea (block preallocation) but misses the overflow condition, the in-place
+            write or the sliced return, or the quoted code is plainly not this method.
+        0 = describes a different mechanism (per-token concatenation, rotating buffer, quantization).
+        The judge cannot open the file, so it must not rule on whether a quotation is genuine.
+    notes: Replacement for 106, same judged shape; a different class in a larger file.
+
+  - id: 112
+    difficulty: hard
+    category: heldout-locate-across-tree
+    tools: true
+    thinking: false
+    prompt: "Somewhere under {workspace_root}/mlx_lm there is a function named `does_model_support_input_embeddings`. Which file defines it and on what line number? Use your tools to check."
+    expected_tool_calls: 1
+    check:
+      truth: mlxlm_embeddings_fn_line
+      answer_contains_truth: true
+      answer_contains_all: ["utils.py"]
+    notes: |
+      Directory-wide search, no file path in the prompt, so it does not exercise the search_files
+      file-path fix. It guards against the model getting worse at the case that already worked.
